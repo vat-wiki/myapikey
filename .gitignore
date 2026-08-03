@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.local
+data.json
+calls.jsonl
+.DS_Store
+*.log

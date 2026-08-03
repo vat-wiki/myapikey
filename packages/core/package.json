@@ -1,0 +1,16 @@
+{
+  "name": "@mygate/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.5",
+    "@hono/zod-validator": "^0.4.2",
+    "commander": "^12.1.0",
+    "hono": "^4.6.12",
+    "zod": "^3.23.8"
+  }
+}
