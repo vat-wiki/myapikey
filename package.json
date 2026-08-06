@@ -1,20 +1,36 @@
 {
-  "name": "my-ai-gate",
-  "private": true,
+  "name": "myapikey",
   "version": "0.1.0",
   "type": "module",
-  "description": "Personal LLM API gateway: one address, one password, all your models.",
-  "workspaces": ["packages/*"],
+  "description": "MyAPIKey — personal LLM API gateway: one address, one key, all your models.",
+  "bin": {
+    "myapikey": "packages/core/src/cli/index.ts"
+  },
+  "files": [
+    "packages/core/src",
+    "packages/web/dist"
+  ],
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
-    "dev": "tsx watch packages/core/src/cli/index.ts serve --dev",
-    "dev:web": "npm run dev -w @mygate/web",
+    "dev": "tsx watch packages/core/src/cli/index.ts serve",
+    "dev:web": "npm run dev -w @myapikey/web",
     "start": "tsx packages/core/src/cli/index.ts serve",
     "typecheck": "tsc -p packages/core/tsconfig.json --noEmit && vue-tsc --noEmit -p packages/web/tsconfig.json",
-    "build:web": "npm run build -w @mygate/web"
+    "build:web": "npm run build -w @myapikey/web"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.5",
+    "@hono/zod-validator": "^0.4.2",
+    "commander": "^12.1.0",
+    "hono": "^4.6.12",
+    "tsx": "^4.19.0",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@types/node": "^22.7.0",
-    "tsx": "^4.19.0",
     "typescript": "^5.6.0"
   }
 }

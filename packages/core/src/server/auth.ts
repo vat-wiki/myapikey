@@ -51,3 +51,24 @@ export function authMiddleware(getUser: () => string, getPass: () => string): Mi
     await next();
   };
 }
+
+/**
+ * Hono middleware: require the API key (for /v1). Accepts Bearer / x-api-key
+ * but NOT HTTP Basic — Basic carries account credentials, which are a separate
+ * secret. extractSecret sets `username` only for Basic, so rejecting when it's
+ * present keeps the account password off /v1.
+ */
+export function apiKeyMiddleware(getKey: () => string): MiddlewareHandler {
+  return async (c, next) => {
+    const cred = extractSecret(c);
+    const ok =
+      !!cred && cred.username === undefined && !!cred.password && safeEqual(cred.password, getKey());
+    if (!ok) {
+      return c.json(
+        { error: { message: "invalid or missing api key", type: "authentication_error" } },
+        401,
+      );
+    }
+    await next();
+  };
+}

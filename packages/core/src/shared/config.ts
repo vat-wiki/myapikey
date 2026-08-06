@@ -1,17 +1,23 @@
 import { randomBytes } from "node:crypto";
 import type { GateConfig } from "./types";
 
-export const CONFIG_VERSION = 1;
+export const CONFIG_VERSION = 4;
 export const DEFAULT_PORT = 7800;
 
-/** A fresh config with a randomly generated single account/password. */
+/** A fresh config with a randomly generated single account/password + API key. */
 export function defaultConfig(): GateConfig {
   return {
     version: CONFIG_VERSION,
     account: { username: "admin", password: randomBytes(18).toString("base64url") },
+    apiKey: newApiKey(),
     providers: [],
     models: {},
   };
+}
+
+/** Generate an API key (sk-myapikey-…) used by agents to call /v1. */
+export function newApiKey(): string {
+  return "sk-myapikey-" + randomBytes(24).toString("base64url");
 }
 
 /** Generate a provider id. */

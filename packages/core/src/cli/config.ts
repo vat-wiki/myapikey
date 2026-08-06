@@ -6,9 +6,10 @@ export interface CliProfile {
   url: string;
   username: string;
   password: string;
+  apiKey: string;
 }
 
-export const CONFIG_PATH = join(homedir(), ".config", "mygate", "config.json");
+export const CONFIG_PATH = join(homedir(), ".config", "myapikey", "config.json");
 
 export function loadProfile(): CliProfile | null {
   if (!existsSync(CONFIG_PATH)) return null;
@@ -26,7 +27,7 @@ export function saveProfile(p: CliProfile): void {
 
 export function resolveUrl(flag?: string): string {
   if (flag) return flag;
-  if (process.env.MYGATE_URL) return process.env.MYGATE_URL;
+  if (process.env.MYAPIKEY_URL) return process.env.MYAPIKEY_URL;
   return loadProfile()?.url ?? "http://localhost:7800";
 }
 
@@ -35,8 +36,13 @@ export function resolveCreds(
   flagPass?: string,
 ): { username: string; password: string } | null {
   const profile = loadProfile();
-  const user = flagUser ?? process.env.MYGATE_USER ?? profile?.username;
-  const pass = flagPass ?? process.env.MYGATE_PASS ?? profile?.password;
+  const user = flagUser ?? process.env.MYAPIKEY_USER ?? profile?.username;
+  const pass = flagPass ?? process.env.MYAPIKEY_PASS ?? profile?.password;
   if (!user || !pass) return null;
   return { username: user, password: pass };
+}
+
+/** Resolve the API key used to call /v1: flag → env → saved profile. */
+export function resolveApiKey(flag?: string): string | undefined {
+  return flag ?? process.env.MYAPIKEY_API_KEY ?? loadProfile()?.apiKey;
 }

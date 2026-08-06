@@ -5,3 +5,4 @@ data.json
 calls.jsonl
 .DS_Store
 *.log
+.playwright-cli/

@@ -1,4 +1,4 @@
-const KEY = "mygate.creds";
+const KEY = "myapikey.creds";
 
 export interface Creds {
   user: string;
@@ -55,9 +55,12 @@ export async function req<T = unknown>(method: string, path: string, body?: unkn
 export interface ProviderPublic {
   id: string;
   name: string;
-  baseUrl: string;
+  baseUrlOpenai: string;
+  baseUrlAnthropic: string;
   formats: string[];
+  supportsResponses?: boolean;
   apiKey: string;
+  discoveredModels?: string[];
   createdAt: number;
 }
 
@@ -65,8 +68,13 @@ export interface ModelProvider {
   id: string;
   name: string;
 }
-export interface ModelView {
-  name: string;
+export interface FormatView {
   enabled: boolean;
   providers: ModelProvider[];
+}
+export interface ModelView {
+  name: string;
+  openai: FormatView;
+  anthropic: FormatView;
+  responses: FormatView;
 }
