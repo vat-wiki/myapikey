@@ -134,7 +134,14 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
     let lastStatus = 502;
     let lastErr = "";
 
-    for (const provider of list) {
+    // Skip providers currently in circuit-breaker cooldown. If every candidate
+    // is cooling, fall back to the full list anyway — cooldown is a heuristic,
+    // and one real attempt beats a guaranteed 502 (a cooled provider that now
+    // succeeds also resets its circuit).
+    const live = list.filter((p) => !store.isCooling(p.id));
+    const order = live.length ? live : list;
+
+    for (const provider of order) {
       let upstream: Response;
       try {
         upstream = await fetch(upstreamTarget(provider, key).url, {
@@ -146,10 +153,16 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
         // Network error / DNS / timeout → try next provider.
         lastStatus = 502;
         lastErr = "network error";
+        const r = store.recordCircuitFailure(provider.id, lastStatus, lastErr);
+        if (r.entered) {
+          store.pushLog({ ts: Date.now(), model, provider: provider.name, format: wire, status: lastStatus, ms: Date.now() - start, stream, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: lastErr });
+        }
         continue;
       }
 
       if (upstream.ok) {
+        // A success closes the circuit (provider is healthy again).
+        store.recordCircuitSuccess(provider.id);
         store.pushLog({ ts: Date.now(), model, provider: provider.name, format: wire, status: upstream.status, ms: Date.now() - start, stream });
         return passThrough(upstream, isProbe ? provider.name : undefined);
       }
@@ -159,6 +172,10 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
         // reason for the log (this branch never streams back to the client).
         const txt = await upstream.text().catch(() => "");
         lastErr = shortError(txt) || `HTTP ${upstream.status}`;
+        const r = store.recordCircuitFailure(provider.id, lastStatus, lastErr);
+        if (r.entered) {
+          store.pushLog({ ts: Date.now(), model, provider: provider.name, format: wire, status: lastStatus, ms: Date.now() - start, stream, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: lastErr });
+        }
         continue;
       }
       // Non-retryable client error: return it to the caller as-is. Read the
@@ -168,7 +185,7 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
       return passThrough(upstream, isProbe ? provider.name : undefined);
     }
 
-    store.pushLog({ ts: Date.now(), model, provider: list[list.length - 1].name, format: wire, status: lastStatus, ms: Date.now() - start, stream, error: lastErr || `all providers failed (last status ${lastStatus})` });
+    store.pushLog({ ts: Date.now(), model, provider: order[order.length - 1].name, format: wire, status: lastStatus, ms: Date.now() - start, stream, error: lastErr || `all providers failed (last status ${lastStatus})` });
     return c.json(
       { error: { message: `all providers for '${model}' failed (last status ${lastStatus})`, type: "upstream_error" } },
       502,

@@ -442,5 +442,12 @@ export function adminApi(store: Store, auth: MiddlewareHandler, v1: Hono): Hono 
   // --- storage (read-only: where data.json + logs.jsonl live) ---
   app.get("/storage", (c) => c.json(store.getPaths()));
 
+  // --- circuit breaker (read-only snapshot + manual reset) ---
+  app.get("/circuit", (c) => c.json({ providers: store.circuitState() }));
+  app.post("/circuit/:id/reset", (c) => {
+    store.resetCircuit(c.req.param("id"));
+    return c.json({ ok: true });
+  });
+
   return app;
 }

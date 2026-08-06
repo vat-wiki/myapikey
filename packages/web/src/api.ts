@@ -79,3 +79,18 @@ export interface ModelView {
   anthropic: FormatView;
   responses: FormatView;
 }
+
+/** One provider's circuit-breaker state (GET /admin/circuit). Mirrors the
+ *  server's CircuitView: `cooling` = currently skipped (cooldown active),
+ *  `open` = healthy/eligible. */
+export interface CircuitProvider {
+  id: string;
+  name: string;
+  state: "open" | "cooling";
+  fails: number;
+  secondsLeft: number;
+  until: number;
+  lastStatus: number;
+  lastReason: string;
+  lastTs: number;
+}

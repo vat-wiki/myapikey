@@ -5,6 +5,34 @@ import type { GateConfig, LogEntry, Provider } from "../shared/types";
 
 const MAX_LOG = 200;
 
+/** Circuit-breaker backoff: a transient failure cools a provider for BASE ms,
+ *  doubling each consecutive failure up to CAP. Resets on the next success. */
+const CB_BASE = 30_000;
+const CB_CAP = 300_000;
+
+/** Per-provider circuit state (in-memory, never persisted). */
+interface CircuitEntry {
+  fails: number;
+  /** Epoch ms until which the provider is skipped. 0 = open. */
+  until: number;
+  lastStatus: number;
+  lastReason: string;
+  lastTs: number;
+}
+
+/** Read-only circuit view exposed at GET /admin/circuit. */
+export interface CircuitView {
+  id: string;
+  name: string;
+  state: "open" | "cooling";
+  fails: number;
+  secondsLeft: number;
+  until: number;
+  lastStatus: number;
+  lastReason: string;
+  lastTs: number;
+}
+
 /**
  * Owns a single data directory (default ~/.myapikey): data.json holds the
  * config, logs.jsonl holds recent calls. Reads config into memory at startup,
@@ -21,6 +49,10 @@ export class Store {
   /** Line count of the on-disk log (drives periodic trimming). The entries
    *  themselves are persisted to logs.jsonl, never held in memory. */
   private logCount = 0;
+  /** Per-provider circuit-breaker state (transient failures only). In-memory,
+   *  NOT persisted (resets on restart). Mutated via the circuit* methods only,
+   *  never through update()/persist(). */
+  private circuit = new Map<string, CircuitEntry>();
 
   constructor(dataDir: string) {
     this.dataDir = dataDir;
@@ -163,6 +195,70 @@ export class Store {
   private countLogs(): number {
     if (!existsSync(this.logsPath)) return 0;
     return readFileSync(this.logsPath, "utf8").split("\n").filter(Boolean).length;
+  }
+
+  // --- circuit breaker (transient failures only; in-memory) ---
+
+  /** Whether a provider is currently in cooldown and should be skipped. */
+  isCooling(id: string): boolean {
+    const c = this.circuit.get(id);
+    return !!c && c.until > Date.now();
+  }
+
+  /** Record a transient upstream failure. Escalates cooldown with each
+   *  consecutive failure (BASE * 2^(fails-1), capped at CAP); `fails` persists
+   *  across cooldown expirations and is reset only by success — unless the
+   *  provider has been quiet for > CAP, in which case it starts fresh at 1.
+   *  Returns `entered` = transitioned from healthy → cooling this call (the
+   *  caller logs a cooldown row only then, to avoid timeline spam), plus the
+   *  fails count and cooldown duration for that row. */
+  recordCircuitFailure(id: string, status: number, reason: string): { entered: boolean; fails: number; cooldownMs: number } {
+    const now = Date.now();
+    const cur = this.circuit.get(id);
+    const stale = !cur || now - cur.lastTs > CB_CAP;
+    const fails = stale ? 1 : cur!.fails + 1;
+    const cooldownMs = Math.min(CB_CAP, CB_BASE * 2 ** (fails - 1));
+    const until = now + cooldownMs;
+    const wasCooling = !!cur && cur.until > now;
+    this.circuit.set(id, { fails, until, lastStatus: status, lastReason: reason, lastTs: now });
+    return { entered: !wasCooling, fails, cooldownMs };
+  }
+
+  /** A successful call resets the cooldown (circuit closes). Keeps lastTs/
+   *  lastReason as history; the provider reads as state "open". */
+  recordCircuitSuccess(id: string): void {
+    const cur = this.circuit.get(id);
+    if (!cur || (cur.fails === 0 && cur.until === 0)) return;
+    this.circuit.set(id, { ...cur, fails: 0, until: 0 });
+  }
+
+  /** Force-clear a provider's cooldown (the UI "reset" button). */
+  resetCircuit(id: string): void {
+    const cur = this.circuit.get(id);
+    if (!cur) return;
+    this.circuit.set(id, { ...cur, fails: 0, until: 0 });
+  }
+
+  /** Snapshot of every configured provider's circuit state for GET /admin/circuit.
+   *  Healthy providers appear as state "open"; a provider deleted while cooling
+   *  simply drops out (we iterate the live config, not the map). */
+  circuitState(): CircuitView[] {
+    const now = Date.now();
+    return this.data.providers.map((p) => {
+      const c = this.circuit.get(p.id);
+      const cooling = !!c && c.until > now;
+      return {
+        id: p.id,
+        name: p.name,
+        state: cooling ? "cooling" : "open",
+        fails: c?.fails ?? 0,
+        secondsLeft: cooling ? Math.max(0, Math.ceil((c!.until - now) / 1000)) : 0,
+        until: c?.until ?? 0,
+        lastStatus: c?.lastStatus ?? 0,
+        lastReason: c?.lastReason ?? "",
+        lastTs: c?.lastTs ?? 0,
+      };
+    });
   }
 }
 

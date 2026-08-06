@@ -8,13 +8,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Switch } from "@/components/ui/switch";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 import {
-  Ban,
-  Check,
-  ChevronUp,
+  ChevronRight,
   ChevronDown,
+  MoveUp,
+  MoveDown,
   X,
   Trash2,
   Cpu,
@@ -129,14 +128,21 @@ const rows = computed<Row[]>(() => {
   });
 });
 
-/** Offered formats the model isn't yet enabled on — the ones still actionable
- *  from the Available list. A model stays in Available as long as this is
- *  non-empty, so enabling one format (e.g. openai) doesn't hide the others
- *  (e.g. anthropic) for a model that supports several. */
+/** Formats a model is currently enabled on — the slots whose chains we expose
+ *  when the row is expanded. */
+function enabledFormats(r: Row): Fmt[] {
+  return FORMATS.filter((f) => r[f].enabled);
+}
+/** Formats a discovered model can be enabled on (offered by ≥1 source). */
+function availFormats(r: Row): Fmt[] {
+  return FORMATS.filter((f) => r.offering.some((o) => supportsFmt(o, f)));
+}
+/** Offered formats the model isn't yet enabled on. */
 function enableableFormats(r: Row): Fmt[] {
   return availFormats(r).filter((f) => !r[f].enabled);
 }
-/** Status of a routing slot for a discovered model, for the enable menu. */
+/** Status of a routing slot, drives the per-format chip: enabled (on),
+ *  enableable (off but offered — click to turn on), or unsupported (no source). */
 function fmtStatus(r: Row, f: Fmt): "enabled" | "enableable" | "unsupported" {
   if (r[f].enabled) return "enabled";
   return availFormats(r).includes(f) ? "enableable" : "unsupported";
@@ -150,26 +156,10 @@ const filtered = computed(() => {
   const q = query.value.trim().toLowerCase();
   return rows.value.filter((r) => !q || r.name.toLowerCase().includes(q));
 });
+/** Models with ≥1 route on. Mutually exclusive with availableRows, so a model
+ *  is never listed twice (the old per-format panels duplicated it). */
 const enabledRows = computed(() => filtered.value.filter((r) => r.openai.enabled || r.anthropic.enabled || r.responses.enabled));
-const availableRows = computed(() => filtered.value.filter((r) => enableableFormats(r).length > 0));
-
-interface Section {
-  key: string;
-  fmt: Fmt;
-  rows: Row[];
-  chain: (r: Row) => ChainSrc[];
-  enabled: (r: Row) => boolean;
-}
-/** One editable section per routing slot (endpoint). A model appears under every
- *  slot it's enabled on; each has its own toggle and chain editor. */
-const sections = computed<Section[]>(() => {
-  const list: Section[] = [];
-  for (const key of FORMATS) {
-    const rs = enabledRows.value.filter((r) => r[key].enabled);
-    if (rs.length) list.push({ key, fmt: key, rows: rs, chain: (r) => r[key].chain, enabled: (r) => r[key].enabled });
-  }
-  return list;
-});
+const availableRows = computed(() => filtered.value.filter((r) => !(r.openai.enabled || r.anthropic.enabled || r.responses.enabled) && availFormats(r).length > 0));
 
 /** Every existing source that speaks this format and isn't yet in the chain —
  *  the contents of the single "add source" menu. Discovered sources sort first
@@ -190,29 +180,28 @@ function supportsFmt(o: { formats: string[]; supportsResponses?: boolean }, fmt:
   return fmt === "responses" ? !!o.supportsResponses : o.formats.includes(fmt);
 }
 
-/** Short label + endpoint for each routing slot, shown in the enable dropdown. */
-const FMT_META: Record<Fmt, { key: string; endpoint: string }> = {
-  openai: { key: "models.fmtOpenai", endpoint: "/chat/completions" },
-  anthropic: { key: "models.fmtAnthropic", endpoint: "/messages" },
-  responses: { key: "models.fmtResponses", endpoint: "/responses" },
+/** Short label + endpoint for each routing slot. */
+const FMT_META: Record<Fmt, { key: string; chip: string; endpoint: string }> = {
+  openai: { key: "models.fmtOpenai", chip: "models.fmtOpenaiShort", endpoint: "/chat/completions" },
+  anthropic: { key: "models.fmtAnthropic", chip: "models.fmtAnthropicShort", endpoint: "/messages" },
+  responses: { key: "models.fmtResponses", chip: "models.fmtResponsesShort", endpoint: "/responses" },
 };
 
-/** Formats a discovered model can be enabled on (offered by ≥1 source). */
-function availFormats(r: Row): Fmt[] {
-  return FORMATS.filter((f) => r.offering.some((o) => supportsFmt(o, f)));
+function isExpanded(name: string) {
+  return expandedModels.value.has(name);
 }
-
-function isExpanded(key: string) {
-  return expandedModels.value.has(key);
-}
-function toggleExpand(key: string) {
+function toggleExpand(name: string) {
   const s = new Set(expandedModels.value);
-  if (s.has(key)) s.delete(key);
-  else s.add(key);
+  if (s.has(name)) s.delete(name);
+  else s.add(name);
   expandedModels.value = s;
 }
 function joinChain(chain: ChainSrc[]): string {
   return chain.length ? chain.map((p) => p.name).join(" → ") : t("models.noSourcesShort");
+}
+/** One-line chain summary across every enabled route, shown under the name. */
+function summaryChain(r: Row): string {
+  return enabledFormats(r).map((f) => `${t(FMT_META[f].chip)}: ${joinChain(r[f].chain)}`).join("  ·  ");
 }
 /** Capability tags for a chain source: its wire formats plus /responses when
  *  supported — all rendered as colored family badges. */
@@ -228,6 +217,43 @@ function isStale(r: Row, fmt: Fmt): boolean {
   if (!chain.length) return false;
   const list = (id: string) => providerById.value.get(id)?.discoveredModels ?? [];
   return !chain.some((c) => list(c.id).includes(r.name)) && chain.some((c) => list(c.id).length > 0);
+}
+/** Delisted on any enabled route — surfaced as a summary badge. */
+function isStaleAny(r: Row): boolean {
+  return enabledFormats(r).some((f) => isStale(r, f));
+}
+
+/** Aggregate probe result across enabled routes, for the summary badge. */
+function rowProbe(r: Row): { state: "testing" | "ok" | "fail"; status?: number; provider?: string; error?: string } | null {
+  let testingAny = false;
+  let ok: ProbeResult | null = null;
+  let fail: ProbeResult | null = null;
+  for (const f of enabledFormats(r)) {
+    const key = `${r.name}:${f}`;
+    if (testing.value[key]) testingAny = true;
+    const pr = probe.value[key];
+    if (pr?.ok && !ok) ok = pr;
+    else if (pr && !pr.ok && !fail) fail = pr;
+  }
+  if (testingAny) return { state: "testing" };
+  if (ok) return { state: "ok", provider: ok.provider };
+  if (fail) return { state: "fail", status: fail.status, error: fail.error };
+  return null;
+}
+
+/** Chip styling per slot state: solid pill when on, dashed when available,
+ *  faint when no source offers it. */
+function chipClass(r: Row, f: Fmt): string {
+  const s = fmtStatus(r, f);
+  if (s === "enabled") return `border-transparent ${FMT_ACCENT[f].solid} text-white shadow-sm`;
+  if (s === "enableable") return "border-dashed border-input text-muted-foreground hover:bg-accent hover:text-accent-foreground";
+  return "border-transparent text-muted-foreground/40";
+}
+function chipTitle(r: Row, f: Fmt): string {
+  const s = fmtStatus(r, f);
+  if (s === "enabled") return `${t(FMT_META[f].key)} · ${t("models.chipOn")}`;
+  if (s === "enableable") return `${t(FMT_META[f].key)} · ${t("models.chipOff")}`;
+  return `${t(FMT_META[f].key)} · ${t("models.chipNa")}`;
 }
 
 async function toggle(r: Row, fmt: Fmt) {
@@ -317,6 +343,13 @@ async function testModel(r: Row, fmt: Fmt) {
   } finally {
     testing.value[key] = false;
   }
+}
+
+/** Test every enabled route of a model in parallel (the row's "Test" action). */
+async function testRow(r: Row) {
+  const fmts = enabledFormats(r);
+  if (!fmts.length) return;
+  await Promise.all(fmts.map((f) => testModel(r, f)));
 }
 
 async function doRemoveModel() {
@@ -466,53 +499,69 @@ onMounted(load);
             </Button>
           </div>
 
+          <!-- legend: what the per-format chips mean -->
+          <p class="text-xs text-muted-foreground">{{ t("models.chipLegend") }}</p>
+
           <p v-if="loading" class="py-6 text-center text-sm text-muted-foreground">{{ t("common.loading") }}</p>
           <p v-else-if="err" class="py-6 text-center text-sm text-destructive">{{ err }}</p>
 
           <template v-else>
-            <!-- One editable section per routing slot (endpoint). -->
-            <section
-              v-for="s in sections"
-              :key="s.key"
-              class="relative overflow-hidden rounded-lg border border-border/60 bg-card"
-            >
-              <!-- left accent stripe (full height) + colored dot mark this as a group -->
-              <div class="pointer-events-none absolute inset-y-0 left-0 w-1" :class="FMT_ACCENT[s.fmt].solid" aria-hidden="true" />
+            <!-- Enabled: one row per model with ≥1 route on. -->
+            <section v-if="enabledRows.length" class="relative overflow-hidden rounded-lg border border-border/60 bg-card">
+              <div class="pointer-events-none absolute inset-y-0 left-0 w-1 bg-primary" aria-hidden="true" />
               <div class="flex items-center gap-2.5 border-b border-border/60 bg-muted/30 px-3 py-2">
-                <span class="h-2 w-2 shrink-0 rounded-full" :class="FMT_ACCENT[s.fmt].solid" />
-                <span class="text-sm font-semibold">{{ t(FMT_META[s.fmt].key) }}</span>
-                <span class="font-mono text-[11px] text-muted-foreground">{{ FMT_META[s.fmt].endpoint }}</span>
-                <span class="ml-auto inline-flex items-center rounded-md px-1.5 py-0.5 text-xs font-medium tabular-nums" :class="FMT_ACCENT[s.fmt].chip">{{ s.rows.length }}</span>
+                <span class="h-2 w-2 shrink-0 rounded-full bg-primary" />
+                <span class="text-sm font-semibold">{{ t("models.enabledSection") }}</span>
+                <span class="ml-auto inline-flex items-center rounded-md bg-primary/15 px-1.5 py-0.5 text-xs font-medium tabular-nums text-primary">{{ enabledRows.length }}</span>
               </div>
               <div class="divide-y divide-border">
-                <div v-for="r in s.rows" :key="r.name" class="px-3 py-2.5">
-                  <!-- summary row -->
+                <div v-for="r in enabledRows" :key="r.name" class="px-3 py-2.5">
+                  <!-- summary row: the caret + name + chain summary are one
+                       click target that expands the route editors. The caret
+                       sits at the LEFT (tree-style disclosure) so it can't be
+                       confused with the per-source Move up/down on the right. -->
                   <div class="flex items-center gap-3">
-                    <Switch :model-value="s.enabled(r)" @update:model-value="() => toggle(r, s.fmt)" />
                     <button
                       type="button"
-                      class="flex min-w-0 flex-1 flex-col items-start text-left"
-                      :aria-expanded="isExpanded(`${s.key}:${r.name}`)"
-                      @click="toggleExpand(`${s.key}:${r.name}`)"
+                      class="flex min-w-0 flex-1 items-center gap-2 text-left"
+                      :aria-expanded="isExpanded(r.name)"
+                      :aria-label="isExpanded(r.name) ? t('models.collapseAria') : t('models.expandAria')"
+                      @click="toggleExpand(r.name)"
                     >
-                      <span class="flex w-full items-center gap-2">
-                        <span class="truncate font-mono text-sm font-medium">{{ r.name }}</span>
-                        <Badge v-if="testing[`${r.name}:${s.fmt}`]" variant="muted" class="gap-1"><Loader2 class="h-3 w-3 animate-spin" />{{ t("models.probeTesting") }}</Badge>
-                        <Badge v-else-if="probe[`${r.name}:${s.fmt}`]?.ok" variant="success" :title="t('models.probeOkHint', { name: probe[`${r.name}:${s.fmt}`]?.provider ?? '' })">{{ t("models.probeOk") }}</Badge>
-                        <Badge v-else-if="probe[`${r.name}:${s.fmt}`]" variant="destructive" :title="probe[`${r.name}:${s.fmt}`]?.error || t('models.probeFailHint')">{{ t("models.probeFail") }} · {{ probe[`${r.name}:${s.fmt}`]?.status || '?' }}</Badge>
-                        <Badge v-else-if="isStale(r, s.fmt)" variant="secondary" :title="t('models.delistedHint')">{{ t("models.delisted") }}</Badge>
+                      <ChevronRight class="h-4 w-4 shrink-0 text-muted-foreground transition-transform" :class="{ 'rotate-90': isExpanded(r.name) }" />
+                      <span class="flex min-w-0 flex-1 flex-col items-start">
+                        <span class="flex w-full items-center gap-2">
+                          <span class="truncate font-mono text-sm font-medium">{{ r.name }}</span>
+                          <Badge v-if="rowProbe(r)?.state === 'testing'" variant="muted" class="gap-1"><Loader2 class="h-3 w-3 animate-spin" />{{ t("models.probeTesting") }}</Badge>
+                          <Badge v-else-if="rowProbe(r)?.state === 'ok'" variant="success" :title="t('models.probeOkHint', { name: rowProbe(r)?.provider ?? '' })">{{ t("models.probeOk") }}</Badge>
+                          <Badge v-else-if="rowProbe(r)?.state === 'fail'" variant="destructive" :title="rowProbe(r)?.error || t('models.probeFailHint')">{{ t("models.probeFail") }} · {{ rowProbe(r)?.status || '?' }}</Badge>
+                          <Badge v-else-if="isStaleAny(r)" variant="secondary" :title="t('models.delistedHint')">{{ t("models.delisted") }}</Badge>
+                        </span>
+                        <span class="w-full truncate text-xs text-muted-foreground">{{ summaryChain(r) }}</span>
                       </span>
-                      <span class="w-full truncate text-xs text-muted-foreground">{{ joinChain(s.chain(r)) }}</span>
                     </button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      class="h-8 w-8 shrink-0 text-muted-foreground"
-                      :aria-label="isExpanded(`${s.key}:${r.name}`) ? t('models.collapseAria') : t('models.expandAria')"
-                      @click="toggleExpand(`${s.key}:${r.name}`)"
-                    >
-                      <ChevronDown class="h-4 w-4 transition-transform" :class="{ 'rotate-180': isExpanded(`${s.key}:${r.name}`) }" />
-                    </Button>
+                    <!-- per-format toggle chips -->
+                    <div class="flex shrink-0 items-center gap-1.5">
+                      <button
+                        v-for="f in FORMATS"
+                        :key="f"
+                        type="button"
+                        :disabled="fmtStatus(r, f) === 'unsupported' || enabling[`${r.name}:${f}`]"
+                        :title="chipTitle(r, f)"
+                        :aria-label="chipTitle(r, f)"
+                        class="inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs font-medium transition-colors disabled:cursor-not-allowed"
+                        :class="chipClass(r, f)"
+                        @click="toggle(r, f)"
+                      >
+                        <Loader2 v-if="enabling[`${r.name}:${f}`]" class="h-3 w-3 animate-spin" />
+                        <span
+                          v-else
+                          class="rounded-full"
+                          :class="fmtStatus(r, f) === 'enabled' ? 'h-1.5 w-1.5 bg-current' : fmtStatus(r, f) === 'enableable' ? 'h-1.5 w-1.5 border border-current' : 'h-1.5 w-1.5'"
+                        />
+                        {{ t(FMT_META[f].chip) }}
+                      </button>
+                    </div>
                     <DropdownMenu>
                       <DropdownMenuTrigger>
                         <Button variant="ghost" size="icon" class="h-8 w-8 shrink-0 text-muted-foreground" :aria-label="t('models.moreActions')">
@@ -520,8 +569,8 @@ onMounted(load);
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
-                        <DropdownMenuItem :disabled="testing[`${r.name}:${s.fmt}`]" @select="testModel(r, s.fmt)">
-                          <Loader2 v-if="testing[`${r.name}:${s.fmt}`]" class="animate-spin" />
+                        <DropdownMenuItem :disabled="rowProbe(r)?.state === 'testing' || !enabledFormats(r).length" @select="testRow(r)">
+                          <Loader2 v-if="rowProbe(r)?.state === 'testing'" class="animate-spin" />
                           <Zap v-else />
                           {{ t("models.testModel") }}
                         </DropdownMenuItem>
@@ -534,69 +583,83 @@ onMounted(load);
                     </DropdownMenu>
                   </div>
 
-                  <!-- expanded: chain editor for this slot -->
-                  <div v-if="isExpanded(`${s.key}:${r.name}`)" class="mt-2 space-y-1 rounded-md border bg-muted/30 p-2">
-                    <div v-if="isStale(r, s.fmt) && !probe[`${r.name}:${s.fmt}`]" class="flex items-start gap-2 rounded bg-muted px-2 py-1.5 text-xs text-muted-foreground">
-                      <span class="shrink-0 font-medium">{{ t("models.delisted") }}</span>
-                      <span>{{ t("models.delistedHint") }}</span>
-                    </div>
-                    <div v-if="!s.chain(r).length" class="px-1 py-1 text-xs text-muted-foreground">
-                      {{ t("models.noSources") }}
-                    </div>
-                    <div v-for="(p, i) in s.chain(r)" :key="p.id" class="flex items-center gap-2 rounded px-1 py-1">
-                      <span class="w-4 text-right text-xs text-muted-foreground">{{ i + 1 }}.</span>
-                      <span class="flex items-center gap-1.5 text-sm">
-                        <span class="h-1.5 w-1.5 rounded-full" :class="providerColor(p.id).solid" />
-                        {{ p.name }}
-                      </span>
-                      <Badge v-for="f in srcTags(p.id)" :key="f" variant="secondary" :class="FMT_ACCENT[f].badge">{{ f }}</Badge>
-                      <Badge v-if="i === 0" variant="default">{{ t("models.primary") }}</Badge>
-                      <Badge v-else variant="muted">{{ t("models.fallback") }}</Badge>
-                      <div class="ml-auto flex items-center gap-0.5">
-                        <Button variant="ghost" size="icon" class="h-7 w-7" :disabled="i === 0" :aria-label="t('models.moveUpAria')" @click="moveUp(r, i, s.fmt)">
-                          <ChevronUp class="h-4 w-4" />
-                        </Button>
-                        <Button variant="ghost" size="icon" class="h-7 w-7" :disabled="i === s.chain(r).length - 1" :aria-label="t('models.moveDownAria')" @click="moveDown(r, i, s.fmt)">
-                          <ChevronDown class="h-4 w-4" />
-                        </Button>
-                        <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-destructive" :aria-label="t('models.removeSourceAria', { name: p.name })" @click="removeSource(r, p.id, s.fmt)">
-                          <X class="h-4 w-4" />
-                        </Button>
-                      </div>
-                    </div>
-
-                    <!-- add a source to this slot's chain. A dashed full-width
-                         add-zone (append-to-list affordance); the dropdown lists
-                         every candidate (discovered first, then force-adds). -->
-                    <div v-if="addableSources(r, s.fmt).length" class="pt-1">
-                      <DropdownMenu>
-                        <DropdownMenuTrigger>
-                          <Button variant="outline" class="w-full justify-center gap-1.5 border-dashed font-normal text-muted-foreground hover:text-foreground">
-                            <Plus class="h-3.5 w-3.5" />{{ t("models.addSourceToChain") }}
+                  <!-- expanded: one chain editor per enabled route -->
+                  <div v-if="isExpanded(r.name)" class="mt-2 space-y-3 rounded-md border bg-muted/30 p-2">
+                    <div v-for="f in enabledFormats(r)" :key="f" class="space-y-1">
+                      <!-- route sub-header + per-route test -->
+                      <div class="flex items-center gap-2 px-1">
+                        <span class="h-2 w-2 rounded-full" :class="FMT_ACCENT[f].solid" />
+                        <span class="text-xs font-semibold">{{ t(FMT_META[f].key) }}</span>
+                        <span class="font-mono text-[11px] text-muted-foreground">{{ FMT_META[f].endpoint }}</span>
+                        <div class="ml-auto flex items-center gap-1.5">
+                          <Badge v-if="probe[`${r.name}:${f}`]?.ok" variant="success" :title="t('models.probeOkHint', { name: probe[`${r.name}:${f}`]?.provider ?? '' })">{{ t("models.probeOk") }}</Badge>
+                          <Badge v-else-if="probe[`${r.name}:${f}`]" variant="destructive" :title="probe[`${r.name}:${f}`]?.error || t('models.probeFailHint')">{{ t("models.probeFail") }} · {{ probe[`${r.name}:${f}`]?.status || '?' }}</Badge>
+                          <Button variant="ghost" size="sm" class="h-6 gap-1 px-2 text-xs" :disabled="testing[`${r.name}:${f}`]" @click="testModel(r, f)">
+                            <Loader2 v-if="testing[`${r.name}:${f}`]" class="h-3 w-3 animate-spin" />
+                            <Zap v-else class="h-3 w-3" />
+                            {{ t("models.testModel") }}
                           </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="start">
-                          <DropdownMenuItem
-                            v-for="o in addableSources(r, s.fmt)"
-                            :key="o.id"
-                            :disabled="addingSrc[`${r.name}:${o.id}:${s.fmt}`]"
-                            @select="addSource(r, o.id, s.fmt)"
-                          >
-                            <Loader2 v-if="addingSrc[`${r.name}:${o.id}:${s.fmt}`]" class="h-3.5 w-3.5 animate-spin" />
-                            <Plus v-else class="h-3.5 w-3.5" />
-                            {{ o.name }}
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+                        </div>
+                      </div>
+                      <div v-if="isStale(r, f) && !probe[`${r.name}:${f}`]" class="flex items-start gap-2 rounded bg-muted px-2 py-1.5 text-xs text-muted-foreground">
+                        <span class="shrink-0 font-medium">{{ t("models.delisted") }}</span>
+                        <span>{{ t("models.delistedHint") }}</span>
+                      </div>
+                      <div v-if="!r[f].chain.length" class="px-1 py-1 text-xs text-muted-foreground">
+                        {{ t("models.noSources") }}
+                      </div>
+                      <div v-for="(p, i) in r[f].chain" :key="p.id" class="flex items-center gap-2 rounded px-1 py-1">
+                        <span class="w-4 text-right text-xs text-muted-foreground">{{ i + 1 }}.</span>
+                        <span class="flex items-center gap-1.5 text-sm">
+                          <span class="h-1.5 w-1.5 rounded-full" :class="providerColor(p.id).solid" />
+                          {{ p.name }}
+                        </span>
+                        <Badge v-for="tag in srcTags(p.id)" :key="tag" variant="secondary" :class="FMT_ACCENT[tag].badge">{{ t(FMT_META[tag].chip) }}</Badge>
+                        <Badge v-if="i === 0" variant="default">{{ t("models.primary") }}</Badge>
+                        <Badge v-else variant="muted">{{ t("models.fallback") }}</Badge>
+                        <div class="ml-auto flex items-center gap-0.5">
+                          <Button variant="ghost" size="icon" class="h-7 w-7" :disabled="i === 0" :aria-label="t('models.moveUpAria')" @click="moveUp(r, i, f)">
+                            <MoveUp class="h-4 w-4" />
+                          </Button>
+                          <Button variant="ghost" size="icon" class="h-7 w-7" :disabled="i === r[f].chain.length - 1" :aria-label="t('models.moveDownAria')" @click="moveDown(r, i, f)">
+                            <MoveDown class="h-4 w-4" />
+                          </Button>
+                          <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-destructive" :aria-label="t('models.removeSourceAria', { name: p.name })" @click="removeSource(r, p.id, f)">
+                            <X class="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </div>
+
+                      <!-- add a source to this route's chain -->
+                      <div v-if="addableSources(r, f).length" class="pt-1">
+                        <DropdownMenu>
+                          <DropdownMenuTrigger>
+                            <Button variant="outline" class="w-full justify-center gap-1.5 border-dashed font-normal text-muted-foreground hover:text-foreground">
+                              <Plus class="h-3.5 w-3.5" />{{ t("models.addSourceToChain") }}
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="start">
+                            <DropdownMenuItem
+                              v-for="o in addableSources(r, f)"
+                              :key="o.id"
+                              :disabled="addingSrc[`${r.name}:${o.id}:${f}`]"
+                              @select="addSource(r, o.id, f)"
+                            >
+                              <Loader2 v-if="addingSrc[`${r.name}:${o.id}:${f}`]" class="h-3.5 w-3.5 animate-spin" />
+                              <Plus v-else class="h-3.5 w-3.5" />
+                              {{ o.name }}
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </div>
                     </div>
                   </div>
                 </div>
               </div>
             </section>
 
-            <!-- Available -->
+            <!-- Available: discovered, not yet enabled anywhere. Same chips, all ○. -->
             <section class="relative overflow-hidden rounded-lg border border-border/60 bg-card">
-              <!-- neutral stripe: this bucket isn't a routing slot, so no accent hue -->
               <div class="pointer-events-none absolute inset-y-0 left-0 w-1 bg-muted-foreground/40" aria-hidden="true" />
               <div class="flex items-center gap-2.5 border-b border-border/60 bg-muted/30 px-3 py-2">
                 <button
@@ -626,52 +689,27 @@ onMounted(load);
                       <Badge v-for="o in r.offering" :key="o.id" variant="secondary" :class="providerColor(o.id).badge">{{ o.name }}</Badge>
                     </div>
                   </div>
-                  <div class="flex items-center gap-1">
-                    <!-- one supported format: one-tap enable -->
-                    <Button
-                      v-if="availFormats(r).length === 1"
-                      size="sm"
-                      variant="secondary"
-                      :disabled="enabling[`${r.name}:${availFormats(r)[0]}`]"
-                      @click="enable(r, availFormats(r)[0])"
+                  <!-- per-format toggle chips: every offered route is ○ (click to enable) -->
+                  <div class="flex shrink-0 items-center gap-1.5">
+                    <button
+                      v-for="f in FORMATS"
+                      :key="f"
+                      type="button"
+                      :disabled="fmtStatus(r, f) === 'unsupported' || enabling[`${r.name}:${f}`]"
+                      :title="chipTitle(r, f)"
+                      :aria-label="chipTitle(r, f)"
+                      class="inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs font-medium transition-colors disabled:cursor-not-allowed"
+                      :class="chipClass(r, f)"
+                      @click="toggle(r, f)"
                     >
-                      <Loader2 v-if="enabling[`${r.name}:${availFormats(r)[0]}`]" class="h-3.5 w-3.5 animate-spin" />
-                      <Plus v-else class="h-3.5 w-3.5" />
-                      {{ t("models.enable") }}
-                    </Button>
-                    <!-- several formats: pick which to enable. Each routing
-                         slot shows its status — enableable (click to enable),
-                         already enabled (check, disabled), or unsupported by
-                         any source offering this model (muted, disabled). -->
-                    <DropdownMenu v-else>
-                      <DropdownMenuTrigger>
-                        <Button size="sm" variant="secondary">
-                          <Plus class="h-3.5 w-3.5" />
-                          {{ t("models.enable") }}
-                          <ChevronDown class="h-3.5 w-3.5 opacity-60" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem
-                          v-for="f in FORMATS"
-                          :key="f"
-                          :disabled="fmtStatus(r, f) !== 'enableable' || enabling[`${r.name}:${f}`]"
-                          @select="enable(r, f)"
-                        >
-                          <Loader2 v-if="enabling[`${r.name}:${f}`]" class="animate-spin" />
-                          <Check v-else-if="fmtStatus(r, f) === 'enabled'" />
-                          <Ban v-else-if="fmtStatus(r, f) === 'unsupported'" />
-                          <Plus v-else />
-                          <span>{{ t(FMT_META[f].key) }}</span>
-                          <span
-                            class="ml-auto pl-3 font-mono text-xs"
-                            :class="fmtStatus(r, f) === 'unsupported' ? 'text-muted-foreground/50' : 'text-muted-foreground'"
-                          >
-                            {{ fmtStatus(r, f) === "enabled" ? t("models.enabled") : fmtStatus(r, f) === "unsupported" ? t("models.unsupported") : FMT_META[f].endpoint }}
-                          </span>
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
+                      <Loader2 v-if="enabling[`${r.name}:${f}`]" class="h-3 w-3 animate-spin" />
+                      <span
+                        v-else
+                        class="rounded-full"
+                        :class="fmtStatus(r, f) === 'enabled' ? 'h-1.5 w-1.5 bg-current' : fmtStatus(r, f) === 'enableable' ? 'h-1.5 w-1.5 border border-current' : 'h-1.5 w-1.5'"
+                      />
+                      {{ t(FMT_META[f].chip) }}
+                    </button>
                   </div>
                 </div>
               </div>

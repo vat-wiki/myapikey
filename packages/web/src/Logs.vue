@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from "vue";
+import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 import { useI18n } from "vue-i18n";
-import { req } from "@/api";
+import { req, type CircuitProvider } from "@/api";
 import { FMT_ACCENT, type Fmt } from "@/lib/format";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -9,7 +9,8 @@ import { Button } from "@/components/ui/button";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
 import { Input } from "@/components/ui/input";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
-import { Activity, RefreshCw, Pause, Play, Loader2, Search, ChevronRight, ChevronDown } from "lucide-vue-next";
+import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
+import { Activity, RefreshCw, Pause, Play, Loader2, Search, ChevronRight, ChevronDown, Filter, X, Timer } from "lucide-vue-next";
 
 const { t } = useI18n();
 
@@ -22,11 +23,20 @@ interface LogEntry {
   ms: number;
   stream: boolean;
   error?: string;
+  /** Row kind. Absent on legacy lines → a normal call. "cooldown" marks a
+   *  circuit-breaker event (a source just entered cooldown), shown distinctly
+   *  in the timeline next to the failures that triggered it. */
+  kind?: "call" | "cooldown";
+  cooldownMs?: number;
+  fails?: number;
 }
 
 const logs = ref<LogEntry[]>([]);
 const live = ref(true);
 const refreshing = ref(false);
+/** Sources currently in circuit-breaker cooldown (drives the "cooling" strip).
+ *  Polled alongside /admin/logs; empty = all healthy (strip hidden). */
+const cooling = ref<CircuitProvider[]>([]);
 
 const filterModel = ref("all");
 const filterProvider = ref("all");
@@ -34,18 +44,66 @@ const filterStatus = ref<string>("all");
 const query = ref("");
 const expanded = ref<Set<string>>(new Set());
 
+const filterOpen = ref(false);
+
+/** Persist the filter view across tab switches / reloads (the Logs tab unmounts
+ *  when inactive, so component-local state would otherwise be lost). */
+const FILTERS_KEY = "myapikey.logs.filters";
+try {
+  const saved = JSON.parse(localStorage.getItem(FILTERS_KEY) || "null") as {
+    model?: string; provider?: string; status?: string; query?: string;
+  } | null;
+  if (saved) {
+    if (typeof saved.model === "string") filterModel.value = saved.model;
+    if (typeof saved.provider === "string") filterProvider.value = saved.provider;
+    if (saved.status === "success" || saved.status === "error") filterStatus.value = saved.status;
+    if (typeof saved.query === "string") query.value = saved.query;
+  }
+} catch {
+  /* corrupt entry — ignore and start clean */
+}
+watch(
+  [filterModel, filterProvider, filterStatus, query],
+  () => {
+    try {
+      localStorage.setItem(
+        FILTERS_KEY,
+        JSON.stringify({
+          model: filterModel.value,
+          provider: filterProvider.value,
+          status: filterStatus.value,
+          query: query.value,
+        }),
+      );
+    } catch {
+      /* storage unavailable / full — non-fatal */
+    }
+  },
+);
+
 let timer: number | undefined;
 
 async function load() {
   refreshing.value = true;
   try {
-    const r = await req<{ logs: LogEntry[] }>("GET", "/admin/logs");
-    logs.value = r.logs;
-  } catch {
-    /* ignore — best-effort polling */
+    // Fetch logs and circuit state in parallel, but independently — a circuit
+    // endpoint hiccup must not break the log poll (and vice versa).
+    const [logsRes, circuitRes] = await Promise.all([
+      req<{ logs: LogEntry[] }>("GET", "/admin/logs").catch(() => null),
+      req<{ providers: CircuitProvider[] }>("GET", "/admin/circuit").catch(() => null),
+    ]);
+    if (logsRes) logs.value = logsRes.logs;
+    if (circuitRes) cooling.value = circuitRes.providers.filter((p) => p.state === "cooling");
   } finally {
     refreshing.value = false;
   }
+}
+
+/** Force-clear a source's cooldown via the strip's "reset" button, then
+ *  immediately re-poll so the strip updates (state → open). */
+async function resetCircuit(id: string) {
+  await req("POST", `/admin/circuit/${id}/reset`).catch(() => {});
+  await load();
 }
 
 function startPolling() {
@@ -90,7 +148,7 @@ function fmtFull(ts: number): string {
   return new Date(ts).toLocaleString();
 }
 function rowKey(l: LogEntry): string {
-  return `${l.ts}-${l.model}-${l.status}`;
+  return `${l.ts}-${l.model}-${l.provider}-${l.status}-${l.kind ?? "call"}`;
 }
 function isExpanded(l: LogEntry): boolean {
   return expanded.value.has(rowKey(l));
@@ -119,13 +177,50 @@ const filtered = computed(() => {
 });
 
 const summary = computed(() => {
-  const all = filtered.value;
+  // Circuit events are timeline annotations, not calls — keep them out of the
+  // call stats so a degraded source doesn't inflate total/fail/avg-latency.
+  const all = filtered.value.filter((l) => l.kind !== "cooldown");
   const total = all.length;
   const success = all.filter((l) => l.status >= 200 && l.status < 300).length;
   const fail = all.filter((l) => l.status >= 400).length;
   const avgMs = total ? Math.round(all.reduce((s, l) => s + l.ms, 0) / total) : 0;
   return { total, success, fail, avgMs };
 });
+
+/** How many structured filters are currently active (badge on the filter button). */
+const activeFilters = computed(
+  () =>
+    (filterModel.value !== "all" ? 1 : 0) +
+    (filterProvider.value !== "all" ? 1 : 0) +
+    (filterStatus.value !== "all" ? 1 : 0),
+);
+
+/** Active filters rendered as removable chips so the current view state is
+ *  always visible at a glance. */
+const activeChips = computed(() => {
+  const chips: { key: string; label: string; value: string; clear: () => void }[] = [];
+  if (filterModel.value !== "all") {
+    chips.push({ key: "model", label: t("logs.filter.model"), value: filterModel.value, clear: () => (filterModel.value = "all") });
+  }
+  if (filterProvider.value !== "all") {
+    chips.push({ key: "provider", label: t("logs.filter.provider"), value: filterProvider.value, clear: () => (filterProvider.value = "all") });
+  }
+  if (filterStatus.value !== "all") {
+    chips.push({
+      key: "status",
+      label: t("logs.filter.status"),
+      value: filterStatus.value === "success" ? t("logs.filter.success") : t("logs.filter.error"),
+      clear: () => (filterStatus.value = "all"),
+    });
+  }
+  return chips;
+});
+
+function clearFilters() {
+  filterModel.value = "all";
+  filterProvider.value = "all";
+  filterStatus.value = "all";
+}
 
 onMounted(() => {
   load();
@@ -165,40 +260,101 @@ onUnmounted(stopPolling);
       <CardDescription>{{ t("logs.desc") }}</CardDescription>
     </CardHeader>
     <CardContent class="space-y-3">
-      <!-- filter / search toolbar -->
+      <!-- plain search + a separate filter button (popover trigger) -->
       <div class="flex flex-wrap items-center gap-2">
-        <Select v-model="filterModel">
-          <SelectTrigger class="h-8 w-36">
-            <SelectValue :placeholder="t('logs.filter.model')" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">{{ t("logs.filter.all") }}</SelectItem>
-            <SelectItem v-for="m in modelOptions" :key="m" :value="m">{{ m }}</SelectItem>
-          </SelectContent>
-        </Select>
-        <Select v-model="filterProvider">
-          <SelectTrigger class="h-8 w-36">
-            <SelectValue :placeholder="t('logs.filter.provider')" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">{{ t("logs.filter.all") }}</SelectItem>
-            <SelectItem v-for="p in providerOptions" :key="p" :value="p">{{ p }}</SelectItem>
-          </SelectContent>
-        </Select>
-        <Select v-model="filterStatus">
-          <SelectTrigger class="h-8 w-28">
-            <SelectValue :placeholder="t('logs.filter.status')" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">{{ t("logs.filter.all") }}</SelectItem>
-            <SelectItem value="success">{{ t("logs.filter.success") }}</SelectItem>
-            <SelectItem value="error">{{ t("logs.filter.error") }}</SelectItem>
-          </SelectContent>
-        </Select>
-        <div class="relative ml-auto">
+        <div class="relative flex-1 sm:max-w-sm">
           <Search class="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input v-model="query" :placeholder="t('logs.searchPh')" class="h-8 w-56 pl-8" />
+          <Input v-model="query" :placeholder="t('logs.searchPh')" class="h-8 pl-8" />
         </div>
+        <Popover v-model:open="filterOpen">
+          <PopoverTrigger as-child>
+            <Button variant="outline" size="sm" class="h-8 gap-1.5">
+              <Filter class="h-3.5 w-3.5" />
+              {{ t("logs.filter.title") }}
+              <span
+                v-if="activeFilters"
+                class="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-medium text-primary-foreground"
+              >{{ activeFilters }}</span>
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent align="start" class="w-72 p-3">
+            <div class="space-y-2.5">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-medium">{{ t("logs.filter.title") }}</span>
+                <button
+                  v-if="activeFilters"
+                  type="button"
+                  class="text-xs text-primary hover:underline"
+                  @click="clearFilters"
+                >
+                  {{ t("logs.filter.clear") }}
+                </button>
+              </div>
+              <div class="space-y-2">
+                <div class="grid grid-cols-[3.5rem_1fr] items-center gap-2">
+                  <span class="text-xs text-muted-foreground">{{ t("logs.filter.model") }}</span>
+                  <Select v-model="filterModel">
+                    <SelectTrigger class="h-8 w-full">
+                      <SelectValue :placeholder="t('logs.filter.model')" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">{{ t("logs.filter.all") }}</SelectItem>
+                      <SelectItem v-for="m in modelOptions" :key="m" :value="m">{{ m }}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div class="grid grid-cols-[3.5rem_1fr] items-center gap-2">
+                  <span class="text-xs text-muted-foreground">{{ t("logs.filter.provider") }}</span>
+                  <Select v-model="filterProvider">
+                    <SelectTrigger class="h-8 w-full">
+                      <SelectValue :placeholder="t('logs.filter.provider')" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">{{ t("logs.filter.all") }}</SelectItem>
+                      <SelectItem v-for="p in providerOptions" :key="p" :value="p">{{ p }}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div class="grid grid-cols-[3.5rem_1fr] items-center gap-2">
+                  <span class="text-xs text-muted-foreground">{{ t("logs.filter.status") }}</span>
+                  <Select v-model="filterStatus">
+                    <SelectTrigger class="h-8 w-full">
+                      <SelectValue :placeholder="t('logs.filter.status')" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">{{ t("logs.filter.all") }}</SelectItem>
+                      <SelectItem value="success">{{ t("logs.filter.success") }}</SelectItem>
+                      <SelectItem value="error">{{ t("logs.filter.error") }}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            </div>
+          </PopoverContent>
+        </Popover>
+      </div>
+
+      <!-- active filters as removable chips so the current view is always visible -->
+      <div v-if="activeChips.length" class="flex flex-wrap items-center gap-1.5">
+        <span
+          v-for="c in activeChips"
+          :key="c.key"
+          class="inline-flex items-center gap-1 rounded-full border border-input bg-muted/40 py-0.5 pl-2.5 pr-1 text-xs"
+        >
+          <span class="text-muted-foreground">{{ c.label }}:</span>
+          <span class="font-medium">{{ c.value }}</span>
+          <button
+            type="button"
+            class="rounded-full p-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            :aria-label="t('logs.filter.remove', { label: c.label })"
+            @click="c.clear"
+          >
+            <X class="h-3 w-3" />
+          </button>
+        </span>
+        <button type="button" class="text-xs text-muted-foreground hover:text-foreground" @click="clearFilters">
+          {{ t("logs.filter.clear") }}
+        </button>
       </div>
 
       <!-- light summary over the filtered view -->
@@ -207,6 +363,29 @@ onUnmounted(stopPolling);
         <span class="text-emerald-600 dark:text-emerald-500">{{ t("logs.summary.success", { n: summary.success }) }}</span>
         <span class="text-destructive">{{ t("logs.summary.fail", { n: summary.fail }) }}</span>
         <span>{{ t("logs.summary.avgLatency", { ms: summary.avgMs }) }}</span>
+      </div>
+
+      <!-- live "currently cooling" strip — only rendered when ≥1 source is in
+           circuit-breaker cooldown, so a healthy gateway shows no clutter. -->
+      <div v-if="cooling.length" class="space-y-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+        <div class="flex items-center gap-1.5 text-xs font-medium text-amber-700 dark:text-amber-400">
+          <Timer class="h-4 w-4" />
+          {{ t("logs.circuit.stripTitle") }}
+        </div>
+        <ul class="space-y-1.5">
+          <li v-for="p in cooling" :key="p.id" class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+            <span class="font-medium">{{ p.name }}</span>
+            <Badge variant="warning" class="gap-1 whitespace-nowrap">
+              <Timer class="h-3 w-3" />
+              {{ t("logs.circuit.remaining", { s: p.secondsLeft }) }}
+            </Badge>
+            <span class="break-all text-muted-foreground">{{ p.lastReason || t("logs.circuit.reasonUnknown") }}</span>
+            <Button variant="outline" size="sm" class="ml-auto h-6 gap-1" @click="resetCircuit(p.id)">
+              <RefreshCw class="h-3 w-3" />
+              {{ t("logs.circuit.reset") }}
+            </Button>
+          </li>
+        </ul>
       </div>
 
       <p v-if="!logs.length" class="py-6 text-center text-sm text-muted-foreground">{{ t("logs.empty") }}</p>
@@ -226,6 +405,25 @@ onUnmounted(stopPolling);
           </TableHeader>
           <TableBody>
             <template v-for="l in filtered" :key="rowKey(l)">
+              <!-- circuit-breaker event: a source just entered cooldown. Shown
+                   in-line in the timeline so it sits next to the failed calls
+                   that caused it, explaining why failover happened. -->
+              <TableRow v-if="l.kind === 'cooldown'" class="bg-amber-500/5 hover:bg-amber-500/10">
+                <TableCell colspan="7" class="py-2">
+                  <div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                    <span class="font-mono text-muted-foreground">{{ fmtTime(l.ts) }}</span>
+                    <Badge variant="warning" class="gap-1 whitespace-nowrap">
+                      <Timer class="h-3 w-3" />
+                      {{ t("logs.circuit.badge") }}
+                    </Badge>
+                    <span class="font-medium">{{ l.provider }}</span>
+                    <span class="text-muted-foreground">{{ t("logs.circuit.failures", { n: l.fails }) }}</span>
+                    <span class="text-muted-foreground">{{ t("logs.circuit.cooldown", { s: Math.round((l.cooldownMs ?? 0) / 1000) }) }}</span>
+                    <span class="break-all text-muted-foreground">{{ l.error || t("logs.circuit.reasonUnknown") }}</span>
+                  </div>
+                </TableCell>
+              </TableRow>
+              <template v-else>
               <TableRow class="cursor-pointer hover:bg-muted/50" @click="toggleRow(l)">
                 <TableCell class="w-8 text-muted-foreground">
                   <component :is="isExpanded(l) ? ChevronDown : ChevronRight" class="h-3.5 w-3.5" />
@@ -260,6 +458,7 @@ onUnmounted(stopPolling);
                   </dl>
                 </TableCell>
               </TableRow>
+              </template>
             </template>
           </TableBody>
         </Table>

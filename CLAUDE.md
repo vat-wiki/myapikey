@@ -50,3 +50,4 @@ npm run typecheck      # core (tsc) + web (vue-tsc)
 - ESM throughout; relative imports are extensionless (tsx + bundler resolution).
 - Testing the gateway by hand: spin up a mock upstream and run `serve` on a scratch port with `--data-dir /tmp/myapikey`; clean up with `fuser -k <port>/tcp` (tsx forks a child node process — `kill <npx-pid>` does **not** stop the actual server).
 - Keep it minimal — the user pushes back on over-engineering (layered auth, databases, etc.). Add complexity only when a concrete need shows up.
+- Work directly on the `main` branch, and `git push` to `origin main` after each development task completes.

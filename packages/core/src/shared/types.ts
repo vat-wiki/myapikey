@@ -81,4 +81,12 @@ export interface LogEntry {
   stream: boolean;
   /** Short upstream error text on non-2xx (omitted on success). */
   error?: string;
+  /** Row kind. Absent on legacy lines → treated as a normal call. "cooldown"
+   *  marks a circuit-breaker event (a provider just entered cooldown), shown
+   *  distinctly in the timeline alongside the failures that caused it. */
+  kind?: "call" | "cooldown";
+  /** Present only on cooldown rows: the cooldown duration and the consecutive
+   *  failure count that triggered it. */
+  cooldownMs?: number;
+  fails?: number;
 }
