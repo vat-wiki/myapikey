@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from "vue";
 import { useI18n } from "vue-i18n";
 import { req } from "@/api";
+import { FMT_ACCENT, type Fmt } from "@/lib/format";
 import { toast } from "@/lib/toast";
 import { copyText } from "@/lib/clipboard";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
@@ -9,6 +10,18 @@ import { Button } from "@/components/ui/button";
 import { Copy, Check, Plug, Eye, EyeOff } from "lucide-vue-next";
 
 const { t } = useI18n();
+
+/** Which routing family each connect snippet belongs to (curl is generic → none). */
+const SNIPPET_FMT: Record<string, Fmt | null> = {
+  openai: "openai",
+  anthropic: "anthropic",
+  responses: "responses",
+  curl: null,
+};
+function snippetAccent(key: string) {
+  const f = SNIPPET_FMT[key];
+  return f ? FMT_ACCENT[f] : null;
+}
 
 const apiKey = ref<string | null>(null);
 const lanIp = ref<string | null>(null);
@@ -76,7 +89,7 @@ onMounted(load);
     <Card>
       <CardHeader>
         <CardTitle class="flex items-center gap-2 text-base">
-          <Plug class="h-4 w-4 text-muted-foreground" />
+          <Plug class="h-4 w-4 text-primary" />
           {{ t("connect.title") }}
         </CardTitle>
         <CardDescription>{{ t("connect.desc") }}</CardDescription>
@@ -84,10 +97,13 @@ onMounted(load);
       <CardContent class="space-y-3">
         <!-- Base URL: one address per tool family (OpenAI tools need /v1; Claude/Anthropic don't) -->
         <div class="space-y-2">
-          <div class="flex items-center justify-between gap-3 rounded-lg border p-3">
+          <div class="flex items-center justify-between gap-3 rounded-lg border p-3" :class="[FMT_ACCENT.openai.border, FMT_ACCENT.openai.soft]">
             <div class="min-w-0">
-              <div class="text-xs text-muted-foreground">{{ t("connect.baseUrlOpenai") }}</div>
-              <div class="truncate font-mono text-sm">{{ baseUrlV1 }}</div>
+              <div class="flex items-center gap-1.5 text-xs font-medium" :class="FMT_ACCENT.openai.text">
+                <span class="h-1.5 w-1.5 rounded-full" :class="FMT_ACCENT.openai.solid" />
+                {{ t("connect.baseUrlOpenai") }}
+              </div>
+              <div class="mt-0.5 truncate font-mono text-sm">{{ baseUrlV1 }}</div>
             </div>
             <Button variant="outline" size="sm" @click="copy('url-openai', baseUrlV1)">
               <Check v-if="copied === 'url-openai'" class="h-4 w-4" />
@@ -95,10 +111,13 @@ onMounted(load);
               {{ copied === "url-openai" ? t("connect.copied") : t("connect.copy") }}
             </Button>
           </div>
-          <div class="flex items-center justify-between gap-3 rounded-lg border p-3">
+          <div class="flex items-center justify-between gap-3 rounded-lg border p-3" :class="[FMT_ACCENT.anthropic.border, FMT_ACCENT.anthropic.soft]">
             <div class="min-w-0">
-              <div class="text-xs text-muted-foreground">{{ t("connect.baseUrlAnthropic") }}</div>
-              <div class="truncate font-mono text-sm">{{ baseUrl }}</div>
+              <div class="flex items-center gap-1.5 text-xs font-medium" :class="FMT_ACCENT.anthropic.text">
+                <span class="h-1.5 w-1.5 rounded-full" :class="FMT_ACCENT.anthropic.solid" />
+                {{ t("connect.baseUrlAnthropic") }}
+              </div>
+              <div class="mt-0.5 truncate font-mono text-sm">{{ baseUrl }}</div>
             </div>
             <Button variant="outline" size="sm" @click="copy('url-anthropic', baseUrl)">
               <Check v-if="copied === 'url-anthropic'" class="h-4 w-4" />
@@ -139,7 +158,10 @@ onMounted(load);
 
     <Card v-for="s in snippets" :key="s.key">
       <CardHeader class="flex flex-row items-center justify-between space-y-0">
-        <CardTitle class="text-sm font-medium">{{ s.title }}</CardTitle>
+        <CardTitle class="flex items-center gap-2 text-sm font-medium">
+          <span v-if="snippetAccent(s.key)" class="h-1.5 w-1.5 rounded-full" :class="snippetAccent(s.key)?.solid" />
+          {{ s.title }}
+        </CardTitle>
         <Button variant="ghost" size="sm" @click="copy(s.key, s.text)">
           <Check v-if="copied === s.key" class="h-4 w-4" />
           <Copy v-else class="h-4 w-4" />

@@ -3,6 +3,7 @@ dist/
 *.local
 data.json
 calls.jsonl
+logs.jsonl
 .DS_Store
 *.log
 .playwright-cli/

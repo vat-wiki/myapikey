@@ -61,6 +61,7 @@ export interface ProviderPublic {
   supportsResponses?: boolean;
   apiKey: string;
   discoveredModels?: string[];
+  discoveredAt?: number | null;
   createdAt: number;
 }
 

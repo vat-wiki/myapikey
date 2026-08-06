@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useI18n } from "vue-i18n";
 import { req } from "@/api";
+import { FMT_ACCENT, type Fmt } from "@/lib/format";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -73,6 +74,12 @@ function statusVariant(s: number): "success" | "destructive" | "muted" {
   return "muted";
 }
 
+/** Family-colored class for the format tag (openai/anthropic/responses); empty
+ *  for anything else so it falls back to the plain outline badge. */
+function fmtBadge(format: string): string {
+  return FMT_ACCENT[format as Fmt]?.badge ?? "";
+}
+
 function fmtMs(ms: number): string {
   return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
 }
@@ -132,7 +139,7 @@ onUnmounted(stopPolling);
     <CardHeader>
       <div class="flex items-center justify-between gap-2">
         <CardTitle class="flex items-center gap-2 text-base">
-          <Activity class="h-4 w-4 text-muted-foreground" />
+          <Activity class="h-4 w-4 text-primary" />
           {{ t("logs.title") }}
           <Badge v-if="live" variant="success" class="gap-1.5">
             <span class="relative flex h-1.5 w-1.5">
@@ -230,7 +237,7 @@ onUnmounted(stopPolling);
                 <TableCell class="text-sm">{{ l.provider }}</TableCell>
                 <TableCell>
                   <span class="inline-flex items-center gap-1.5">
-                    <Badge variant="outline">{{ l.format }}</Badge>
+                    <Badge variant="outline" :class="fmtBadge(l.format)">{{ l.format }}</Badge>
                     <Badge v-if="l.stream" variant="muted" class="text-[10px]">{{ t("logs.stream") }}</Badge>
                   </span>
                 </TableCell>

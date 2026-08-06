@@ -68,7 +68,7 @@ export interface GateConfig {
   models: Record<string, ModelEntry>;
 }
 
-/** Options for logging call history (in-memory ring buffer). */
+/** One persisted call-history entry (stored in logs.jsonl, one JSON object per line). */
 export interface LogEntry {
   ts: number;
   model: string;

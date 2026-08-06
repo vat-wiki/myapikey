@@ -1,34 +1,83 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { defaultConfig, newApiKey, CONFIG_VERSION } from "../shared/config";
 import type { GateConfig, LogEntry, Provider } from "../shared/types";
 
 const MAX_LOG = 200;
 
 /**
- * Owns the single data.json file. Reads once into memory at startup, writes
- * through on every mutation. Mutations are serialized via a promise chain so
- * concurrent admin requests can't trample each other.
+ * Owns a single data directory (default ~/.myapikey): data.json holds the
+ * config, logs.jsonl holds recent calls. Reads config into memory at startup,
+ * writes through on every mutation. Mutations are serialized via a promise
+ * chain so concurrent admin requests can't trample each other.
  */
 export class Store {
   private data: GateConfig;
-  private readonly path: string;
+  private readonly dataDir: string;
+  private readonly dataPath: string;
+  private readonly logsPath: string;
+  private readonly credentialsPath: string;
   private chain: Promise<unknown> = Promise.resolve();
-  /** Recent call log (in-memory ring buffer, not persisted). */
-  readonly logs: LogEntry[] = [];
+  /** Line count of the on-disk log (drives periodic trimming). The entries
+   *  themselves are persisted to logs.jsonl, never held in memory. */
+  private logCount = 0;
 
-  constructor(path: string) {
-    this.path = path;
+  constructor(dataDir: string) {
+    this.dataDir = dataDir;
+    this.dataPath = join(dataDir, "data.json");
+    this.logsPath = join(dataDir, "logs.jsonl");
+    this.credentialsPath = join(dataDir, "credentials.txt");
     this.data = this.load();
+    this.logCount = this.countLogs();
+  }
+
+  /** Resolved on-disk locations (for read-only display in Settings). */
+  getPaths(): { dataDir: string; dataFile: string; logsFile: string; credentialsFile: string } {
+    return {
+      dataDir: this.dataDir,
+      dataFile: this.dataPath,
+      logsFile: this.logsPath,
+      credentialsFile: this.credentialsPath,
+    };
+  }
+
+  /**
+   * Write a human-readable credentials.txt (web login + /v1 api key), current
+   * as of this boot. So a brand-new user — or anyone who closed the startup
+   * terminal / runs serve as a daemon — can still recover the login: just
+   * `cat <dataDir>/credentials.txt`. Regenerated on every startup, so it stays
+   * correct after a password change + restart. Returns the file path.
+   */
+  writeCredentialsFile(): string {
+    const { account, apiKey } = this.data;
+    const body = [
+      "MyAPIKey credentials",
+      "====================",
+      "",
+      "Web UI login:",
+      `  username: ${account.username}`,
+      `  password: ${account.password}`,
+      "",
+      "API key (for agents calling /v1):",
+      `  ${apiKey}`,
+      "",
+      "Regenerated on each startup. If you change the password in Settings, this",
+      'file updates on the next restart. Safe to delete once you\'ve saved the',
+      "credentials elsewhere.",
+      "",
+    ].join("\n");
+    mkdirSync(this.dataDir, { recursive: true });
+    writeFileSync(this.credentialsPath, body);
+    return this.credentialsPath;
   }
 
   private load(): GateConfig {
-    if (!existsSync(this.path)) {
+    if (!existsSync(this.dataPath)) {
       const fresh = defaultConfig();
       this.persist(fresh);
       return fresh;
     }
-    const raw = JSON.parse(readFileSync(this.path, "utf8")) as GateConfig;
+    const raw = JSON.parse(readFileSync(this.dataPath, "utf8")) as GateConfig;
     // Light sanity check; fall back to defaults if structurally broken.
     if (!raw || typeof raw !== "object" || !raw.account) return defaultConfig();
     raw.providers ??= [];
@@ -56,8 +105,8 @@ export class Store {
   }
 
   private persist(d: GateConfig): void {
-    mkdirSync(dirname(this.path), { recursive: true });
-    writeFileSync(this.path, JSON.stringify(d, null, 2));
+    mkdirSync(this.dataDir, { recursive: true });
+    writeFileSync(this.dataPath, JSON.stringify(d, null, 2));
   }
 
   /** Read current config (from memory). */
@@ -79,9 +128,41 @@ export class Store {
     return run;
   }
 
+  /** Append a call to the on-disk log (one JSON object per line). */
   pushLog(entry: LogEntry): void {
-    this.logs.push(entry);
-    if (this.logs.length > MAX_LOG) this.logs.splice(0, this.logs.length - MAX_LOG);
+    appendFileSync(this.logsPath, JSON.stringify(entry) + "\n");
+    this.logCount++;
+    // Bound the file: once it drifts past 2× the cap, drop the oldest lines.
+    if (this.logCount > MAX_LOG * 2) this.trimLogs();
+  }
+
+  /** Recent log entries, newest first, capped at MAX_LOG. */
+  getLogs(): LogEntry[] {
+    if (!existsSync(this.logsPath)) return [];
+    const entries: LogEntry[] = [];
+    for (const line of readFileSync(this.logsPath, "utf8").split("\n")) {
+      const s = line.trim();
+      if (!s) continue;
+      try {
+        entries.push(JSON.parse(s) as LogEntry);
+      } catch {
+        // Partial tail line if the process was interrupted mid-append; skip it.
+      }
+    }
+    return entries.slice(-MAX_LOG).reverse();
+  }
+
+  /** Rewrite the log file keeping only the most recent MAX_LOG entries. */
+  private trimLogs(): void {
+    const lines = readFileSync(this.logsPath, "utf8").split("\n").filter(Boolean);
+    const kept = lines.slice(-MAX_LOG);
+    writeFileSync(this.logsPath, kept.length ? kept.map((l) => l + "\n").join("") : "");
+    this.logCount = kept.length;
+  }
+
+  private countLogs(): number {
+    if (!existsSync(this.logsPath)) return 0;
+    return readFileSync(this.logsPath, "utf8").split("\n").filter(Boolean).length;
   }
 }
 

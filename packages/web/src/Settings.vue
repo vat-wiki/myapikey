@@ -8,7 +8,7 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Copy, Check, Eye, EyeOff, Loader2, RotateCcw } from "lucide-vue-next";
+import { Copy, Check, Eye, EyeOff, Loader2, RotateCcw, User, KeyRound, HardDrive } from "lucide-vue-next";
 import ConfirmDialog from "@/ConfirmDialog.vue";
 
 const { t } = useI18n();
@@ -28,18 +28,32 @@ const showKey = ref(false);
 const rotating = ref(false);
 const confirmOpen = ref(false);
 
+// --- storage (read-only on-disk paths) ---
+const storage = ref<{ dataDir: string; dataFile: string; logsFile: string } | null>(null);
+
 const copied = ref("");
 const loginPassword = computed(() => account.value?.password ?? "");
+const storageRows = computed(() => {
+  const s = storage.value;
+  if (!s) return [];
+  return [
+    { key: "datadir", label: t("settings.storage.dataDir"), value: s.dataDir },
+    { key: "datafile", label: t("settings.storage.dataFile"), value: s.dataFile },
+    { key: "logsfile", label: t("settings.storage.logsFile"), value: s.logsFile },
+  ];
+});
 
 async function load() {
   try {
-    const [acct, key] = await Promise.all([
+    const [acct, key, st] = await Promise.all([
       req<{ username: string; password: string }>("GET", "/admin/account"),
       req<{ apiKey: string }>("GET", "/admin/api-key"),
+      req<{ dataDir: string; dataFile: string; logsFile: string }>("GET", "/admin/storage"),
     ]);
     account.value = acct;
     username.value = acct.username;
     apiKey.value = key.apiKey;
+    storage.value = st;
   } catch (e) {
     toast((e as Error).message, "error");
   }
@@ -117,7 +131,7 @@ onMounted(load);
     <!-- Account (web login) -->
     <Card>
       <CardHeader>
-        <CardTitle class="text-base">{{ t("settings.title") }}</CardTitle>
+        <CardTitle class="flex items-center gap-2 text-base"><User class="h-4 w-4 text-primary" />{{ t("settings.title") }}</CardTitle>
         <CardDescription>{{ t("settings.desc") }}</CardDescription>
       </CardHeader>
       <CardContent class="space-y-4">
@@ -189,7 +203,7 @@ onMounted(load);
     <!-- API Key (agent calls /v1) -->
     <Card>
       <CardHeader>
-        <CardTitle class="text-base">{{ t("settings.apikey.title") }}</CardTitle>
+        <CardTitle class="flex items-center gap-2 text-base"><KeyRound class="h-4 w-4 text-primary" />{{ t("settings.apikey.title") }}</CardTitle>
         <CardDescription>{{ t("settings.apikey.desc") }}</CardDescription>
       </CardHeader>
       <CardContent class="space-y-3">
@@ -223,6 +237,27 @@ onMounted(load);
             <RotateCcw class="h-4 w-4" />
             {{ t("settings.apikey.rotate") }}
           </Button>
+        </div>
+      </CardContent>
+    </Card>
+
+    <!-- Storage (read-only on-disk paths) -->
+    <Card>
+      <CardHeader>
+        <CardTitle class="flex items-center gap-2 text-base"><HardDrive class="h-4 w-4 text-primary" />{{ t("settings.storage.title") }}</CardTitle>
+        <CardDescription>{{ t("settings.storage.desc") }}</CardDescription>
+      </CardHeader>
+      <CardContent class="space-y-3">
+        <div v-for="row in storageRows" :key="row.key" class="space-y-1.5">
+          <Label>{{ row.label }}</Label>
+          <div class="flex items-center justify-between gap-3 rounded-lg border p-3">
+            <div class="min-w-0 truncate font-mono text-sm">{{ row.value }}</div>
+            <Button variant="outline" size="sm" @click="copy(row.key, row.value)">
+              <Check v-if="copied === row.key" class="h-4 w-4" />
+              <Copy v-else class="h-4 w-4" />
+              {{ copied === row.key ? t("connect.copied") : t("connect.copy") }}
+            </Button>
+          </div>
         </div>
       </CardContent>
     </Card>

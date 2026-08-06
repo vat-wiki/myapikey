@@ -1,12 +1,12 @@
 #!/usr/bin/env tsx
 import { Command, Option } from "commander";
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, join } from "node:path";
 import { serve } from "@hono/node-server";
 import { createApp } from "../server/app";
 import { Store } from "../server/store";
-import { DEFAULT_PORT } from "../shared/config";
-import { loadProfile, saveProfile, resolveApiKey } from "./config";
+import { DEFAULT_PORT, DEFAULT_DATA_DIR } from "../shared/config";
+import { loadProfile, saveProfile, resolveApiKey, CLIENT_PROFILE_PATH } from "./config";
 import { api, ApiError, makeCtx } from "./client";
 
 interface Globals {
@@ -35,12 +35,13 @@ program
   .command("serve")
   .description("run the gateway server")
   .option("-p, --port <n>", "port", String(DEFAULT_PORT))
-  .option("--data <path>", "path to data.json", "data.json")
+  .option("--data-dir <dir>", "directory for data.json + logs.jsonl")
   .option("--web-dir <path>", "path to built web dist", resolve(import.meta.dirname, "../../../web/dist"))
-  .action(async (opts: { port: string; data: string; webDir: string }) => {
-    const dataPath = resolve(opts.data);
-    const firstRun = !existsSync(dataPath);
-    const store = new Store(dataPath);
+  .action(async (opts: { port: string; dataDir?: string; webDir: string }) => {
+    const dataDir = resolve(opts.dataDir ?? process.env.MYAPIKEY_DATA_DIR ?? DEFAULT_DATA_DIR);
+    const firstRun = !existsSync(join(dataDir, "data.json"));
+    const store = new Store(dataDir);
+    const credentialsFile = store.writeCredentialsFile();
     const webDir = existsSync(opts.webDir) ? opts.webDir : undefined;
     const app = createApp(store, { webDir });
 
@@ -52,16 +53,18 @@ program
       else console.log(`  web UI:  not built (run: npm run build:web)`);
       console.log(`  proxy:   ${url}/v1/chat/completions  (OpenAI)`);
       console.log(`           ${url}/v1/responses           (OpenAI Responses)`);
-      console.log(`           ${url}/v1/messages            (Anthropic)\n`);
+      console.log(`           ${url}/v1/messages            (Anthropic)`);
+      console.log(`  data:    ${dataDir}  (override with --data-dir or MYAPIKEY_DATA_DIR)\n`);
 
       if (firstRun) {
         const { account, apiKey } = store.get();
         console.log("  First run — here are your credentials (save them):");
         console.log(`    username : ${account.username}   (web login)`);
         console.log(`    password : ${account.password}   (web login)`);
-        console.log(`    api key  : ${apiKey}   (put this in the tool's "api key" field)\n`);
+        console.log(`    api key  : ${apiKey}   (put this in the tool's "api key" field)`);
+        console.log(`  ↳ also written to ${credentialsFile}  (cat it anytime if you forget)\n`);
         saveProfile({ url, username: account.username, password: account.password, apiKey });
-        console.log(`  Saved to ~/.config/myapikey/config.json for CLI use.`);
+        console.log(`  Saved to ${CLIENT_PROFILE_PATH} for CLI use.`);
         console.log(`  Next: myapikey provider add <name> --base-url-openai <url> --key <key> --formats openai,anthropic\n`);
       }
     });

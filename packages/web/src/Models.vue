@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from "vue";
 import { useI18n } from "vue-i18n";
 import { req, type ModelView, type ProviderPublic } from "@/api";
+import { FMT_ACCENT, providerColor } from "@/lib/format";
 import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,6 +11,8 @@ import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 import {
+  Ban,
+  Check,
   ChevronUp,
   ChevronDown,
   X,
@@ -43,6 +46,7 @@ const query = ref("");
 const showAvailable = ref(true);
 const expandedModels = ref<Set<string>>(new Set());
 const refreshingAll = ref(false);
+const enablingAll = ref(false);
 const sourcesOpen = ref(false);
 const addOpen = ref(false);
 
@@ -125,12 +129,29 @@ const rows = computed<Row[]>(() => {
   });
 });
 
+/** Offered formats the model isn't yet enabled on — the ones still actionable
+ *  from the Available list. A model stays in Available as long as this is
+ *  non-empty, so enabling one format (e.g. openai) doesn't hide the others
+ *  (e.g. anthropic) for a model that supports several. */
+function enableableFormats(r: Row): Fmt[] {
+  return availFormats(r).filter((f) => !r[f].enabled);
+}
+/** Status of a routing slot for a discovered model, for the enable menu. */
+function fmtStatus(r: Row, f: Fmt): "enabled" | "enableable" | "unsupported" {
+  if (r[f].enabled) return "enabled";
+  return availFormats(r).includes(f) ? "enableable" : "unsupported";
+}
+/** Provider ids offering `r` on `fmt` — the chain to seed when enabling. */
+function offeringIds(r: Row, fmt: Fmt): string[] {
+  return r.offering.filter((o) => supportsFmt(o, fmt)).map((o) => o.id);
+}
+
 const filtered = computed(() => {
   const q = query.value.trim().toLowerCase();
   return rows.value.filter((r) => !q || r.name.toLowerCase().includes(q));
 });
 const enabledRows = computed(() => filtered.value.filter((r) => r.openai.enabled || r.anthropic.enabled || r.responses.enabled));
-const availableRows = computed(() => filtered.value.filter((r) => !r.openai.enabled && !r.anthropic.enabled && !r.responses.enabled));
+const availableRows = computed(() => filtered.value.filter((r) => enableableFormats(r).length > 0));
 
 interface Section {
   key: string;
@@ -193,8 +214,14 @@ function toggleExpand(key: string) {
 function joinChain(chain: ChainSrc[]): string {
   return chain.length ? chain.map((p) => p.name).join(" → ") : t("models.noSourcesShort");
 }
-function srcFormats(id: string): string[] {
-  return providerById.value.get(id)?.formats ?? [];
+/** Capability tags for a chain source: its wire formats plus /responses when
+ *  supported — all rendered as colored family badges. */
+function srcTags(id: string): Fmt[] {
+  const p = providerById.value.get(id);
+  if (!p) return [];
+  const tags = p.formats.filter((f): f is Fmt => f === "openai" || f === "anthropic");
+  if (p.supportsResponses) tags.push("responses");
+  return tags;
 }
 function isStale(r: Row, fmt: Fmt): boolean {
   const chain = r[fmt].chain;
@@ -234,6 +261,31 @@ async function enable(r: Row, fmt: Fmt) {
   } finally {
     enabling.value[key] = false;
   }
+}
+
+/** Enable every model still in the Available list, on every format it can run
+ *  (all of its enableable slots). Each (model, format) is an independent POST,
+ *  fired in parallel; we don't call enable() per pair because its optimistic
+ *  push would race when two slots target the same model. Reconcile via load(). */
+async function enableAll() {
+  if (enablingAll.value) return;
+  enablingAll.value = true;
+  const tasks: { name: string; fmt: Fmt; providers: string[] }[] = [];
+  for (const r of availableRows.value) {
+    for (const f of enableableFormats(r)) tasks.push({ name: r.name, fmt: f, providers: offeringIds(r, f) });
+  }
+  for (const tk of tasks) enabling.value[`${tk.name}:${tk.fmt}`] = true;
+  const results = await Promise.allSettled(
+    tasks.map((tk) => req("POST", "/admin/models", { name: tk.name, format: tk.fmt, providers: tk.providers })),
+  );
+  for (const tk of tasks) enabling.value[`${tk.name}:${tk.fmt}`] = false;
+  await load();
+  enablingAll.value = false;
+  if (!tasks.length) return;
+  const failed = results.filter((r) => r.status === "rejected").length;
+  if (!failed) toast(t("models.enableAllDone"), "success");
+  else if (failed === tasks.length) toast(t("models.enableAllFailed"), "error");
+  else toast(t("models.enableAllPartial", { failed }), "error");
 }
 
 async function disable(r: Row, fmt: Fmt) {
@@ -390,7 +442,7 @@ onMounted(load);
       <Card>
         <CardHeader>
           <CardTitle class="flex items-center gap-2 text-base">
-            <Cpu class="h-4 w-4 text-muted-foreground" />
+            <Cpu class="h-4 w-4 text-primary" />
             {{ t("models.title") }}
           </CardTitle>
           <CardDescription>{{ t("models.desc") }}</CardDescription>
@@ -419,13 +471,21 @@ onMounted(load);
 
           <template v-else>
             <!-- One editable section per routing slot (endpoint). -->
-            <section v-for="s in sections" :key="s.key" class="space-y-1">
-              <div class="flex items-center gap-2 pt-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                {{ t(`models.${s.key}Section`) }}
-                <span class="text-muted-foreground/70">· {{ s.rows.length }}</span>
+            <section
+              v-for="s in sections"
+              :key="s.key"
+              class="relative overflow-hidden rounded-lg border border-border/60 bg-card"
+            >
+              <!-- left accent stripe (full height) + colored dot mark this as a group -->
+              <div class="pointer-events-none absolute inset-y-0 left-0 w-1" :class="FMT_ACCENT[s.fmt].solid" aria-hidden="true" />
+              <div class="flex items-center gap-2.5 border-b border-border/60 bg-muted/30 px-3 py-2">
+                <span class="h-2 w-2 shrink-0 rounded-full" :class="FMT_ACCENT[s.fmt].solid" />
+                <span class="text-sm font-semibold">{{ t(FMT_META[s.fmt].key) }}</span>
+                <span class="font-mono text-[11px] text-muted-foreground">{{ FMT_META[s.fmt].endpoint }}</span>
+                <span class="ml-auto inline-flex items-center rounded-md px-1.5 py-0.5 text-xs font-medium tabular-nums" :class="FMT_ACCENT[s.fmt].chip">{{ s.rows.length }}</span>
               </div>
               <div class="divide-y divide-border">
-                <div v-for="r in s.rows" :key="r.name" class="py-2.5">
+                <div v-for="r in s.rows" :key="r.name" class="px-3 py-2.5">
                   <!-- summary row -->
                   <div class="flex items-center gap-3">
                     <Switch :model-value="s.enabled(r)" @update:model-value="() => toggle(r, s.fmt)" />
@@ -485,9 +545,11 @@ onMounted(load);
                     </div>
                     <div v-for="(p, i) in s.chain(r)" :key="p.id" class="flex items-center gap-2 rounded px-1 py-1">
                       <span class="w-4 text-right text-xs text-muted-foreground">{{ i + 1 }}.</span>
-                      <span class="text-sm">{{ p.name }}</span>
-                      <Badge v-for="f in srcFormats(p.id)" :key="f" variant="secondary">{{ f }}</Badge>
-                      <Badge v-if="providerById.get(p.id)?.supportsResponses" variant="muted">{{ t("sources.responses") }}</Badge>
+                      <span class="flex items-center gap-1.5 text-sm">
+                        <span class="h-1.5 w-1.5 rounded-full" :class="providerColor(p.id).solid" />
+                        {{ p.name }}
+                      </span>
+                      <Badge v-for="f in srcTags(p.id)" :key="f" variant="secondary" :class="FMT_ACCENT[f].badge">{{ f }}</Badge>
                       <Badge v-if="i === 0" variant="default">{{ t("models.primary") }}</Badge>
                       <Badge v-else variant="muted">{{ t("models.fallback") }}</Badge>
                       <div class="ml-auto flex items-center gap-0.5">
@@ -533,25 +595,35 @@ onMounted(load);
             </section>
 
             <!-- Available -->
-            <section>
-              <button
-                type="button"
-                class="mb-1 flex w-full items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground hover:text-foreground"
-                @click="showAvailable = !showAvailable"
-              >
-                <ChevronDown class="h-4 w-4 transition-transform" :class="{ '-rotate-90': !showAvailable }" />
-                {{ t("models.availableSection") }}
-                <span class="text-muted-foreground/70">· {{ availableRows.length }}</span>
-              </button>
+            <section class="relative overflow-hidden rounded-lg border border-border/60 bg-card">
+              <!-- neutral stripe: this bucket isn't a routing slot, so no accent hue -->
+              <div class="pointer-events-none absolute inset-y-0 left-0 w-1 bg-muted-foreground/40" aria-hidden="true" />
+              <div class="flex items-center gap-2.5 border-b border-border/60 bg-muted/30 px-3 py-2">
+                <button
+                  type="button"
+                  class="flex min-w-0 flex-1 items-center gap-2.5 rounded px-1 py-0.5 text-left hover:bg-muted/50"
+                  @click="showAvailable = !showAvailable"
+                >
+                  <ChevronDown class="h-4 w-4 shrink-0 text-muted-foreground transition-transform" :class="{ '-rotate-90': !showAvailable }" />
+                  <span class="h-2 w-2 shrink-0 rounded-full bg-muted-foreground/40" />
+                  <span class="text-sm font-semibold">{{ t("models.availableSection") }}</span>
+                  <span class="ml-auto inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 text-xs font-medium tabular-nums text-muted-foreground">{{ availableRows.length }}</span>
+                </button>
+                <Button v-if="availableRows.length" size="sm" variant="secondary" class="h-7 gap-1.5 px-2.5" :disabled="enablingAll" @click="enableAll">
+                  <Loader2 v-if="enablingAll" class="h-3.5 w-3.5 animate-spin" />
+                  <Zap v-else class="h-3.5 w-3.5" />
+                  {{ t("models.enableAll") }}
+                </Button>
+              </div>
               <div v-if="showAvailable" class="divide-y divide-border">
                 <p v-if="!availableRows.length" class="py-3 text-center text-xs text-muted-foreground">
                   {{ t("models.availableDesc") }}
                 </p>
-                <div v-for="r in availableRows" :key="r.name" class="flex items-center justify-between gap-2 py-2">
+                <div v-for="r in availableRows" :key="r.name" class="flex items-center justify-between gap-2 px-3 py-2">
                   <div class="flex min-w-0 items-center gap-2">
                     <span class="truncate font-mono text-sm">{{ r.name }}</span>
                     <div class="hidden gap-1 sm:flex">
-                      <Badge v-for="o in r.offering" :key="o.id" variant="secondary">{{ o.name }}</Badge>
+                      <Badge v-for="o in r.offering" :key="o.id" variant="secondary" :class="providerColor(o.id).badge">{{ o.name }}</Badge>
                     </div>
                   </div>
                   <div class="flex items-center gap-1">
@@ -567,7 +639,10 @@ onMounted(load);
                       <Plus v-else class="h-3.5 w-3.5" />
                       {{ t("models.enable") }}
                     </Button>
-                    <!-- several formats: pick which to enable -->
+                    <!-- several formats: pick which to enable. Each routing
+                         slot shows its status — enableable (click to enable),
+                         already enabled (check, disabled), or unsupported by
+                         any source offering this model (muted, disabled). -->
                     <DropdownMenu v-else>
                       <DropdownMenuTrigger>
                         <Button size="sm" variant="secondary">
@@ -578,15 +653,22 @@ onMounted(load);
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
                         <DropdownMenuItem
-                          v-for="f in availFormats(r)"
+                          v-for="f in FORMATS"
                           :key="f"
-                          :disabled="enabling[`${r.name}:${f}`]"
+                          :disabled="fmtStatus(r, f) !== 'enableable' || enabling[`${r.name}:${f}`]"
                           @select="enable(r, f)"
                         >
                           <Loader2 v-if="enabling[`${r.name}:${f}`]" class="animate-spin" />
+                          <Check v-else-if="fmtStatus(r, f) === 'enabled'" />
+                          <Ban v-else-if="fmtStatus(r, f) === 'unsupported'" />
                           <Plus v-else />
                           <span>{{ t(FMT_META[f].key) }}</span>
-                          <span class="ml-auto pl-3 font-mono text-xs text-muted-foreground">{{ FMT_META[f].endpoint }}</span>
+                          <span
+                            class="ml-auto pl-3 font-mono text-xs"
+                            :class="fmtStatus(r, f) === 'unsupported' ? 'text-muted-foreground/50' : 'text-muted-foreground'"
+                          >
+                            {{ fmtStatus(r, f) === "enabled" ? t("models.enabled") : fmtStatus(r, f) === "unsupported" ? t("models.unsupported") : FMT_META[f].endpoint }}
+                          </span>
                         </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>

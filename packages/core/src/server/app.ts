@@ -27,7 +27,7 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono {
 
   // Both sub-apps require auth, applied inside each sub-app (before routes).
   const v1 = proxyApi(store, apiKeyAuth);
-  const admin = adminApi(store, accountAuth);
+  const admin = adminApi(store, accountAuth, v1);
 
   app.route("/v1", v1);
   app.route("/admin", admin);

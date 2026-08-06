@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
+import { DEFAULT_DATA_DIR } from "../shared/config";
 
 export interface CliProfile {
   url: string;
@@ -9,20 +10,35 @@ export interface CliProfile {
   apiKey: string;
 }
 
-export const CONFIG_PATH = join(homedir(), ".config", "myapikey", "config.json");
+/**
+ * Where the CLI client profile lives. Pinned to the default app home
+ * (~/.myapikey) regardless of the server's --data-dir override — client commands
+ * (whoami / provider / model / call) need a stable, discoverable path and never
+ * see --data-dir. The legacy ~/.config/myapikey/config.json is still read as a
+ * fallback so existing setups keep working after upgrade.
+ */
+export const CLIENT_PROFILE_PATH = join(DEFAULT_DATA_DIR, "client.json");
+const LEGACY_PROFILE_PATH = join(homedir(), ".config", "myapikey", "config.json");
+
+function resolveProfilePath(): string {
+  if (existsSync(CLIENT_PROFILE_PATH)) return CLIENT_PROFILE_PATH;
+  if (existsSync(LEGACY_PROFILE_PATH)) return LEGACY_PROFILE_PATH;
+  return CLIENT_PROFILE_PATH;
+}
 
 export function loadProfile(): CliProfile | null {
-  if (!existsSync(CONFIG_PATH)) return null;
+  const path = resolveProfilePath();
+  if (!existsSync(path)) return null;
   try {
-    return JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as CliProfile;
+    return JSON.parse(readFileSync(path, "utf8")) as CliProfile;
   } catch {
     return null;
   }
 }
 
 export function saveProfile(p: CliProfile): void {
-  mkdirSync(dirname(CONFIG_PATH), { recursive: true });
-  writeFileSync(CONFIG_PATH, JSON.stringify(p, null, 2));
+  mkdirSync(dirname(CLIENT_PROFILE_PATH), { recursive: true });
+  writeFileSync(CLIENT_PROFILE_PATH, JSON.stringify(p, null, 2));
 }
 
 export function resolveUrl(flag?: string): string {

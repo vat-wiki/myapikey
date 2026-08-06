@@ -221,6 +221,25 @@ async function doRemove() {
 function discCount(p: ProviderPublic): number {
   return p.discoveredModels?.length ?? 0;
 }
+/** Discovery state for the source badge. Distinguishing "empty" from "never"
+ *  matters: a source with no /models endpoint (e.g. Ark's coding-plan surface)
+ *  is always empty after a scan, so labeling that "Not scanned" is misleading. */
+function discState(p: ProviderPublic): "never" | "empty" | "found" {
+  if (discCount(p) > 0) return "found";
+  return p.discoveredAt ? "empty" : "never";
+}
+function discLabel(p: ProviderPublic): string {
+  const s = discState(p);
+  if (s === "found") return t("sources.discoveredCount", { n: discCount(p) });
+  if (s === "empty") return t("sources.noModelsFound");
+  return t("sources.notScanned");
+}
+function discTitle(p: ProviderPublic): string {
+  const s = discState(p);
+  if (s === "empty") return t("sources.noModelsHint");
+  if (s === "never") return t("sources.notScannedHint");
+  return "";
+}
 </script>
 
 <template>
@@ -342,9 +361,7 @@ function discCount(p: ProviderPublic): number {
               <div class="flex items-center gap-2">
                 <span class="truncate font-medium">{{ p.name }}</span>
                 <Badge v-for="f in p.formats" :key="f" variant="secondary">{{ f }}</Badge>
-                <Badge variant="muted">
-                  {{ discCount(p) ? t("sources.discoveredCount", { n: discCount(p) }) : t("sources.notScanned") }}
-                </Badge>
+                <Badge variant="muted" :title="discTitle(p)">{{ discLabel(p) }}</Badge>
               </div>
               <div v-if="p.formats.includes('openai')" class="mt-0.5 truncate font-mono text-xs text-muted-foreground"><span class="opacity-60">openai ·</span> {{ p.baseUrlOpenai }}</div>
               <div v-if="p.formats.includes('anthropic')" class="mt-0.5 truncate font-mono text-xs text-muted-foreground"><span class="opacity-60">anthropic ·</span> {{ p.baseUrlAnthropic }}</div>
@@ -424,8 +441,11 @@ function discCount(p: ProviderPublic): number {
               <p class="text-xs text-muted-foreground">{{ t("sources.urlHintAnthropic") }}</p>
             </div>
             <div class="space-y-1.5">
-              <label class="text-xs font-medium text-muted-foreground">{{ t("sources.keyLabel") }}</label>
-              <Input v-model="editKey" type="password" :placeholder="p.apiKey + ' · ' + t('sources.keyPh')" autocomplete="new-password" aria-label="api key" />
+              <div class="flex items-center justify-between">
+                <label class="text-xs font-medium text-muted-foreground">{{ t("sources.keyLabel") }}</label>
+                <span v-if="p.apiKey" class="text-xs text-muted-foreground">{{ t("sources.currentKeyLabel") }}: {{ p.apiKey }}</span>
+              </div>
+              <Input v-model="editKey" type="password" :placeholder="t('sources.keyPhEdit')" autocomplete="new-password" aria-label="api key" />
             </div>
             <div class="flex justify-end gap-2">
               <Button variant="ghost" size="sm" @click="cancelEdit">{{ t("sources.cancel") }}</Button>

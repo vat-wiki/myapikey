@@ -2,7 +2,7 @@ import { Hono, type MiddlewareHandler } from "hono";
 import { newProviderId, newApiKey, trimBase } from "../shared/config";
 import type { Format, FormatEntry, Provider, RouteKey } from "../shared/types";
 import type { Store } from "./store";
-import { probeModel } from "./proxy";
+import { shortError, anthropicAuthHeaders } from "./proxy";
 import { networkInterfaces } from "node:os";
 
 /** Best-effort LAN IPv4 of this host — the address an agent on another machine
@@ -48,6 +48,7 @@ function toPublic(p: Provider) {
     supportsResponses: p.supportsResponses ?? false,
     apiKey: mask(p.apiKey),
     discoveredModels: p.discoveredModels ?? [],
+    discoveredAt: p.discoveredAt ?? null,
     createdAt: p.createdAt,
   };
 }
@@ -75,7 +76,7 @@ export async function discoverModels(p: Provider): Promise<string[]> {
   if (p.formats.includes("openai"))
     attempts.push({ base: p.baseUrlOpenai, suffix: "models", headers: { authorization: `Bearer ${p.apiKey}` } });
   if (p.formats.includes("anthropic"))
-    attempts.push({ base: p.baseUrlAnthropic, suffix: "v1/models", headers: { "x-api-key": p.apiKey, "anthropic-version": "2023-06-01" } });
+    attempts.push({ base: p.baseUrlAnthropic, suffix: "v1/models", headers: anthropicAuthHeaders(p.apiKey, "2023-06-01") });
   if (!attempts.length)
     attempts.push({ base: p.baseUrlOpenai, suffix: "models", headers: { authorization: `Bearer ${p.apiKey}` } });
 
@@ -112,7 +113,7 @@ async function refreshDiscovery(store: Store, id: string): Promise<string[]> {
   return failed ? (store.get().providers.find((x) => x.id === id)?.discoveredModels ?? []) : models;
 }
 
-export function adminApi(store: Store, auth: MiddlewareHandler): Hono {
+export function adminApi(store: Store, auth: MiddlewareHandler, v1: Hono): Hono {
   const app = new Hono();
   app.use("*", auth);
 
@@ -385,19 +386,46 @@ export function adminApi(store: Store, auth: MiddlewareHandler): Hono {
     return c.json({ ok: true });
   });
 
-  // Probe a model end-to-end: a minimal real call through its routing chain.
-  // Reports whether it actually works right now (ground truth — works for
-  // sources like Ark that don't expose /models, unlike the discovery heuristic).
+  // Probe a model end-to-end by driving the REAL /v1 path: an in-process
+  // loopback through the proxy sub-app (api-key auth → dispatch → upstream →
+  // failover) with the gateway's own api key. It runs the same code a real agent
+  // call runs — no mirrored dispatch logic — so the result is true ground truth,
+  // it shows up in recent calls like any real call, and it catches a
+  // broken/rotated gateway key (which a direct-upstream probe could not).
+  // dispatch reports which provider answered via x-myapikey-provider.
   app.post("/models/:name/test", async (c) => {
     const name = c.req.param("name");
-    if (!store.get().models[name]) return c.json({ error: { message: "model not found" } }, 404);
-    try {
-      const format = c.req.query("format") as RouteKey | undefined;
-      const result = await probeModel(store, name, format);
-      return c.json({ result });
-    } catch (e) {
-      return c.json({ error: { message: `probe failed: ${(e as Error).message}` } }, 502);
+    const cfg = store.get();
+    if (!cfg.models[name]) return c.json({ error: { message: "model not found" } }, 404);
+    let format = c.req.query("format") as RouteKey | undefined;
+    if (!format) {
+      // No slot requested: pick the first one the model is enabled on.
+      const entry = cfg.models[name];
+      for (const k of ["openai", "anthropic", "responses"] as RouteKey[]) if (entry[k]?.enabled) { format = k; break; }
     }
+    if (!format) {
+      return c.json({ result: { ok: false, status: 0, format: "openai", error: "model not enabled on any routing slot" } });
+    }
+    const path = format === "anthropic" ? "/messages" : format === "responses" ? "/responses" : "/chat/completions";
+    // /responses is the OpenAI Responses API — it takes `input`, not `messages`.
+    const body =
+      format === "responses"
+        ? { model: name, input: "ping", stream: false }
+        : { model: name, messages: [{ role: "user", content: "ping" }], max_tokens: 1, stream: false };
+    let res: Response;
+    try {
+      res = await v1.request(path, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${cfg.apiKey}`, "x-myapikey-probe": "1" },
+        body: JSON.stringify(body),
+      });
+    } catch (e) {
+      return c.json({ result: { ok: false, status: 0, format, error: `gateway loopback failed: ${(e as Error).message}` } });
+    }
+    const provider = res.headers.get("x-myapikey-provider") ?? undefined;
+    if (res.ok) return c.json({ result: { ok: true, status: res.status, provider, format } });
+    const txt = await res.text().catch(() => "");
+    return c.json({ result: { ok: false, status: res.status, provider, format, error: shortError(txt) || `HTTP ${res.status}` } });
   });
 
   app.delete("/models/:name", async (c) => {
@@ -409,7 +437,10 @@ export function adminApi(store: Store, auth: MiddlewareHandler): Hono {
   });
 
   // --- logs ---
-  app.get("/logs", (c) => c.json({ logs: store.logs.slice().reverse() }));
+  app.get("/logs", (c) => c.json({ logs: store.getLogs() }));
+
+  // --- storage (read-only: where data.json + logs.jsonl live) ---
+  app.get("/storage", (c) => c.json(store.getPaths()));
 
   return app;
 }

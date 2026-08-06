@@ -40,13 +40,20 @@ function notFound(c: Context, model: string) {
   );
 }
 
+/** Auth headers for the Anthropic wire format. Sends BOTH x-api-key and
+ *  Authorization: Bearer (same key). Native Anthropic (api.anthropic.com)
+ *  accepts either; anthropic- COMPATIBLE surfaces (sensenova, Volcengine Ark,
+ *  …) typically honor ONLY Authorization: Bearer and 401 on bare x-api-key.
+ *  Each server uses the header it recognizes and ignores the other, so one
+ *  request satisfies either flavor. (Anthropic's own C# SDK sends both.) */
+export function anthropicAuthHeaders(apiKey: string, version: string): Record<string, string> {
+  return { "x-api-key": apiKey, authorization: `Bearer ${apiKey}`, "anthropic-version": version };
+}
+
 function upstreamHeaders(provider: Provider, format: Format, clientVersion?: string): Record<string, string> {
   const h: Record<string, string> = { "content-type": "application/json" };
   if (format === "openai") h.authorization = `Bearer ${provider.apiKey}`;
-  else {
-    h["x-api-key"] = provider.apiKey;
-    h["anthropic-version"] = clientVersion || "2023-06-01";
-  }
+  else Object.assign(h, anthropicAuthHeaders(provider.apiKey, clientVersion || "2023-06-01"));
   return h;
 }
 
@@ -61,103 +68,28 @@ function upstreamTarget(p: Provider, key: RouteKey): { url: string; wire: Format
   return { url: `${trimBase(p.baseUrlOpenai)}/${path}`, wire: "openai" };
 }
 
-function passThrough(upstream: Response): Response {
+function passThrough(upstream: Response, servedBy?: string): Response {
   const headers = new Headers();
   for (const h of COPY_DOWN) {
     const v = upstream.headers.get(h);
     if (v) headers.set(h, v);
   }
+  // Internal hook for the model-page "test": report which provider answered.
+  // Only set on in-process probe calls (see isProbe in dispatch), so it never
+  // appears on responses to real agent clients.
+  if (servedBy) headers.set("x-myapikey-provider", servedBy);
   // Stream the upstream body straight through (handles SSE + normal JSON).
   return new Response(upstream.body, { status: upstream.status, headers });
 }
 
-export interface ProbeResult {
-  ok: boolean;
-  status: number;
-  provider?: string;
-  format: RouteKey;
-  error?: string;
-}
-
-/** First routing slot for which this model has at least one candidate provider. */
-function probeFormat(store: Store, model: string): RouteKey | null {
-  for (const key of ["openai", "anthropic", "responses"] as RouteKey[]) {
-    if (candidates(store, model, key).length) return key;
-  }
-  return null;
-}
-
 /** Pull a short human-readable message out of an upstream error body. */
-function shortError(text: string): string {
+export function shortError(text: string): string {
   try {
     const j = JSON.parse(text) as { error?: { message?: string }; message?: string };
     return (j.error?.message || j.message || text).slice(0, 200);
   } catch {
     return text.slice(0, 200);
   }
-}
-
-/**
- * Send a minimal non-streaming request through the model's routing chain and
- * report the outcome. Mirrors dispatch() — failover on 429/5xx/network, return
- * as-is on other 4xx (e.g. 404) — so the result reflects what a real call does.
- */
-export async function probeModel(store: Store, model: string, keyHint?: RouteKey): Promise<ProbeResult> {
-  const key = keyHint ?? probeFormat(store, model);
-  if (!key) {
-    return { ok: false, status: 0, format: keyHint ?? "openai", error: "model not enabled on the requested endpoint, or no provider speaks a usable format" };
-  }
-  const list = candidates(store, model, key);
-  if (!list.length) {
-    return { ok: false, status: 0, format: key, error: "model not enabled or no provider available" };
-  }
-  const wire: Format = key === "anthropic" ? "anthropic" : "openai";
-  const body =
-    wire === "openai"
-      ? { model, messages: [{ role: "user", content: "ping" }], max_tokens: 1, stream: false }
-      : { model, max_tokens: 1, messages: [{ role: "user", content: "ping" }] };
-
-  let lastStatus = 0;
-  let lastName: string | undefined;
-  for (const provider of list) {
-    let upstream: Response;
-    try {
-      upstream = await fetch(upstreamTarget(provider, key).url, {
-        method: "POST",
-        headers: upstreamHeaders(provider, wire),
-        body: JSON.stringify(body),
-      });
-    } catch {
-      lastStatus = 0;
-      lastName = provider.name;
-      continue;
-    }
-    lastName = provider.name;
-    lastStatus = upstream.status;
-    if (upstream.ok) {
-      await upstream.text().catch(() => undefined);
-      return { ok: true, status: upstream.status, provider: provider.name, format: key };
-    }
-    if (RETRYABLE.has(upstream.status)) {
-      await upstream.text().catch(() => undefined);
-      continue;
-    }
-    const errText = await upstream.text().catch(() => "");
-    return {
-      ok: false,
-      status: upstream.status,
-      provider: provider.name,
-      format: key,
-      error: shortError(errText) || `HTTP ${upstream.status}`,
-    };
-  }
-  return {
-    ok: false,
-    status: lastStatus,
-    provider: lastName,
-    format: key,
-    error: lastStatus ? `upstream returned ${lastStatus}` : "network error (all providers unreachable)",
-  };
 }
 
 export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
@@ -174,6 +106,12 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
     const model: string = body.model;
     const wire: Format = key === "anthropic" ? "anthropic" : "openai";
     const stream = body.stream === true;
+    // The model-page "test" button drives dispatch via an in-process loopback
+    // (adminApi calls v1.request). The probe is a real call in every respect —
+    // including being logged — so we only tag it to report WHICH provider
+    // answered back to the test handler (x-myapikey-provider), without leaking
+    // that header to real agent clients.
+    const isProbe = c.req.header("x-myapikey-probe") === "1";
     // candidates() already restricts the responses chain to supportsResponses sources.
     const list = candidates(store, model, key);
     if (!list.length) {
@@ -213,7 +151,7 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
 
       if (upstream.ok) {
         store.pushLog({ ts: Date.now(), model, provider: provider.name, format: wire, status: upstream.status, ms: Date.now() - start, stream });
-        return passThrough(upstream);
+        return passThrough(upstream, isProbe ? provider.name : undefined);
       }
       if (RETRYABLE.has(upstream.status)) {
         lastStatus = upstream.status;
@@ -227,7 +165,7 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
       // error text off a CLONE so the original body still streams back.
       const errText = await upstream.clone().text().catch(() => "");
       store.pushLog({ ts: Date.now(), model, provider: provider.name, format: wire, status: upstream.status, ms: Date.now() - start, stream, error: shortError(errText) || `HTTP ${upstream.status}` });
-      return passThrough(upstream);
+      return passThrough(upstream, isProbe ? provider.name : undefined);
     }
 
     store.pushLog({ ts: Date.now(), model, provider: list[list.length - 1].name, format: wire, status: lastStatus, ms: Date.now() - start, stream, error: lastErr || `all providers failed (last status ${lastStatus})` });
