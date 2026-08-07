@@ -1,7 +1,8 @@
 <script setup lang="ts">
 /** Brand mark for MyAPIKey — a key (the "API key") over a wavy line (the
- *  gateway's flow / bridge between sides). Rendered as one crisp SVG
- *  (gradient tile + white glyph) so it looks the same on light and dark. */
+ *  gateway's flow / bridge between sides). Warm sunset gradient tile + crisp
+ *  white glyph: sunny/energetic, and the warm palette sets it apart from the
+ *  usual cool blue/purple dev-tool marks. Reads the same on light and dark. */
 withDefaults(defineProps<{ size?: number | string }>(), { size: 28 });
 </script>
 
@@ -17,8 +18,10 @@ withDefaults(defineProps<{ size?: number | string }>(), { size: 28 });
   >
     <defs>
       <linearGradient id="myapikey-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
-        <stop stop-color="#4d94ff" />
-        <stop offset="1" stop-color="#1f6bff" />
+        <stop offset="0" stop-color="#f59e0b" />
+        <stop offset="0.33" stop-color="#f97316" />
+        <stop offset="0.67" stop-color="#ef4444" />
+        <stop offset="1" stop-color="#ec4899" />
       </linearGradient>
     </defs>
     <rect width="40" height="40" rx="10" fill="url(#myapikey-logo)" />
