@@ -2,7 +2,45 @@
   "name": "myapikey",
   "version": "0.1.0",
   "type": "module",
-  "description": "MyAPIKey — personal LLM API gateway: one address, one key, all your models.",
+  "description": "Personal LLM API gateway & proxy — one address + one API key for all your models. Forwards OpenAI & Anthropic calls to your backends with failover and a circuit breaker. Pure passthrough, no format translation. Self-hosted (CLI + web UI).",
+  "keywords": [
+    "llm",
+    "llm-gateway",
+    "ai-gateway",
+    "api-gateway",
+    "gateway",
+    "proxy",
+    "llm-proxy",
+    "ai-proxy",
+    "llm-router",
+    "model-router",
+    "openai",
+    "anthropic",
+    "claude",
+    "claude-code",
+    "openai-compatible",
+    "chat-completions",
+    "passthrough",
+    "failover",
+    "circuit-breaker",
+    "multi-provider",
+    "self-hosted",
+    "homelab",
+    "cli",
+    "hono",
+    "typescript",
+    "vue"
+  ],
+  "homepage": "https://github.com/vat-wiki/myapikey#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vat-wiki/myapikey.git"
+  },
+  "bugs": {
+    "url": "https://github.com/vat-wiki/myapikey/issues"
+  },
+  "license": "MIT",
+  "author": "vat-wiki",
   "bin": {
     "myapikey": "packages/core/src/cli/index.ts"
   },
@@ -19,6 +57,9 @@
     "start": "tsx packages/core/src/cli/index.ts serve",
     "typecheck": "tsc -p packages/core/tsconfig.json --noEmit && vue-tsc --noEmit -p packages/web/tsconfig.json",
     "build:web": "npm run build -w @myapikey/web"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.5",
