@@ -242,6 +242,7 @@ export default {
     byProvider: "按来源",
     byFormat: "按格式",
     byDay: "每日调用",
+    peak: "峰值",
     callsAxis: "次调用",
     col: { name: "名称", calls: "调用", success: "成功", error: "失败", errorRate: "错误率", avgLatency: "平均延迟" },
     empty: "所选范围内暂无调用记录。",

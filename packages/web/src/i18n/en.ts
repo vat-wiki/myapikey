@@ -242,6 +242,7 @@ export default {
     byProvider: "By source",
     byFormat: "By format",
     byDay: "Calls per day",
+    peak: "Peak",
     callsAxis: "calls",
     col: { name: "Name", calls: "Calls", success: "Success", error: "Failed", errorRate: "Error rate", avgLatency: "Avg latency" },
     empty: "No calls in the selected range.",

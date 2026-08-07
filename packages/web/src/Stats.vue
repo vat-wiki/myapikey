@@ -141,24 +141,43 @@ const hasData = computed(() => !!stats.value && stats.value.totals.calls > 0);
 
         <!-- per-day time series -->
         <div>
-          <div class="mb-2 text-sm font-medium">{{ t("stats.byDay") }}</div>
+          <div class="mb-2 flex items-center justify-between gap-2">
+            <div class="text-sm font-medium">{{ t("stats.byDay") }}</div>
+            <div v-if="maxDayCalls" class="text-[11px] text-muted-foreground">
+              {{ t("stats.peak") }} <span class="font-mono tabular-nums text-foreground">{{ maxDayCalls }}</span>
+            </div>
+          </div>
           <div class="rounded-lg border p-3">
-            <div class="flex h-40 items-end gap-px">
-              <div
-                v-for="d in stats.byDay"
-                :key="d.day"
-                class="group relative flex min-w-0 flex-1 flex-col justify-end"
-                :title="`${fmtAxisDate(d.day)} · ${d.calls} ${t('stats.callsAxis')} (${d.success} / ${d.error})`"
-              >
+            <!-- pt-9 leaves a gutter so each bar's hover tooltip stays inside the box -->
+            <div class="relative pt-9">
+              <div class="flex h-40 gap-px">
                 <div
-                  :style="{ height: dayHeights(d).success + 'px' }"
-                  class="w-full rounded-t-sm bg-emerald-500/70 transition-colors group-hover:bg-emerald-500"
-                ></div>
-                <div
-                  :style="{ height: dayHeights(d).error + 'px' }"
-                  class="w-full transition-colors group-hover:bg-destructive"
-                  :class="dayHeights(d).error ? 'bg-destructive/70' : ''"
-                ></div>
+                  v-for="d in stats.byDay"
+                  :key="d.day"
+                  class="group relative flex min-w-0 flex-1 cursor-default flex-col justify-end"
+                >
+                  <div
+                    :style="{ height: dayHeights(d).success + 'px' }"
+                    class="w-full rounded-t-sm bg-emerald-500/70 transition-colors group-hover:bg-emerald-500"
+                  ></div>
+                  <div
+                    :style="{ height: dayHeights(d).error + 'px' }"
+                    class="w-full transition-colors group-hover:bg-destructive"
+                    :class="dayHeights(d).error ? 'bg-destructive/70' : ''"
+                  ></div>
+                  <!-- hover tooltip: shows immediately above this day's column -->
+                  <div
+                    class="pointer-events-none absolute bottom-full left-1/2 z-20 mb-1 hidden -translate-x-1/2 whitespace-nowrap rounded-md border bg-background px-2 py-1 text-center text-xs shadow-md group-hover:block"
+                  >
+                    <div class="font-medium">{{ fmtAxisDate(d.day) }}</div>
+                    <div class="font-mono tabular-nums">{{ d.calls }} {{ t("stats.callsAxis") }}</div>
+                    <div class="text-[10px]">
+                      <span class="text-emerald-600 dark:text-emerald-400">{{ d.success }}</span>
+                      <span class="text-muted-foreground"> / </span>
+                      <span class="text-destructive">{{ d.error }}</span>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
             <div class="mt-1.5 flex justify-between text-[10px] text-muted-foreground">
