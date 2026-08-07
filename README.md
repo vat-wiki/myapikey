@@ -1,5 +1,10 @@
 # MyAPIKey
 
+[![npm version](https://img.shields.io/npm/v/myapikey?logo=npm)](https://www.npmjs.com/package/myapikey)
+[![license](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
+[![node](https://img.shields.io/badge/node.js-%3E%3D18-339933?logo=node.js&logoColor=white)](#quick-start)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)](#development)
+
 English | [简体中文](README.zh-CN.md)
 
 **One address, one key, all your models — without translation.**
