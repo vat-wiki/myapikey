@@ -9,13 +9,11 @@ import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import {
   ChevronRight,
   ChevronDown,
   MoveUp,
   MoveDown,
-  X,
   Trash2,
   Cpu,
   Plus,
@@ -24,11 +22,13 @@ import {
   RefreshCw,
   ServerCog,
   MoreHorizontal,
+  Pencil,
   Zap,
 } from "lucide-vue-next";
 import SourcesDialog from "@/SourcesDialog.vue";
 import ConfirmDialog from "@/ConfirmDialog.vue";
 import AddModelsDialog from "@/AddModelsDialog.vue";
+import AddSourceDialog from "@/AddSourceDialog.vue";
 
 const { t } = useI18n();
 
@@ -52,19 +52,22 @@ const addOpen = ref(false);
 
 const removing = ref<Record<string, boolean>>({});
 const enabling = ref<Record<string, boolean>>({});
-const addingSrc = ref<Record<string, boolean>>({});
 const removingSrc = ref<Record<string, boolean>>({});
 const testing = ref<Record<string, boolean>>({});
 interface ProbeResult { ok: boolean; status: number; provider?: string; format: string; error?: string }
 const probe = ref<Record<string, ProbeResult>>({});
 
-// Inline "add source to chain" row, per (model, route): the chosen source id and
-// an optional upstream-model name typed alongside it.
-const newSrcId = ref<Record<string, string>>({});
-const newSrcModel = ref<Record<string, string>>({});
-// In-progress upstream-model edits on existing chain members, keyed `name:fmt:pid`.
-// Set on focus; committed on blur/Enter (idempotent), reverted on Esc.
+// In-progress upstream-model edit on a single chain member, keyed `name:fmt:pid`.
+// Seeded by enterEdit(); committed on blur/Enter (idempotent), reverted on Esc.
 const mapDraft = ref<Record<string, string>>({});
+const mapEditingKey = ref<string>("");
+
+// Model-level "add source" dialog target (the row being added to).
+const addSourceTarget = ref<Row | null>(null);
+const addSourceOpen = ref(false);
+
+// Focus the upstream-model <input> the instant it's inserted (edit-on-demand).
+const vFocus = { mounted: (el: HTMLInputElement) => el.focus() };
 
 const confirmTarget = ref<Row | null>(null);
 const confirmOpen = ref(false);
@@ -170,20 +173,18 @@ const filtered = computed(() => {
 const enabledRows = computed(() => filtered.value.filter((r) => r.openai.enabled || r.anthropic.enabled || r.responses.enabled));
 const availableRows = computed(() => filtered.value.filter((r) => !(r.openai.enabled || r.anthropic.enabled || r.responses.enabled) && availFormats(r).length > 0));
 
-/** Every existing source that speaks this format and isn't yet in the chain —
- *  the contents of the single "add source" menu. Discovered sources sort first
- *  (they're known to offer the model); the rest are manual force-add candidates
- *  (e.g. backends with no /models endpoint). */
-function addableSources(r: Row, fmt: Fmt): ProviderPublic[] {
-  const inChain = new Set(r[fmt].chain.map((c) => c.id));
-  const isOffering = new Set(r.offering.map((o) => o.id));
-  return providers.value
-    .filter((p) => supportsFmt(p, fmt) && !inChain.has(p.id))
-    .sort((a, b) => {
-      const ao = isOffering.has(a.id) ? 0 : 1;
-      const bo = isOffering.has(b.id) ? 0 : 1;
-      return ao - bo;
-    });
+/** Every source that can still attach to ≥1 enabled route of this model —
+ *  candidates for the model-level "add source" dialog. */
+function addableFor(r: Row): ProviderPublic[] {
+  const enabled = enabledFormats(r);
+  return providers.value.filter((p) => enabled.some((f) => supportsFmt(p, f) && !r[f].chain.some((c) => c.id === p.id)));
+}
+/** Snapshot of each routing slot's current chain (provider ids), passed to the
+ *  add-source dialog so it can compute which routes a candidate would join. */
+function chainByFormat(r: Row): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const f of FORMATS) out[f] = r[f].chain.map((c) => c.id);
+  return out;
 }
 function supportsFmt(o: { formats: string[]; supportsResponses?: boolean }, fmt: Fmt): boolean {
   return fmt === "responses" ? !!o.supportsResponses : o.formats.includes(fmt);
@@ -405,70 +406,39 @@ function moveDown(r: Row, i: number, fmt: Fmt) {
   setPriority(r, ids, fmt);
 }
 
-function addKey(r: Row, f: Fmt): string {
-  return `${r.name}:${f}`;
-}
-/** Is the inline add-row for this route currently submitting? */
-function srcAdding(r: Row, f: Fmt): boolean {
-  const pid = newSrcId.value[addKey(r, f)];
-  return !!pid && !!addingSrc.value[`${r.name}:${pid}:${f}`];
+/** Open the model-level "add source" dialog for this row. */
+function openAddSource(r: Row) {
+  addSourceTarget.value = r;
+  addSourceOpen.value = true;
 }
 
-/** Add the source picked in the inline row, optionally with an upstream-model
- *  mapping typed alongside it. Creates the chain link, then (if a name was given)
- *  sets the model×source mapping in one extra call. */
-async function addSourceInline(r: Row, fmt: Fmt) {
-  const ak = addKey(r, fmt);
-  const pid = newSrcId.value[ak];
-  if (!pid) return;
-  const upstream = (newSrcModel.value[ak] ?? "").trim();
-  const key = `${r.name}:${pid}:${fmt}`;
-  if (addingSrc.value[key]) return;
-  addingSrc.value[key] = true;
-  const m = models.value.find((x) => x.name === r.name);
-  const p = providerById.value.get(pid);
-  if (m && p && !m[fmt].providers.find((x) => x.id === pid)) m[fmt].providers.push({ id: p.id, name: p.name });
-  try {
-    await req("POST", `/admin/models/${enc(r.name)}/providers`, { format: fmt, providerId: pid });
-    if (upstream) {
-      await req("PUT", `/admin/models/${enc(r.name)}/map`, { format: fmt, providerId: pid, model: upstream });
-      const mm = models.value.find((x) => x.name === r.name);
-      const idx = mm?.[fmt].providers.findIndex((x) => x.id === pid);
-      if (mm && idx != null && idx >= 0) mm[fmt].providers[idx].model = upstream;
-    }
-    toast(t("models.sourceAdded"), "success");
-    delete newSrcId.value[ak];
-    delete newSrcModel.value[ak];
-  } catch (e) {
-    await load();
-    toast((e as Error).message, "error");
-  } finally {
-    addingSrc.value[key] = false;
-  }
-}
-
-// --- inline upstream-model editing on existing chain members ---
+// --- per-source upstream-model editing (on-demand, one row at a time) ---
 
 function draftKey(r: Row, f: Fmt, p: ChainSrc): string {
   return `${r.name}:${f}:${p.id}`;
 }
-/** Display value for a member's upstream field: the in-progress draft while
- *  focused, otherwise the committed value (empty = send the public name). */
-function mapVal(r: Row, f: Fmt, p: ChainSrc): string {
-  const k = draftKey(r, f, p);
-  return k in mapDraft.value ? mapDraft.value[k] : (p.model ?? "");
+/** The single chain row whose upstream field is an <input> right now (entered via
+ *  the ⋯ "edit" action or by clicking the mapped label; exited on blur). */
+function isEditing(r: Row, f: Fmt, p: ChainSrc): boolean {
+  return mapEditingKey.value === draftKey(r, f, p);
 }
-function onMapFocus(r: Row, f: Fmt, p: ChainSrc): void {
-  mapDraft.value[draftKey(r, f, p)] = p.model ?? "";
+function enterEdit(r: Row, f: Fmt, p: ChainSrc): void {
+  const k = draftKey(r, f, p);
+  mapDraft.value[k] = p.model ?? "";
+  mapEditingKey.value = k;
+}
+/** Draft value bound to the input while editing. */
+function mapVal(r: Row, f: Fmt, p: ChainSrc): string {
+  return mapDraft.value[draftKey(r, f, p)] ?? "";
 }
 function onMapInput(r: Row, f: Fmt, p: ChainSrc, v: string): void {
   mapDraft.value[draftKey(r, f, p)] = v;
 }
 /** Commit the upstream field on blur/Enter. Idempotent: a no-op when the draft
- *  matches the committed value, so Enter-then-blur (and Esc-then-blur) don't
- *  fire a second write. */
+ *  matches the committed value, so Enter→blur and Esc→blur don't double-write. */
 async function commitMap(r: Row, f: Fmt, p: ChainSrc): Promise<void> {
   const k = draftKey(r, f, p);
+  mapEditingKey.value = "";
   const draft = (mapDraft.value[k] ?? "").trim();
   const cur = (p.model ?? "").trim();
   if (draft === cur) return;
@@ -486,7 +456,7 @@ async function commitMap(r: Row, f: Fmt, p: ChainSrc): Promise<void> {
     toast((e as Error).message, "error");
   }
 }
-/** Esc: reset the field to the committed value and leave edit mode. */
+/** Esc: reset the draft to the committed value, then blur (→ commit is a no-op). */
 function revertMap(r: Row, f: Fmt, p: ChainSrc, el: HTMLInputElement): void {
   mapDraft.value[draftKey(r, f, p)] = p.model ?? "";
   el.blur();
@@ -689,8 +659,12 @@ onMounted(load);
                       <div v-if="!r[f].chain.length" class="px-1 py-1 text-xs text-muted-foreground">
                         {{ t("models.noSources") }}
                       </div>
-                      <div v-for="(p, i) in r[f].chain" :key="p.id" class="flex items-center gap-2 rounded px-1 py-1">
-                        <span class="w-4 text-right text-xs text-muted-foreground">{{ i + 1 }}.</span>
+                      <div
+                        v-for="(p, i) in r[f].chain"
+                        :key="p.id"
+                        class="group flex items-center gap-2 rounded px-1 py-1 hover:bg-muted/40"
+                      >
+                        <span class="w-4 shrink-0 text-right text-xs text-muted-foreground">{{ i + 1 }}.</span>
                         <span class="flex items-center gap-1.5 text-sm">
                           <span class="h-1.5 w-1.5 rounded-full" :class="providerColor(p.id).solid" />
                           {{ p.name }}
@@ -698,64 +672,72 @@ onMounted(load);
                         <Badge v-for="tag in srcTags(p.id)" :key="tag" variant="secondary" :class="FMT_ACCENT[tag].badge">{{ t(FMT_META[tag].chip) }}</Badge>
                         <Badge v-if="i === 0" variant="default">{{ t("models.primary") }}</Badge>
                         <Badge v-else variant="muted">{{ t("models.fallback") }}</Badge>
-                        <!-- upstream model name sent to THIS source (empty = public name verbatim).
-                             Saves on blur/Enter; Esc reverts. -->
-                        <div class="flex items-center gap-1">
+
+                        <!-- upstream model sent to THIS source: an always-visible label
+                             when set (it's state), turned into an input only while editing. -->
+                        <div v-if="isEditing(r, f, p)" class="flex items-center gap-1">
                           <span class="text-xs text-muted-foreground">→</span>
                           <input
+                            v-focus
                             type="text"
                             :value="mapVal(r, f, p)"
                             :placeholder="t('models.upstreamPh')"
                             :aria-label="t('models.upstreamLabel')"
                             :title="t('models.upstreamHint')"
                             spellcheck="false"
-                            class="h-7 w-36 rounded-md border border-input bg-transparent px-2 font-mono text-xs shadow-sm transition-colors placeholder:font-sans placeholder:text-muted-foreground/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
-                            @focus="onMapFocus(r, f, p)"
+                            class="h-6 w-40 rounded-md border border-input bg-background px-2 font-mono text-xs shadow-sm transition-colors placeholder:font-sans placeholder:text-muted-foreground/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
                             @input="onMapInput(r, f, p, ($event.target as HTMLInputElement).value)"
                             @keyup.enter="($event.target as HTMLInputElement).blur()"
                             @keyup.esc="revertMap(r, f, p, $event.target as HTMLInputElement)"
                             @blur="commitMap(r, f, p)"
                           />
                         </div>
-                        <div class="ml-auto flex items-center gap-0.5">
+                        <button
+                          v-else-if="p.model"
+                          type="button"
+                          :title="t('models.upstreamHint')"
+                          class="inline-flex items-center gap-1 rounded border border-transparent px-1.5 py-0.5 font-mono text-xs text-muted-foreground transition-colors hover:border-border hover:bg-background hover:text-foreground"
+                          @click="enterEdit(r, f, p)"
+                        >
+                          <span>→</span>{{ p.model }}
+                        </button>
+
+                        <!-- row actions surface on hover, or while the row is focused. -->
+                        <div class="ml-auto flex items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
                           <Button variant="ghost" size="icon" class="h-7 w-7" :disabled="i === 0" :aria-label="t('models.moveUpAria')" @click="moveUp(r, i, f)">
                             <MoveUp class="h-4 w-4" />
                           </Button>
                           <Button variant="ghost" size="icon" class="h-7 w-7" :disabled="i === r[f].chain.length - 1" :aria-label="t('models.moveDownAria')" @click="moveDown(r, i, f)">
                             <MoveDown class="h-4 w-4" />
                           </Button>
-                          <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-destructive" :aria-label="t('models.removeSourceAria', { name: p.name })" @click="removeSource(r, p.id, f)">
-                            <X class="h-4 w-4" />
-                          </Button>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger>
+                              <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground" :aria-label="t('models.moreActions')">
+                                <MoreHorizontal class="h-4 w-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem @select="enterEdit(r, f, p)">
+                                <Pencil class="h-4 w-4" />
+                                {{ t("models.editUpstream") }}
+                              </DropdownMenuItem>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem class="text-destructive focus:bg-destructive/10 focus:text-destructive" @select="removeSource(r, p.id, f)">
+                                <Trash2 class="h-4 w-4" />
+                                {{ t("models.removeSource") }}
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
                         </div>
                       </div>
+                    </div>
 
-                      <!-- add a source to this route's chain — inline row: pick a
-                           source, optionally set the upstream model name it maps to -->
-                      <div v-if="addableSources(r, f).length" class="flex flex-wrap items-center gap-2 pt-1">
-                        <Select v-model="newSrcId[addKey(r, f)]">
-                          <SelectTrigger class="h-8 w-44 text-sm">
-                            <SelectValue :placeholder="t('models.addSourceToChain')" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem v-for="o in addableSources(r, f)" :key="o.id" :value="o.id">{{ o.name }}</SelectItem>
-                          </SelectContent>
-                        </Select>
-                        <input
-                          type="text"
-                          v-model="newSrcModel[addKey(r, f)]"
-                          :placeholder="t('models.upstreamPh')"
-                          :aria-label="t('models.upstreamLabel')"
-                          :title="t('models.upstreamHint')"
-                          spellcheck="false"
-                          class="h-8 w-36 rounded-md border border-input bg-transparent px-2 font-mono text-xs shadow-sm transition-colors placeholder:font-sans placeholder:text-muted-foreground/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
-                        />
-                        <Button size="sm" class="h-8 gap-1" :disabled="!newSrcId[addKey(r, f)] || srcAdding(r, f)" @click="addSourceInline(r, f)">
-                          <Loader2 v-if="srcAdding(r, f)" class="h-3.5 w-3.5 animate-spin" />
-                          <Plus v-else class="h-3.5 w-3.5" />
-                          {{ t("models.addToChain") }}
-                        </Button>
-                      </div>
+                    <!-- model-level add: one source (optional upstream) → every route it speaks -->
+                    <div v-if="addableFor(r).length" class="flex justify-center pt-1">
+                      <Button variant="outline" size="sm" class="h-7 gap-1 border-dashed text-muted-foreground" @click="openAddSource(r)">
+                        <Plus class="h-3.5 w-3.5" />
+                        {{ t("models.addSourceToChain") }}
+                      </Button>
                     </div>
                   </div>
                 </div>
@@ -826,6 +808,15 @@ onMounted(load);
     <SourcesDialog v-model:open="sourcesOpen" @changed="load" />
 
     <AddModelsDialog v-model:open="addOpen" :providers="providers" @changed="load" />
+
+    <AddSourceDialog
+      v-model:open="addSourceOpen"
+      :model-name="addSourceTarget?.name ?? ''"
+      :providers="providers"
+      :enabled-formats="addSourceTarget ? enabledFormats(addSourceTarget) : []"
+      :chain-by-format="addSourceTarget ? chainByFormat(addSourceTarget) : {}"
+      @added="load"
+    />
 
     <ConfirmDialog
       v-model:open="confirmOpen"
