@@ -1,5 +1,7 @@
 # MyAPIKey
 
+English | [简体中文](README.zh-CN.md)
+
 **One address, one key, all your models — without translation.**
 
 MyAPIKey is a personal LLM gateway. Point every AI tool you use (Claude Code, OpenAI-compatible CLIs, editors, scripts) at a single local address with a single API key. Each call is forwarded **as-is** to a backend that speaks the same wire format, with automatic failover when a backend is down. Nothing is converted between OpenAI and Anthropic formats — what you send is exactly what reaches the backend.
