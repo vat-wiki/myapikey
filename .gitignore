@@ -7,3 +7,10 @@ logs.jsonl
 .DS_Store
 *.log
 .playwright-cli/
+.claude/
+
+# Test artifacts
+coverage/
+test-results/
+playwright-report/
+.blob/

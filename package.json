@@ -55,8 +55,12 @@
     "dev": "tsx watch packages/core/src/cli/index.ts serve",
     "dev:web": "npm run dev -w @myapikey/web",
     "start": "tsx packages/core/src/cli/index.ts serve",
-    "typecheck": "tsc -p packages/core/tsconfig.json --noEmit && vue-tsc --noEmit -p packages/web/tsconfig.json",
-    "build:web": "npm run build -w @myapikey/web"
+    "typecheck": "tsc -p packages/core/tsconfig.json --noEmit && tsc -p packages/core/tsconfig.test.json --noEmit && vue-tsc --noEmit -p packages/web/tsconfig.json",
+    "build:web": "npm run build -w @myapikey/web",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test"
   },
   "engines": {
     "node": ">=18"
@@ -72,6 +76,9 @@
   "devDependencies": {
     "@playwright/test": "^1.62.1",
     "@types/node": "^22.7.0",
-    "typescript": "^5.6.0"
+    "@vitest/coverage-v8": "^2.1.9",
+    "jsdom": "^30.0.1",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.9"
   }
 }
