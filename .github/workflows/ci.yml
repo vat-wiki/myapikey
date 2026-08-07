@@ -84,6 +84,8 @@ jobs:
 
       - name: Publish
         if: steps.version.outputs.changed == 'true'
-        run: npm publish --provenance
+        # --access public: provenance needs it for a first-time package
+        # (npm defaults new packages to private, and provenance is public-only).
+        run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
