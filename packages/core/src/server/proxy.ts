@@ -142,6 +142,12 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
     const order = live.length ? live : list;
 
     for (const provider of order) {
+      // Model mapping (per model×source): rewrite the passthrough body's model
+      // to this provider's configured upstream name. Recomputed from the ORIGINAL
+      // `model` each iteration, so failover to the next provider never carries the
+      // previous provider's upstream name. Absent map/key → send the public name.
+      const mapped = store.get().models[model]?.[key]?.modelMap?.[provider.id];
+      body.model = mapped ?? model;
       let upstream: Response;
       try {
         upstream = await fetch(upstreamTarget(provider, key).url, {

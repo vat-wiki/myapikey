@@ -37,6 +37,17 @@ function providerSpeaks(p: Provider, key: RouteKey): boolean {
   return key === "responses" ? !!p.supportsResponses : p.formats.includes(key);
 }
 
+/** Drop a provider id from a routing slot: remove it from the chain AND from any
+ *  modelMap (so a stale upstream-name override doesn't linger after the provider
+ *  is gone or removed from this model's chain). */
+function purgeProvider(fe: FormatEntry, pid: string): void {
+  fe.providers = fe.providers.filter((x) => x !== pid);
+  if (fe.modelMap && pid in fe.modelMap) {
+    delete fe.modelMap[pid];
+    if (!Object.keys(fe.modelMap).length) delete fe.modelMap;
+  }
+}
+
 /** Project provider for API responses: hide the full key. */
 function toPublic(p: Provider) {
   return {
@@ -242,9 +253,9 @@ export function adminApi(store: Store, auth: MiddlewareHandler, v1: Hono): Hono 
       found = d.providers.some((p) => p.id === id);
       d.providers = d.providers.filter((p) => p.id !== id);
       for (const m of Object.values(d.models)) {
-        m.openai.providers = m.openai.providers.filter((pid) => pid !== id);
-        m.anthropic.providers = m.anthropic.providers.filter((pid) => pid !== id);
-        m.responses.providers = m.responses.providers.filter((pid) => pid !== id);
+        purgeProvider(m.openai, id);
+        purgeProvider(m.anthropic, id);
+        purgeProvider(m.responses, id);
       }
     });
     if (!found) return c.json({ error: { message: "provider not found" } }, 404);
@@ -269,7 +280,13 @@ export function adminApi(store: Store, auth: MiddlewareHandler, v1: Hono): Hono 
     const byId = new Map(d.providers.map((p) => [p.id, p]));
     const proj = (fe: FormatEntry) => ({
       enabled: fe.enabled,
-      providers: fe.providers.map((pid) => ({ id: pid, name: byId.get(pid)?.name ?? "?" })),
+      providers: fe.providers.map((pid) => ({
+        id: pid,
+        name: byId.get(pid)?.name ?? "?",
+        // Upstream model name this source is mapped to (undefined = send the
+        // public name verbatim). Flattened out of modelMap for the client.
+        model: fe.modelMap?.[pid],
+      })),
     });
     const models = Object.entries(d.models).map(([name, e]) => ({
       name,
@@ -340,7 +357,7 @@ export function adminApi(store: Store, auth: MiddlewareHandler, v1: Hono): Hono 
     if (!format) return c.json({ error: { message: "?format=openai|anthropic|responses is required" } }, 400);
     await store.update((d) => {
       const entry = d.models[name];
-      if (entry) entry[format].providers = entry[format].providers.filter((x) => x !== pid);
+      if (entry) purgeProvider(entry[format], pid);
     });
     return c.json({ ok: true });
   });
@@ -371,6 +388,45 @@ export function adminApi(store: Store, auth: MiddlewareHandler, v1: Hono): Hono 
       fe.providers = body.providers!;
     });
     if (errStatus === 404) return c.json({ error: { message: "model not found" } }, 404);
+    if (errStatus === 400) return c.json({ error: { message: errMsg } }, 400);
+    return c.json({ ok: true });
+  });
+
+  // Set (or clear) a model×source upstream-model mapping. `model` is the name
+  // sent upstream when forwarding this public model to this provider; an empty
+  // string clears it (back to identity — send the public name). The provider
+  // must already be in this slot's chain: you map a source already attached.
+  app.put("/models/:name/map", async (c) => {
+    const name = c.req.param("name");
+    const body = await readJson<{ format?: RouteKey; providerId?: string; model?: string }>(c.req.raw);
+    if (!body?.format) return c.json({ error: { message: "format is required" } }, 400);
+    if (!body?.providerId) return c.json({ error: { message: "providerId is required" } }, 400);
+    const format = body.format;
+    const pid = body.providerId;
+    const upstream = (body.model ?? "").trim();
+    let errStatus = 0;
+    let errMsg = "";
+    await store.update((d) => {
+      const entry = d.models[name];
+      if (!entry) {
+        errStatus = 404;
+        errMsg = "model not found";
+        return;
+      }
+      const fe = entry[format];
+      if (!fe.providers.includes(pid)) {
+        errStatus = 400;
+        errMsg = "provider is not in this model's chain for the given format";
+        return;
+      }
+      if (upstream) {
+        (fe.modelMap ??= {})[pid] = upstream;
+      } else if (fe.modelMap && pid in fe.modelMap) {
+        delete fe.modelMap[pid];
+        if (!Object.keys(fe.modelMap).length) delete fe.modelMap;
+      }
+    });
+    if (errStatus === 404) return c.json({ error: { message: errMsg } }, 404);
     if (errStatus === 400) return c.json({ error: { message: errMsg } }, 400);
     return c.json({ ok: true });
   });

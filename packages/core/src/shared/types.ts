@@ -33,11 +33,22 @@ export interface Provider {
  *  chain. Invariant (enforced by admin mutations, defended by proxy candidates()):
  *  every id in `providers` exists in `GateConfig.providers` and is compatible
  *  with the slot — openai/anthropic ids must carry that wire format; responses
- *  ids must additionally be supportsResponses sources (still OpenAI-format). */
+ *  ids must additionally be supportsResponses sources (still OpenAI-format).
+ *
+ *  `modelMap` (optional): per-provider UPSTREAM model name. When forwarding to
+ *  provider P, if `modelMap[P.id]` is set, the gateway rewrites the request's
+ *  `model` field to that value before the passthrough POST; otherwise the
+ *  public model name (the key in GateConfig.models) is sent verbatim. So this is
+ *  a pure name rewrite on the passthrough body — still no OpenAI↔Anthropic
+ *  translation. Lets you alias (claude-sonnet-4 → claude-sonnet-4-20250514) or
+ *  swap the actual model (gpt-4 → gpt-4o) per source. Absent/empty = identity. */
 export interface FormatEntry {
   enabled: boolean;
   /** Provider ids in priority order. First = primary, rest = fallback. */
   providers: string[];
+  /** providerId → upstream model name to send to that provider. Optional;
+   *  absent key (or absent map) = send the public model name unchanged. */
+  modelMap?: Record<string, string>;
 }
 
 /** A model's routing dimensions — one per forwarding endpoint. /chat/completions

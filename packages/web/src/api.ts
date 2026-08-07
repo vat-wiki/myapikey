@@ -68,6 +68,9 @@ export interface ProviderPublic {
 export interface ModelProvider {
   id: string;
   name: string;
+  /** Upstream model name this source is mapped to on this route
+   *  (undefined = send the public model name verbatim). */
+  model?: string;
 }
 export interface FormatView {
   enabled: boolean;

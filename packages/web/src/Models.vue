@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import {
   ChevronRight,
   ChevronDown,
@@ -57,6 +58,14 @@ const testing = ref<Record<string, boolean>>({});
 interface ProbeResult { ok: boolean; status: number; provider?: string; format: string; error?: string }
 const probe = ref<Record<string, ProbeResult>>({});
 
+// Inline "add source to chain" row, per (model, route): the chosen source id and
+// an optional upstream-model name typed alongside it.
+const newSrcId = ref<Record<string, string>>({});
+const newSrcModel = ref<Record<string, string>>({});
+// In-progress upstream-model edits on existing chain members, keyed `name:fmt:pid`.
+// Set on focus; committed on blur/Enter (idempotent), reverted on Esc.
+const mapDraft = ref<Record<string, string>>({});
+
 const confirmTarget = ref<Row | null>(null);
 const confirmOpen = ref(false);
 
@@ -94,7 +103,7 @@ const offeringMap = computed(() => {
   return m;
 });
 
-interface ChainSrc { id: string; name: string; }
+interface ChainSrc { id: string; name: string; model?: string }
 interface FormatRow { enabled: boolean; chain: ChainSrc[]; }
 interface Row {
   name: string;
@@ -108,9 +117,9 @@ const rows = computed<Row[]>(() => {
   const names = new Set<string>();
   for (const p of providers.value) for (const n of p.discoveredModels ?? []) names.add(n);
   for (const m of models.value) names.add(m.name);
-  const toRow = (fe: { enabled: boolean; providers: { id: string; name: string }[] } | undefined): FormatRow => ({
+  const toRow = (fe: { enabled: boolean; providers: { id: string; name: string; model?: string }[] } | undefined): FormatRow => ({
     enabled: fe?.enabled ?? false,
-    chain: (fe?.providers ?? []).map((p) => ({ id: p.id, name: p.name })),
+    chain: (fe?.providers ?? []).map((p) => ({ id: p.id, name: p.name, model: p.model })),
   });
   return [...names].map((name) => {
     const m = models.value.find((x) => x.name === name);
@@ -216,7 +225,10 @@ function isStale(r: Row, fmt: Fmt): boolean {
   const chain = r[fmt].chain;
   if (!chain.length) return false;
   const list = (id: string) => providerById.value.get(id)?.discoveredModels ?? [];
-  return !chain.some((c) => list(c.id).includes(r.name)) && chain.some((c) => list(c.id).length > 0);
+  // Compare against the source's UPSTREAM name when mapped: a mapped model's
+  // public name won't appear in discovery (the provider lists the upstream id),
+  // so using r.name would falsely flag every mapped source as delisted.
+  return !chain.some((c) => list(c.id).includes(c.model ?? r.name)) && chain.some((c) => list(c.id).length > 0);
 }
 /** Delisted on any enabled route — surfaced as a summary badge. */
 function isStaleAny(r: Row): boolean {
@@ -393,7 +405,23 @@ function moveDown(r: Row, i: number, fmt: Fmt) {
   setPriority(r, ids, fmt);
 }
 
-async function addSource(r: Row, pid: string, fmt: Fmt) {
+function addKey(r: Row, f: Fmt): string {
+  return `${r.name}:${f}`;
+}
+/** Is the inline add-row for this route currently submitting? */
+function srcAdding(r: Row, f: Fmt): boolean {
+  const pid = newSrcId.value[addKey(r, f)];
+  return !!pid && !!addingSrc.value[`${r.name}:${pid}:${f}`];
+}
+
+/** Add the source picked in the inline row, optionally with an upstream-model
+ *  mapping typed alongside it. Creates the chain link, then (if a name was given)
+ *  sets the model×source mapping in one extra call. */
+async function addSourceInline(r: Row, fmt: Fmt) {
+  const ak = addKey(r, fmt);
+  const pid = newSrcId.value[ak];
+  if (!pid) return;
+  const upstream = (newSrcModel.value[ak] ?? "").trim();
   const key = `${r.name}:${pid}:${fmt}`;
   if (addingSrc.value[key]) return;
   addingSrc.value[key] = true;
@@ -402,13 +430,66 @@ async function addSource(r: Row, pid: string, fmt: Fmt) {
   if (m && p && !m[fmt].providers.find((x) => x.id === pid)) m[fmt].providers.push({ id: p.id, name: p.name });
   try {
     await req("POST", `/admin/models/${enc(r.name)}/providers`, { format: fmt, providerId: pid });
+    if (upstream) {
+      await req("PUT", `/admin/models/${enc(r.name)}/map`, { format: fmt, providerId: pid, model: upstream });
+      const mm = models.value.find((x) => x.name === r.name);
+      const idx = mm?.[fmt].providers.findIndex((x) => x.id === pid);
+      if (mm && idx != null && idx >= 0) mm[fmt].providers[idx].model = upstream;
+    }
     toast(t("models.sourceAdded"), "success");
+    delete newSrcId.value[ak];
+    delete newSrcModel.value[ak];
   } catch (e) {
     await load();
     toast((e as Error).message, "error");
   } finally {
     addingSrc.value[key] = false;
   }
+}
+
+// --- inline upstream-model editing on existing chain members ---
+
+function draftKey(r: Row, f: Fmt, p: ChainSrc): string {
+  return `${r.name}:${f}:${p.id}`;
+}
+/** Display value for a member's upstream field: the in-progress draft while
+ *  focused, otherwise the committed value (empty = send the public name). */
+function mapVal(r: Row, f: Fmt, p: ChainSrc): string {
+  const k = draftKey(r, f, p);
+  return k in mapDraft.value ? mapDraft.value[k] : (p.model ?? "");
+}
+function onMapFocus(r: Row, f: Fmt, p: ChainSrc): void {
+  mapDraft.value[draftKey(r, f, p)] = p.model ?? "";
+}
+function onMapInput(r: Row, f: Fmt, p: ChainSrc, v: string): void {
+  mapDraft.value[draftKey(r, f, p)] = v;
+}
+/** Commit the upstream field on blur/Enter. Idempotent: a no-op when the draft
+ *  matches the committed value, so Enter-then-blur (and Esc-then-blur) don't
+ *  fire a second write. */
+async function commitMap(r: Row, f: Fmt, p: ChainSrc): Promise<void> {
+  const k = draftKey(r, f, p);
+  const draft = (mapDraft.value[k] ?? "").trim();
+  const cur = (p.model ?? "").trim();
+  if (draft === cur) return;
+  const m = models.value.find((x) => x.name === r.name);
+  if (m) {
+    const idx = m[f].providers.findIndex((x) => x.id === p.id);
+    if (idx >= 0) m[f].providers[idx].model = draft || undefined;
+  }
+  mapDraft.value[k] = draft; // keep in sync so a follow-up blur is a no-op
+  try {
+    await req("PUT", `/admin/models/${enc(r.name)}/map`, { format: f, providerId: p.id, model: draft });
+    toast(t("models.mapSaved"), "success");
+  } catch (e) {
+    await load();
+    toast((e as Error).message, "error");
+  }
+}
+/** Esc: reset the field to the committed value and leave edit mode. */
+function revertMap(r: Row, f: Fmt, p: ChainSrc, el: HTMLInputElement): void {
+  mapDraft.value[draftKey(r, f, p)] = p.model ?? "";
+  el.blur();
 }
 
 async function removeSource(r: Row, pid: string, fmt: Fmt) {
@@ -617,6 +698,25 @@ onMounted(load);
                         <Badge v-for="tag in srcTags(p.id)" :key="tag" variant="secondary" :class="FMT_ACCENT[tag].badge">{{ t(FMT_META[tag].chip) }}</Badge>
                         <Badge v-if="i === 0" variant="default">{{ t("models.primary") }}</Badge>
                         <Badge v-else variant="muted">{{ t("models.fallback") }}</Badge>
+                        <!-- upstream model name sent to THIS source (empty = public name verbatim).
+                             Saves on blur/Enter; Esc reverts. -->
+                        <div class="flex items-center gap-1">
+                          <span class="text-xs text-muted-foreground">→</span>
+                          <input
+                            type="text"
+                            :value="mapVal(r, f, p)"
+                            :placeholder="t('models.upstreamPh')"
+                            :aria-label="t('models.upstreamLabel')"
+                            :title="t('models.upstreamHint')"
+                            spellcheck="false"
+                            class="h-7 w-36 rounded-md border border-input bg-transparent px-2 font-mono text-xs shadow-sm transition-colors placeholder:font-sans placeholder:text-muted-foreground/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+                            @focus="onMapFocus(r, f, p)"
+                            @input="onMapInput(r, f, p, ($event.target as HTMLInputElement).value)"
+                            @keyup.enter="($event.target as HTMLInputElement).blur()"
+                            @keyup.esc="revertMap(r, f, p, $event.target as HTMLInputElement)"
+                            @blur="commitMap(r, f, p)"
+                          />
+                        </div>
                         <div class="ml-auto flex items-center gap-0.5">
                           <Button variant="ghost" size="icon" class="h-7 w-7" :disabled="i === 0" :aria-label="t('models.moveUpAria')" @click="moveUp(r, i, f)">
                             <MoveUp class="h-4 w-4" />
@@ -630,27 +730,31 @@ onMounted(load);
                         </div>
                       </div>
 
-                      <!-- add a source to this route's chain -->
-                      <div v-if="addableSources(r, f).length" class="pt-1">
-                        <DropdownMenu>
-                          <DropdownMenuTrigger>
-                            <Button variant="outline" class="w-full justify-center gap-1.5 border-dashed font-normal text-muted-foreground hover:text-foreground">
-                              <Plus class="h-3.5 w-3.5" />{{ t("models.addSourceToChain") }}
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="start">
-                            <DropdownMenuItem
-                              v-for="o in addableSources(r, f)"
-                              :key="o.id"
-                              :disabled="addingSrc[`${r.name}:${o.id}:${f}`]"
-                              @select="addSource(r, o.id, f)"
-                            >
-                              <Loader2 v-if="addingSrc[`${r.name}:${o.id}:${f}`]" class="h-3.5 w-3.5 animate-spin" />
-                              <Plus v-else class="h-3.5 w-3.5" />
-                              {{ o.name }}
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
+                      <!-- add a source to this route's chain — inline row: pick a
+                           source, optionally set the upstream model name it maps to -->
+                      <div v-if="addableSources(r, f).length" class="flex flex-wrap items-center gap-2 pt-1">
+                        <Select v-model="newSrcId[addKey(r, f)]">
+                          <SelectTrigger class="h-8 w-44 text-sm">
+                            <SelectValue :placeholder="t('models.addSourceToChain')" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem v-for="o in addableSources(r, f)" :key="o.id" :value="o.id">{{ o.name }}</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <input
+                          type="text"
+                          v-model="newSrcModel[addKey(r, f)]"
+                          :placeholder="t('models.upstreamPh')"
+                          :aria-label="t('models.upstreamLabel')"
+                          :title="t('models.upstreamHint')"
+                          spellcheck="false"
+                          class="h-8 w-36 rounded-md border border-input bg-transparent px-2 font-mono text-xs shadow-sm transition-colors placeholder:font-sans placeholder:text-muted-foreground/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+                        />
+                        <Button size="sm" class="h-8 gap-1" :disabled="!newSrcId[addKey(r, f)] || srcAdding(r, f)" @click="addSourceInline(r, f)">
+                          <Loader2 v-if="srcAdding(r, f)" class="h-3.5 w-3.5 animate-spin" />
+                          <Plus v-else class="h-3.5 w-3.5" />
+                          {{ t("models.addToChain") }}
+                        </Button>
                       </div>
                     </div>
                   </div>
