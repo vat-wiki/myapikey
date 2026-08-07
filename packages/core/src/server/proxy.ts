@@ -155,7 +155,7 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
         lastErr = "network error";
         const r = store.recordCircuitFailure(provider.id, lastStatus, lastErr);
         if (r.entered) {
-          store.pushLog({ ts: Date.now(), model, provider: provider.name, format: wire, status: lastStatus, ms: Date.now() - start, stream, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: lastErr });
+          store.pushLog({ ts: Date.now(), model, provider: provider.name, providerId: provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: lastErr });
         }
         continue;
       }
@@ -163,7 +163,7 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
       if (upstream.ok) {
         // A success closes the circuit (provider is healthy again).
         store.recordCircuitSuccess(provider.id);
-        store.pushLog({ ts: Date.now(), model, provider: provider.name, format: wire, status: upstream.status, ms: Date.now() - start, stream });
+        store.pushLog({ ts: Date.now(), model, provider: provider.name, providerId: provider.id, format: wire, status: upstream.status, ms: Date.now() - start, stream });
         return passThrough(upstream, isProbe ? provider.name : undefined);
       }
       if (RETRYABLE.has(upstream.status)) {
@@ -174,18 +174,19 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
         lastErr = shortError(txt) || `HTTP ${upstream.status}`;
         const r = store.recordCircuitFailure(provider.id, lastStatus, lastErr);
         if (r.entered) {
-          store.pushLog({ ts: Date.now(), model, provider: provider.name, format: wire, status: lastStatus, ms: Date.now() - start, stream, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: lastErr });
+          store.pushLog({ ts: Date.now(), model, provider: provider.name, providerId: provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: lastErr });
         }
         continue;
       }
       // Non-retryable client error: return it to the caller as-is. Read the
       // error text off a CLONE so the original body still streams back.
       const errText = await upstream.clone().text().catch(() => "");
-      store.pushLog({ ts: Date.now(), model, provider: provider.name, format: wire, status: upstream.status, ms: Date.now() - start, stream, error: shortError(errText) || `HTTP ${upstream.status}` });
+      store.pushLog({ ts: Date.now(), model, provider: provider.name, providerId: provider.id, format: wire, status: upstream.status, ms: Date.now() - start, stream, error: shortError(errText) || `HTTP ${upstream.status}` });
       return passThrough(upstream, isProbe ? provider.name : undefined);
     }
 
-    store.pushLog({ ts: Date.now(), model, provider: order[order.length - 1].name, format: wire, status: lastStatus, ms: Date.now() - start, stream, error: lastErr || `all providers failed (last status ${lastStatus})` });
+    const last = order[order.length - 1];
+    store.pushLog({ ts: Date.now(), model, provider: last.name, providerId: last.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, error: lastErr || `all providers failed (last status ${lastStatus})` });
     return c.json(
       { error: { message: `all providers for '${model}' failed (last status ${lastStatus})`, type: "upstream_error" } },
       502,

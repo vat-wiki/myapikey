@@ -94,3 +94,41 @@ export interface CircuitProvider {
   lastReason: string;
   lastTs: number;
 }
+
+/** One bucket in a stats breakdown (GET /admin/stats). `id` is set only on
+ *  provider buckets (the stable grouping key); `key` is the display label. */
+export interface StatBucket {
+  key: string;
+  id?: string;
+  calls: number;
+  success: number;
+  error: number;
+  avgMs: number;
+}
+
+/** One day in the stats time series (YYYY-MM-DD, local). */
+export interface StatDay {
+  day: string;
+  calls: number;
+  success: number;
+  error: number;
+}
+
+/** Aggregated call stats (GET /admin/stats?range=…). */
+export interface StatsResult {
+  from: number;
+  to: number;
+  totals: {
+    calls: number;
+    success: number;
+    error: number;
+    errorRate: number;
+    avgMs: number;
+    p50Ms: number;
+    p95Ms: number;
+  };
+  byModel: StatBucket[];
+  byProvider: StatBucket[];
+  byFormat: StatBucket[];
+  byDay: StatDay[];
+}

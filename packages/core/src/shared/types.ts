@@ -73,6 +73,10 @@ export interface LogEntry {
   ts: number;
   model: string;
   provider: string;
+  /** Stable provider id (newer entries). Stats group by this so renaming a
+   *  provider doesn't split its history; the display name is resolved from the
+   *  live config at read time. Absent on legacy lines → fall back to `provider`. */
+  providerId?: string;
   format: Format;
   status: number;
   /** End-to-end latency (ms): from the dispatch start to the returned response. */

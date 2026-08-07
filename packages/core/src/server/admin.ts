@@ -439,6 +439,15 @@ export function adminApi(store: Store, auth: MiddlewareHandler, v1: Hono): Hono 
   // --- logs ---
   app.get("/logs", (c) => c.json({ logs: store.getLogs() }));
 
+  // --- stats (aggregate over the retained call history; never polled) ---
+  app.get("/stats", (c) => {
+    const r = c.req.query("range") ?? "7d";
+    const DAY = 24 * 60 * 60 * 1000;
+    const rangeMs =
+      r === "24h" ? DAY : r === "7d" ? 7 * DAY : r === "30d" ? 30 * DAY : r === "90d" ? 90 * DAY : 0; // 0 = "all"
+    return c.json(store.getStats(rangeMs));
+  });
+
   // --- storage (read-only: where data.json + logs.jsonl live) ---
   app.get("/storage", (c) => c.json(store.getPaths()));
 
