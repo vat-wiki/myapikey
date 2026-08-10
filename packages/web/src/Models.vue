@@ -54,6 +54,11 @@ const removing = ref<Record<string, boolean>>({});
 const enabling = ref<Record<string, boolean>>({});
 const removingSrc = ref<Record<string, boolean>>({});
 const testing = ref<Record<string, boolean>>({});
+// Per-source "test this source" state, keyed `name:fmt:pid` (independent of the
+// whole-chain `testing`/`probe` so a single-source probe never overwrites the
+// chain-level badge).
+const srcTesting = ref<Record<string, boolean>>({});
+const srcProbe = ref<Record<string, ProbeResult>>({});
 interface ProbeResult { ok: boolean; status: number; provider?: string; format: string; error?: string }
 const probe = ref<Record<string, ProbeResult>>({});
 
@@ -365,6 +370,23 @@ async function testRow(r: Row) {
   await Promise.all(fmts.map((f) => testModel(r, f)));
 }
 
+/** Test ONE source on a route — pinned probe, no failover, no circuit impact.
+ *  Independent state from testModel so the source-row badge never clobbers the
+ *  chain-level badge. */
+async function testSource(r: Row, f: Fmt, p: ChainSrc) {
+  const key = `${r.name}:${f}:${p.id}`;
+  if (srcTesting.value[key]) return;
+  srcTesting.value[key] = true;
+  try {
+    const res = await req<{ result: ProbeResult }>("POST", `/admin/models/${enc(r.name)}/providers/${enc(p.id)}/test?format=${f}`);
+    srcProbe.value[key] = res.result;
+  } catch (e) {
+    srcProbe.value[key] = { ok: false, status: 0, format: f, error: (e as Error).message };
+  } finally {
+    srcTesting.value[key] = false;
+  }
+}
+
 async function doRemoveModel() {
   const r = confirmTarget.value;
   if (!r) return;
@@ -672,6 +694,10 @@ onMounted(load);
                         <Badge v-for="tag in srcTags(p.id)" :key="tag" variant="secondary" :class="FMT_ACCENT[tag].badge">{{ t(FMT_META[tag].chip) }}</Badge>
                         <Badge v-if="i === 0" variant="default">{{ t("models.primary") }}</Badge>
                         <Badge v-else variant="muted">{{ t("models.fallback") }}</Badge>
+                        <!-- per-source probe result (only for sources that have been tested) -->
+                        <Badge v-if="srcTesting[`${r.name}:${f}:${p.id}`]" variant="muted" class="gap-1"><Loader2 class="h-3 w-3 animate-spin" />{{ t("models.probeTesting") }}</Badge>
+                        <Badge v-else-if="srcProbe[`${r.name}:${f}:${p.id}`]?.ok" variant="success" :title="t('models.probeOkHint', { name: p.name })">{{ t("models.probeOk") }}</Badge>
+                        <Badge v-else-if="srcProbe[`${r.name}:${f}:${p.id}`]" variant="destructive" :title="srcProbe[`${r.name}:${f}:${p.id}`]?.error || t('models.probeFailHint')">{{ t("models.probeFail") }} · {{ srcProbe[`${r.name}:${f}:${p.id}`]?.status || '?' }}</Badge>
 
                         <!-- upstream model sent to THIS source: an always-visible label
                              when set (it's state), turned into an input only while editing. -->
@@ -717,6 +743,11 @@ onMounted(load);
                               </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end">
+                              <DropdownMenuItem :disabled="srcTesting[`${r.name}:${f}:${p.id}`]" @select="testSource(r, f, p)">
+                                <Loader2 v-if="srcTesting[`${r.name}:${f}:${p.id}`]" class="animate-spin" />
+                                <Zap v-else />
+                                {{ t("models.testSource") }}
+                              </DropdownMenuItem>
                               <DropdownMenuItem @select="enterEdit(r, f, p)">
                                 <Pencil class="h-4 w-4" />
                                 {{ t("models.editUpstream") }}

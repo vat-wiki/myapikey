@@ -196,6 +196,7 @@ export default {
     removeModel: "Remove model",
     moreActions: "More actions",
     testModel: "Test",
+    testSource: "Test this source",
     probeTesting: "Testing",
     probeOk: "Working",
     probeOkHint: "Last test passed (via {name})",

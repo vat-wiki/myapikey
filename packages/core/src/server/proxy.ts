@@ -112,8 +112,15 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
     // answered back to the test handler (x-myapikey-provider), without leaking
     // that header to real agent clients.
     const isProbe = c.req.header("x-myapikey-probe") === "1";
+    // The per-source "test this source" variant pins dispatch to ONE provider:
+    // the candidate chain is reduced to just it, and on failure we stop
+    // immediately (no failover) WITHOUT recording a circuit failure — a manual
+    // probe must not trip the breaker. Failure surfaces the real upstream status
+    // (429/500/…), not a collapsed 502, so the badge shows what really happened.
+    const pinId = c.req.header("x-myapikey-probe-provider") || "";
     // candidates() already restricts the responses chain to supportsResponses sources.
-    const list = candidates(store, model, key);
+    let list = candidates(store, model, key);
+    if (pinId) list = list.filter((p) => p.id === pinId);
     if (!list.length) {
       if (key === "responses") {
         return c.json(
@@ -137,8 +144,10 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
     // Skip providers currently in circuit-breaker cooldown. If every candidate
     // is cooling, fall back to the full list anyway — cooldown is a heuristic,
     // and one real attempt beats a guaranteed 502 (a cooled provider that now
-    // succeeds also resets its circuit).
-    const live = list.filter((p) => !store.isCooling(p.id));
+    // succeeds also resets its circuit). A pinned (per-source) probe ignores
+    // cooldown entirely: the user is asking to test THIS source now, whatever
+    // its breaker state.
+    const live = pinId ? list : list.filter((p) => !store.isCooling(p.id));
     const order = live.length ? live : list;
 
     for (const provider of order) {
@@ -159,6 +168,7 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
         // Network error / DNS / timeout → try next provider.
         lastStatus = 502;
         lastErr = "network error";
+        if (pinId) break; // per-source probe: fail fast, no circuit impact.
         const r = store.recordCircuitFailure(provider.id, lastStatus, lastErr);
         if (r.entered) {
           store.pushLog({ ts: Date.now(), model, provider: provider.name, providerId: provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: lastErr });
@@ -178,6 +188,7 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
         // reason for the log (this branch never streams back to the client).
         const txt = await upstream.text().catch(() => "");
         lastErr = shortError(txt) || `HTTP ${upstream.status}`;
+        if (pinId) break; // per-source probe: fail fast, no circuit impact.
         const r = store.recordCircuitFailure(provider.id, lastStatus, lastErr);
         if (r.entered) {
           store.pushLog({ ts: Date.now(), model, provider: provider.name, providerId: provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: lastErr });
@@ -193,6 +204,17 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
 
     const last = order[order.length - 1];
     store.pushLog({ ts: Date.now(), model, provider: last.name, providerId: last.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, error: lastErr || `all providers failed (last status ${lastStatus})` });
+    // A pinned (per-source) probe failed: surface the REAL upstream status the
+    // one provider returned (429/500/…), not a collapsed 502, and tag it with
+    // x-myapikey-provider so the source-row badge names the tested source.
+    if (pinId) {
+      const h = new Headers({ "content-type": "application/json" });
+      if (isProbe) h.set("x-myapikey-provider", last.name);
+      return new Response(
+        JSON.stringify({ error: { message: lastErr || `provider failed (status ${lastStatus})`, type: "upstream_error" } }),
+        { status: lastStatus, headers: h },
+      );
+    }
     return c.json(
       { error: { message: `all providers for '${model}' failed (last status ${lastStatus})`, type: "upstream_error" } },
       502,

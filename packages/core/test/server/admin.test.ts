@@ -512,6 +512,81 @@ describe("server/admin", () => {
       expect(res.status).toBe(200);
       expect(find(await modelsOf(app), "gpt-4o")).toBeUndefined();
     });
+
+    it("POST /admin/models/:name/providers/:pid/test pins to ONE source (no failover)", async () => {
+      const a = makeProvider({ name: "alpha", formats: ["openai"], baseUrlOpenai: "https://a.up.test/v1", apiKey: "sk-a" });
+      const b = makeProvider({ name: "bravo", formats: ["openai"], baseUrlOpenai: "https://b.up.test/v1", apiKey: "sk-b" });
+      await seedStore(store, { providers: [a, b], apiKey: "sk-test", models: { "gpt-4o": makeModel({ openai: fe([a.id, b.id]) }) } });
+      const m = mockFetch([
+        { match: "a.up.test", response: { status: 200, body: { choices: [{ message: { content: "A" } }] } } },
+        { match: "b.up.test", response: { status: 200, body: { choices: [{ message: { content: "B" } }] } } },
+      ]);
+      try {
+        const res = await createApp(store).request(`/admin/models/gpt-4o/providers/${b.id}/test?format=openai`, { method: "POST", headers: H_GET });
+        expect(res.status).toBe(200);
+        const result = (await json<{ result: { ok: boolean; status: number; provider?: string; format: string } }>(res)).result;
+        expect(result.ok).toBe(true);
+        expect(result.provider).toBe(b.name);
+        // Pinned → only B's upstream was hit; A was never touched.
+        expect(m.calls.some((c) => c.url.includes("b.up.test"))).toBe(true);
+        expect(m.calls.some((c) => c.url.includes("a.up.test"))).toBe(false);
+      } finally {
+        m.restore();
+      }
+    });
+
+    it("POST .../providers/:pid/test fails fast on 429 with NO circuit impact", async () => {
+      const a = makeProvider({ name: "alpha", formats: ["openai"], baseUrlOpenai: "https://a.up.test/v1", apiKey: "sk-a" });
+      const b = makeProvider({ name: "bravo", formats: ["openai"], baseUrlOpenai: "https://b.up.test/v1", apiKey: "sk-b" });
+      await seedStore(store, { providers: [a, b], apiKey: "sk-test", models: { "gpt-4o": makeModel({ openai: fe([a.id, b.id]) }) } });
+      const m = mockFetch([
+        { match: "a.up.test", response: { status: 200, body: {} } },
+        { match: "b.up.test", response: { status: 429, body: { error: { message: "slow down" } } } },
+      ]);
+      try {
+        const res = await createApp(store).request(`/admin/models/gpt-4o/providers/${b.id}/test?format=openai`, { method: "POST", headers: H_GET });
+        expect(res.status).toBe(200);
+        const result = (await json<{ result: { ok: boolean; status: number; provider?: string; error?: string } }>(res)).result;
+        expect(result.ok).toBe(false);
+        // The REAL upstream status (429), not a collapsed 502.
+        expect(result.status).toBe(429);
+        expect(result.provider).toBe(b.name);
+        // No failover to A.
+        expect(m.calls.some((c) => c.url.includes("a.up.test"))).toBe(false);
+        // No circuit-breaker impact: B stays open with zero fails.
+        const cb = store.circuitState().find((x) => x.id === b.id);
+        expect(cb?.state).toBe("open");
+        expect(cb?.fails).toBe(0);
+      } finally {
+        m.restore();
+      }
+    });
+
+    it("POST .../providers/:pid/test → ok:false when the source is not on that route", async () => {
+      const a = makeProvider({ name: "alpha", formats: ["openai"] });
+      const b = makeProvider({ name: "bravo", formats: ["openai"] });
+      await seedStore(store, { providers: [a, b], apiKey: "sk-test", models: { "gpt-4o": makeModel({ openai: fe([a.id]) }) } });
+      const res = await createApp(store).request(`/admin/models/gpt-4o/providers/${b.id}/test?format=openai`, { method: "POST", headers: H_GET });
+      expect(res.status).toBe(200);
+      const result = (await json<{ result: { ok: boolean; error?: string } }>(res)).result;
+      expect(result.ok).toBe(false);
+      expect(result.error).toBeTruthy();
+    });
+
+    it("POST .../providers/:pid/test with no ?format picks the first enabled slot", async () => {
+      const a = makeProvider({ name: "alpha", formats: ["openai"], baseUrlOpenai: "https://a.up.test/v1", apiKey: "sk-a" });
+      await seedStore(store, { providers: [a], apiKey: "sk-test", models: { "gpt-4o": makeModel({ openai: fe([a.id]) }) } });
+      const m = mockFetch([{ match: "/chat/completions", response: { status: 200, body: { ok: true } } }]);
+      try {
+        const res = await createApp(store).request(`/admin/models/gpt-4o/providers/${a.id}/test`, { method: "POST", headers: H_GET });
+        expect(res.status).toBe(200);
+        const result = (await json<{ result: { ok: boolean; format: string } }>(res)).result;
+        expect(result.ok).toBe(true);
+        expect(result.format).toBe("openai");
+      } finally {
+        m.restore();
+      }
+    });
   });
 
   // --- misc ---

@@ -306,4 +306,53 @@ describe("proxy", () => {
       expect(res.headers.get("x-myapikey-provider")).toBeNull();
     });
   });
+
+  describe("pinned probe (per-source test)", () => {
+    it("hits only the pinned provider even when it isn't first in the chain", async () => {
+      // m routes A→B; pinning B must not touch A.
+      mock = mockFetch([
+        { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "A" } }] } } },
+        { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "B" } }] } } },
+      ]);
+      const res = await post("/v1/chat/completions", { model: "m", messages: [] }, {
+        "x-myapikey-probe": "1",
+        "x-myapikey-probe-provider": "prv_B",
+      });
+      expect(res.status).toBe(200);
+      expect(res.headers.get("x-myapikey-provider")).toBe("B");
+      expect(mock.calls.some((c) => c.url.includes("/b/"))).toBe(true);
+      expect(mock.calls.some((c) => c.url.includes("/a/"))).toBe(false);
+    });
+
+    it("fails fast on 429 (no failover) with no circuit impact, surfacing the real status", async () => {
+      mock = mockFetch([
+        { match: "/a/v1/chat/completions", response: { status: 200, body: {} } },
+        { match: "/b/v1/chat/completions", response: { status: 429, body: { error: { message: "slow" } } } },
+      ]);
+      const res = await post("/v1/chat/completions", { model: "m", messages: [] }, {
+        "x-myapikey-probe": "1",
+        "x-myapikey-probe-provider": "prv_B",
+      });
+      // The real upstream status (429), not a collapsed 502.
+      expect(res.status).toBe(429);
+      expect(res.headers.get("x-myapikey-provider")).toBe("B");
+      // No failover to A, no breaker trip.
+      expect(mock.calls.some((c) => c.url.includes("/a/"))).toBe(false);
+      expect(store.isCooling("prv_B")).toBe(false);
+      expect(store.circuitState().find((x) => x.id === "prv_B")?.fails).toBe(0);
+    });
+
+    it("404s when the pinned provider isn't on the route (no upstream hit)", async () => {
+      mock = mockFetch([
+        { match: "/a/v1/chat/completions", response: { status: 200, body: {} } },
+      ]);
+      // onlyA routes solely to A; pinning B yields model_not_found with no fetch.
+      const res = await post("/v1/chat/completions", { model: "onlyA", messages: [] }, {
+        "x-myapikey-probe": "1",
+        "x-myapikey-probe-provider": "prv_B",
+      });
+      expect(res.status).toBe(404);
+      expect(mock.calls.length).toBe(0);
+    });
+  });
 });

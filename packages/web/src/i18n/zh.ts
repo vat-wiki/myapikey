@@ -196,6 +196,7 @@ export default {
     removeModel: "移除模型",
     moreActions: "更多操作",
     testModel: "测试",
+    testSource: "测试此来源",
     probeTesting: "测试中",
     probeOk: "可用",
     probeOkHint: "最近测试通过(源:{name})",

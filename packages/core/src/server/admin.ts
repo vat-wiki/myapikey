@@ -484,6 +484,56 @@ export function adminApi(store: Store, auth: MiddlewareHandler, v1: Hono): Hono 
     return c.json({ result: { ok: false, status: res.status, provider, format, error: shortError(txt) || `HTTP ${res.status}` } });
   });
 
+  // Probe a SINGLE source for a model+format: the same end-to-end loopback as the
+  // whole-model /test above, but dispatch is pinned to this one provider (via the
+  // x-myapikey-probe-provider header), so there is no failover and no
+  // circuit-breaker impact — a manual "is THIS source up?" check that reports the
+  // provider's real upstream status. Validation misses (source not on this route,
+  // wrong wire format) come back as a ProbeResult body, not an HTTP error, so the
+  // caller reads `result` uniformly.
+  app.post("/models/:name/providers/:providerId/test", async (c) => {
+    const name = c.req.param("name");
+    const pid = c.req.param("providerId");
+    const cfg = store.get();
+    const entry = cfg.models[name];
+    if (!entry) return c.json({ error: { message: "model not found" } }, 404);
+    let format = c.req.query("format") as RouteKey | undefined;
+    if (!format) {
+      // No slot requested: pick the first one the model is enabled on.
+      for (const k of ["openai", "anthropic", "responses"] as RouteKey[]) if (entry[k]?.enabled) { format = k; break; }
+    }
+    if (!format || !entry[format]?.enabled) {
+      return c.json({ result: { ok: false, status: 0, format: format ?? "openai", error: "model not enabled on that routing slot" } });
+    }
+    if (!entry[format].providers.includes(pid)) {
+      return c.json({ result: { ok: false, status: 0, format, error: "source is not on this route" } });
+    }
+    const provider = cfg.providers.find((p) => p.id === pid);
+    if (!provider || !providerSpeaks(provider, format)) {
+      return c.json({ result: { ok: false, status: 0, format, error: "source does not speak this format" } });
+    }
+    const path = format === "anthropic" ? "/messages" : format === "responses" ? "/responses" : "/chat/completions";
+    // /responses is the OpenAI Responses API — it takes `input`, not `messages`.
+    const body =
+      format === "responses"
+        ? { model: name, input: "ping", stream: false }
+        : { model: name, messages: [{ role: "user", content: "ping" }], max_tokens: 1, stream: false };
+    let res: Response;
+    try {
+      res = await v1.request(path, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${cfg.apiKey}`, "x-myapikey-probe": "1", "x-myapikey-probe-provider": pid },
+        body: JSON.stringify(body),
+      });
+    } catch (e) {
+      return c.json({ result: { ok: false, status: 0, format, error: `gateway loopback failed: ${(e as Error).message}` } });
+    }
+    const answeredBy = res.headers.get("x-myapikey-provider") ?? undefined;
+    if (res.ok) return c.json({ result: { ok: true, status: res.status, provider: answeredBy, format } });
+    const txt = await res.text().catch(() => "");
+    return c.json({ result: { ok: false, status: res.status, provider: answeredBy, format, error: shortError(txt) || `HTTP ${res.status}` } });
+  });
+
   app.delete("/models/:name", async (c) => {
     const name = c.req.param("name");
     await store.update((d) => {
