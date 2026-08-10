@@ -23,6 +23,10 @@ const LOG_TAIL_BYTES = 512 * 1024;
  *  doubling each consecutive failure up to CAP. Resets on the next success. */
 const CB_BASE = 30_000;
 const CB_CAP = 300_000;
+// Floor for honoring an upstream Retry-After hint — small positive values (a
+// lenient "Retry-After: 0"/sub-second) shouldn't read as "no cooldown" and let
+// us re-hammer a just-rate-limited source in a tight loop.
+const CB_MIN = 1_000;
 
 /** RPM pacing window: a source's `rpm` cap counts calls within this trailing
  *  window. 60s matches the usual "requests per minute" limit. */
@@ -412,15 +416,21 @@ export class Store {
    *  consecutive failure (BASE * 2^(fails-1), capped at CAP); `fails` persists
    *  across cooldown expirations and is reset only by success — unless the
    *  provider has been quiet for > CAP, in which case it starts fresh at 1.
+   *  When the upstream told us exactly how long to back off (`retryAfterMs`,
+   *  parsed from a 429/overloaded Retry-After header), honor it — clamped to
+   *  [CB_MIN, CAP] — instead of the escalating guess: the source isn't sicker,
+   *  it just said when it'll be ready. `fails` still increments either way so a
+   *  later hint-less failure continues the escalation from where it left off.
    *  Returns `entered` = transitioned from healthy → cooling this call (the
    *  caller logs a cooldown row only then, to avoid timeline spam), plus the
    *  fails count and cooldown duration for that row. */
-  recordCircuitFailure(id: string, status: number, reason: string): { entered: boolean; fails: number; cooldownMs: number } {
+  recordCircuitFailure(id: string, status: number, reason: string, retryAfterMs?: number): { entered: boolean; fails: number; cooldownMs: number } {
     const now = Date.now();
     const cur = this.circuit.get(id);
     const stale = !cur || now - cur.lastTs > CB_CAP;
     const fails = stale ? 1 : cur!.fails + 1;
-    const cooldownMs = Math.min(CB_CAP, CB_BASE * 2 ** (fails - 1));
+    const hint = retryAfterMs && Number.isFinite(retryAfterMs) && retryAfterMs > 0 ? retryAfterMs : 0;
+    const cooldownMs = hint ? Math.min(CB_CAP, Math.max(CB_MIN, Math.round(hint))) : Math.min(CB_CAP, CB_BASE * 2 ** (fails - 1));
     const until = now + cooldownMs;
     const wasCooling = !!cur && cur.until > now;
     this.circuit.set(id, { fails, until, lastStatus: status, lastReason: reason, lastTs: now });

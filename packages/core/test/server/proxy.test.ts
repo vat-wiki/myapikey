@@ -341,6 +341,31 @@ describe("proxy", () => {
       expect(mock.calls.filter((c) => c.url.includes("/a/")).length).toBe(0);
       expect(mock.calls.filter((c) => c.url.includes("/b/")).length).toBe(1);
     });
+
+    it("honors an upstream Retry-After on 429 (cools exactly that long, not 30s)", async () => {
+      mock = mockFetch([
+        { match: "/a/v1/chat/completions", response: { status: 429, body: { error: { message: "slow" } }, headers: { "retry-after": "5" } } },
+        { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "B" } }] } } },
+      ]);
+      const res = await post("/v1/chat/completions", { model: "m", messages: [] });
+      expect(res.status).toBe(200); // failed over to B
+      expect(store.isCooling("prv_A")).toBe(true);
+      const cd = store.getLogs().find((e) => e.providerId === "prv_A" && e.kind === "cooldown");
+      expect(cd?.cooldownMs).toBe(5_000);
+      expect(cd?.fails).toBe(1);
+    });
+
+    it("falls back to the escalating 30s cooldown when a 429 has no Retry-After", async () => {
+      mock = mockFetch([
+        { match: "/a/v1/chat/completions", response: { status: 429, body: { error: { message: "slow" } } } },
+        { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "B" } }] } } },
+      ]);
+      const res = await post("/v1/chat/completions", { model: "m", messages: [] });
+      expect(res.status).toBe(200);
+      expect(store.isCooling("prv_A")).toBe(true);
+      const cd = store.getLogs().find((e) => e.providerId === "prv_A" && e.kind === "cooldown");
+      expect(cd?.cooldownMs).toBe(30_000);
+    });
   });
 
   describe("stream truncation monitoring", () => {

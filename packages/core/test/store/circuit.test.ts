@@ -66,6 +66,38 @@ describe("store circuit breaker", () => {
     });
   });
 
+  describe("Retry-After hint (retryAfterMs)", () => {
+    it("honors an exact hint instead of the escalating guess", () => {
+      const r = env.store.recordCircuitFailure("prv_1", 429, "rate limit", 5_000);
+      expect(r).toEqual({ entered: true, fails: 1, cooldownMs: 5_000 });
+      expect(env.store.isCooling("prv_1")).toBe(true);
+    });
+    it("clamps a tiny positive hint up to CB_MIN (1s) so we don't re-hammer", () => {
+      expect(env.store.recordCircuitFailure("prv_1", 429, "x", 50).cooldownMs).toBe(1_000);
+    });
+    it("clamps an OpenAI-style org-quota hint down to CB_CAP (5min)", () => {
+      expect(env.store.recordCircuitFailure("prv_1", 429, "x", 99_999_000).cooldownMs).toBe(300_000);
+    });
+    it("does not escalate across consecutive hint failures (the source isn't sicker)", () => {
+      env.store.recordCircuitFailure("prv_1", 429, "1", 5_000); // fails=1, cool 5s
+      const r = env.store.recordCircuitFailure("prv_1", 429, "2", 8_000);
+      expect(r.fails).toBe(2);
+      expect(r.cooldownMs).toBe(8_000); // the hint, NOT 2nd-level escalation (60s)
+    });
+    it("a later hint-less failure continues escalation from the counted fails", () => {
+      env.store.recordCircuitFailure("prv_1", 429, "1", 5_000); // fails=1
+      const r = env.store.recordCircuitFailure("prv_1", 503, "2"); // fails=2 → 60s
+      expect(r.fails).toBe(2);
+      expect(r.cooldownMs).toBe(60_000);
+    });
+    it("ignores non-positive/invalid hints (falls back to escalation)", () => {
+      // Same provider across the three calls, so fails climbs 1→2→3.
+      expect(env.store.recordCircuitFailure("prv_1", 429, "x", 0).cooldownMs).toBe(30_000);
+      expect(env.store.recordCircuitFailure("prv_1", 429, "x", NaN).cooldownMs).toBe(60_000);
+      expect(env.store.recordCircuitFailure("prv_1", 429, "x", undefined).cooldownMs).toBe(120_000);
+    });
+  });
+
   describe("entered semantics", () => {
     it("is true only on the healthy→cooling transition (one cooldown row)", () => {
       expect(env.store.recordCircuitFailure("prv_1", 503, "e1").entered).toBe(true);

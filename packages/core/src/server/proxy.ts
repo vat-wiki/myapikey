@@ -9,6 +9,26 @@ const RETRYABLE = new Set([408, 425, 429, 500, 502, 503, 504]);
 /** Headers copied from upstream back to the client. */
 const COPY_DOWN = ["content-type", "cache-control", "x-request-id", "openai-organization", "anthropic-ratelimit-requests-reset"];
 
+/** Parse a `Retry-After` response header (RFC 9110) into a millisecond delay.
+ *  Two legal forms: delta-seconds (`"30"`) or an HTTP-date
+ *  (`"Wed, 21 Oct 2026 07:28:00 GMT"`). Returns the raw ms — store clamps it to
+ *  [CB_MIN, CB_CAP]; returns undefined for absent/empty/invalid/future-negative
+ *  so the caller falls back to the escalating circuit backoff. OpenAI,
+ *  Anthropic, OpenRouter, NIM and the OpenAI-compatible backends all emit this
+ *  on a 429/overloaded, so honoring it gives an exact cooldown where the per-
+ *  vendor `*-reset` headers would each need bespoke parsing. */
+function parseRetryAfter(v: string | null | undefined): number | undefined {
+  if (!v) return undefined;
+  const s = Number(v);
+  if (Number.isFinite(s) && s > 0) return s * 1000;
+  const t = Date.parse(v);
+  if (Number.isFinite(t)) {
+    const ms = t - Date.now();
+    return ms > 0 ? ms : undefined;
+  }
+  return undefined;
+}
+
 /** Resolve the ordered, compatible provider list for a model on a routing slot. */
 function candidates(store: Store, model: string, key: RouteKey): Provider[] {
   const d = store.get();
@@ -343,7 +363,11 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
         const txt = await upstream.text().catch(() => "");
         lastErr = shortError(txt) || `HTTP ${upstream.status}`;
         if (pinId) break; // per-source probe: fail fast, no circuit impact.
-        const r = store.recordCircuitFailure(provider.id, lastStatus, lastErr);
+        // A 429/overloaded upstream usually carries Retry-After; honoring it
+        // cools for exactly as long as asked (clamped) instead of the escalating
+        // guess. Absent (5xx often, or a proxy that stripped it) → escalate.
+        const retryAfterMs = parseRetryAfter(upstream.headers.get("retry-after"));
+        const r = store.recordCircuitFailure(provider.id, lastStatus, lastErr, retryAfterMs);
         if (r.entered) {
           store.pushLog({ ts: Date.now(), model, provider: provider.name, providerId: provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: lastErr });
         }
