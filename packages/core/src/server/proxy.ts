@@ -120,19 +120,48 @@ interface SettleInfo {
  *  boundaries — NOT on content, which would false-positive on legitimate
  *  tool-use responses that carry only input_json_delta. A client cancel settles
  *  nothing (the client walked away — not a provider failure, don't log/cool). */
+/** Substrings whose presence proves a streaming response reached a REAL
+ *  terminal event — so an absent marker at stream-end means truncation. Keyed by
+ *  routing slot: anthropic ends on message_stop; /chat/completions on [DONE];
+ *  /responses on any of its terminal events (completed/failed/incomplete/
+ *  cancelled — a clean upstream FAILURE is not a truncation, just a failed call,
+ *  so we don't cool the source for it). Empty for a non-streaming body, where
+ *  only a reader error counts. */
+function terminalMarkers(key: RouteKey, stream: boolean): string[] {
+  if (!stream) return [];
+  if (key === "anthropic") return ["message_stop"];
+  if (key === "responses") return ["response.completed", "response.failed", "response.incomplete", "response.cancelled"];
+  return ["[DONE]"]; // openai /chat/completions
+}
+
+/** Best-effort synthetic terminal error frame, so a client learns a stream died
+ *  instead of seeing a silent EOF. Each wire's own convention:
+ *  - anthropic + /responses use typed `event: error` (spec'd);
+ *  - /chat/completions is a data-only SSE stream with NO spec'd mid-stream error
+ *    event, so we emit the de-facto `data: {"error":…}` shape most compatible
+ *    backends/SDKs raise on.
+ *  Never emits `[DONE]` (that signals success). */
+function errorFrame(key: RouteKey, reason: string): string {
+  const msg = reason.slice(0, 200);
+  if (key === "anthropic") {
+    return `event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "api_error", message: msg } })}\n\n`;
+  }
+  if (key === "responses") {
+    // Plain transport-error `event: error` (response.failed would need a full
+    // Response object we don't have). Best-effort — /responses is opt-in.
+    return `event: error\ndata: ${JSON.stringify({ type: "error", message: msg })}\n\n`;
+  }
+  return `data: ${JSON.stringify({ error: { message: msg, type: "server_error" } })}\n\n`;
+}
+
 function observedBody(
   upstream: Response,
-  opts: { stream: boolean; wire: Format; onSettle: (info: SettleInfo) => void },
+  opts: { stream: boolean; key: RouteKey; onSettle: (info: SettleInfo) => void },
 ): ReadableStream<Uint8Array> {
   const reader = upstream.body?.getReader();
   const enc = new TextEncoder();
   const dec = new TextDecoder();
-  const markers = opts.stream
-    ? opts.wire === "anthropic"
-      ? ["message_stop"]
-      : ["[DONE]", "response.completed"]
-    : [];
-  const anthropic = opts.wire === "anthropic";
+  const markers = terminalMarkers(opts.key, opts.stream);
   let tail = ""; // rolling window so a marker split across chunks is still caught
   let terminal = false;
   let settled = false;
@@ -142,16 +171,8 @@ function observedBody(
     settled = true;
     opts.onSettle(info);
   };
-  // v1: inject only on the anthropic wire (where the reported silent-EOF bug
-  // bites Claude Code). OpenAI/Responses still get detect + 502 + circuit (the
-  // resilience guarantee is format-agnostic) but no fabricated in-band frame.
   const injectError = (controller: ReadableStreamDefaultController<Uint8Array>, reason: string) => {
-    if (!anthropic) return;
-    controller.enqueue(
-      enc.encode(
-        `event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "api_error", message: reason } })}\n\n`,
-      ),
-    );
+    controller.enqueue(enc.encode(errorFrame(opts.key, reason)));
   };
 
   return new ReadableStream<Uint8Array>({
@@ -300,7 +321,7 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
         const ttfb = Date.now() - start;
         const body = observedBody(upstream, {
           stream,
-          wire,
+          key,
           onSettle: (info) => {
             if (info.ok) {
               store.recordCircuitSuccess(provider.id);

@@ -407,15 +407,57 @@ describe("proxy", () => {
       expect(call?.status).toBe(200);
     });
 
-    it("truncated openai stream: logs 502 + trips the circuit, injects NO error frame (v1 anthropic-only)", async () => {
+    it("truncated openai /chat/completions stream: logs 502 + trips circuit, injects a data:{error} frame", async () => {
       const sse = sseBody(['data: {"choices":[{"delta":{"content":"hi"}}]}', ""]); // no [DONE]
       mock = mockFetch([{ match: "/a/v1/chat/completions", response: { status: 200, bodyStream: sse, headers: sseHeaders } }]);
       const res = await post("/v1/chat/completions", { model: "m", messages: [], stream: true });
       const text = await res.text();
+      expect(text).toContain('"error"'); // de-facto data:{error} shape; no event: line on this wire
+      expect(text).toContain("server_error");
       expect(text).not.toContain("event: error");
       const call = store.getLogs().find((e) => e.model === "m" && !e.kind);
       expect(call?.status).toBe(502);
       expect(store.isCooling("prv_A")).toBe(true);
+    });
+
+    it("truncated /responses stream: logs 502, trips circuit, injects an event:error", async () => {
+      const sse = sseBody([
+        "event: response.created", 'data: {"type":"response.created"}', "",
+        'event: response.output_text.delta', 'data: {"type":"response.output_text.delta","delta":"hi"}', "",
+        // no response.completed — truncated
+      ]);
+      mock = mockFetch([{ match: "/a/v1/responses", response: { status: 200, bodyStream: sse, headers: sseHeaders } }]);
+      const res = await post("/v1/responses", { model: "m", input: "x", stream: true });
+      const text = await res.text();
+      expect(text).toContain("event: error");
+      expect(text).toContain('"type":"error"');
+      const call = store.getLogs().find((e) => e.model === "m" && !e.kind);
+      expect(call?.status).toBe(502);
+      expect(store.isCooling("prv_A")).toBe(true);
+    });
+
+    it("a /responses stream ending in response.completed is healthy (200)", async () => {
+      const sse = sseBody([
+        "event: response.created", 'data: {"type":"response.created"}', "",
+        "event: response.completed", 'data: {"type":"response.completed"}', "",
+      ]);
+      mock = mockFetch([{ match: "/a/v1/responses", response: { status: 200, bodyStream: sse, headers: sseHeaders } }]);
+      await (await post("/v1/responses", { model: "m", input: "x", stream: true })).text();
+      const call = store.getLogs().find((e) => e.model === "m" && !e.kind);
+      expect(call?.status).toBe(200);
+    });
+
+    it("a /responses stream ending in response.failed is NOT truncation (upstream reported failure cleanly)", async () => {
+      const sse = sseBody([
+        "event: response.created", 'data: {"type":"response.created"}', "",
+        "event: response.failed", 'data: {"type":"response.failed","response":{"status":"failed","error":{"message":"boom"}}}', "",
+      ]);
+      mock = mockFetch([{ match: "/a/v1/responses", response: { status: 200, bodyStream: sse, headers: sseHeaders } }]);
+      const text = await (await post("/v1/responses", { model: "m", input: "x", stream: true })).text();
+      expect(text).not.toContain("event: error"); // upstream's own failure event passed through; no synthetic inject
+      const call = store.getLogs().find((e) => e.model === "m" && !e.kind);
+      expect(call?.status).toBe(200); // clean terminal → not truncated → don't cool
+      expect(store.isCooling("prv_A")).toBe(false);
     });
 
     it("a pinned per-source probe with a truncated stream logs 502 but does NOT trip the circuit", async () => {
