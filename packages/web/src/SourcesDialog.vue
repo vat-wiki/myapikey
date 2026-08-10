@@ -27,6 +27,7 @@ const newName = ref("");
 const newBaseUrlOpenai = ref("");
 const newBaseUrlAnthropic = ref("");
 const newKey = ref("");
+const newRpm = ref("");
 const fmtOpenai = ref(true);
 const fmtAnthropic = ref(false);
 const newResponses = ref(false);
@@ -41,6 +42,7 @@ const editName = ref("");
 const editBaseUrlOpenai = ref("");
 const editBaseUrlAnthropic = ref("");
 const editKey = ref("");
+const editRpm = ref("");
 const editFmtOpenai = ref(true);
 const editFmtAnthropic = ref(false);
 const editResponses = ref(false);
@@ -114,10 +116,12 @@ async function add() {
       apiKey: newKey.value,
       formats,
       supportsResponses: fmtOpenai.value && newResponses.value,
+      rpm: Number(newRpm.value) || 0,
     });
     providers.value = [...providers.value, r.provider];
     newName.value = newKey.value = "";
     newBaseUrlOpenai.value = newBaseUrlAnthropic.value = "";
+    newRpm.value = "";
     newResponses.value = false;
     showAdd.value = false;
     toast(t("sources.added"), "success");
@@ -135,6 +139,7 @@ function startEdit(p: ProviderPublic) {
   editBaseUrlOpenai.value = p.baseUrlOpenai;
   editBaseUrlAnthropic.value = p.baseUrlAnthropic;
   editKey.value = ""; // blank = keep current (we only hold the masked key)
+  editRpm.value = p.rpm ? String(p.rpm) : "";
   editFmtOpenai.value = p.formats.includes("openai");
   editFmtAnthropic.value = p.formats.includes("anthropic");
   editResponses.value = !!p.supportsResponses;
@@ -166,6 +171,7 @@ async function saveEdit(p: ProviderPublic) {
       baseUrlAnthropic: editBaseUrlAnthropic.value,
       formats,
       supportsResponses: editFmtOpenai.value && editResponses.value,
+      rpm: Number(editRpm.value) || 0,
     };
     if (editKey.value) body.apiKey = editKey.value; // omit → server keeps existing
     const r = await req<{ provider: ProviderPublic }>("PUT", `/admin/providers/${p.id}`, body);
@@ -338,6 +344,11 @@ function discTitle(p: ProviderPublic): string {
           <label class="text-xs font-medium text-muted-foreground">{{ t("sources.keyLabel") }}</label>
           <Input v-model="newKey" type="password" :placeholder="t('sources.keyPh')" autocomplete="new-password" aria-label="api key" />
         </div>
+        <div class="space-y-1.5">
+          <label class="text-xs font-medium text-muted-foreground">{{ t("sources.rpmLabel") }}</label>
+          <Input v-model="newRpm" type="number" min="0" inputmode="numeric" :placeholder="t('sources.rpmPh')" aria-label="rpm" />
+          <p class="text-xs text-muted-foreground">{{ t("sources.rpmHint") }}</p>
+        </div>
         <p v-if="formErr" class="text-sm text-destructive">{{ formErr }}</p>
         <div class="flex justify-end gap-2">
           <Button v-if="providers.length" variant="ghost" size="sm" @click="showAdd = false">{{ t("sources.cancel") }}</Button>
@@ -361,6 +372,7 @@ function discTitle(p: ProviderPublic): string {
               <div class="flex items-center gap-2">
                 <span class="truncate font-medium">{{ p.name }}</span>
                 <Badge v-for="f in p.formats" :key="f" variant="secondary">{{ f }}</Badge>
+                <Badge v-if="p.rpm" variant="outline" :title="t('sources.rpmBadgeHint')">{{ t("sources.rpmBadge", { n: p.rpm }) }}</Badge>
                 <Badge variant="muted" :title="discTitle(p)">{{ discLabel(p) }}</Badge>
               </div>
               <div v-if="p.formats.includes('openai')" class="mt-0.5 truncate font-mono text-xs text-muted-foreground"><span class="opacity-60">openai ·</span> {{ p.baseUrlOpenai }}</div>
@@ -446,6 +458,11 @@ function discTitle(p: ProviderPublic): string {
                 <span v-if="p.apiKey" class="text-xs text-muted-foreground">{{ t("sources.currentKeyLabel") }}: {{ p.apiKey }}</span>
               </div>
               <Input v-model="editKey" type="password" :placeholder="t('sources.keyPhEdit')" autocomplete="new-password" aria-label="api key" />
+            </div>
+            <div class="space-y-1.5">
+              <label class="text-xs font-medium text-muted-foreground">{{ t("sources.rpmLabel") }}</label>
+              <Input v-model="editRpm" type="number" min="0" inputmode="numeric" :placeholder="t('sources.rpmPh')" aria-label="rpm" />
+              <p class="text-xs text-muted-foreground">{{ t("sources.rpmHint") }}</p>
             </div>
             <div class="flex justify-end gap-2">
               <Button variant="ghost" size="sm" @click="cancelEdit">{{ t("sources.cancel") }}</Button>

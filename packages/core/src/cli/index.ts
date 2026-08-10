@@ -110,15 +110,19 @@ provider
   .option("--base-url-anthropic <url>", "Anthropic base URL excl. /v1, e.g. https://api.anthropic.com", "")
   .option("--key <key>", "api key for the backend", "")
   .option("--formats <list>", "comma list: openai,anthropic", "openai")
-  .action(async (name: string, opts: { baseUrlOpenai: string; baseUrlAnthropic: string; key: string; formats: string }) => {
+  .option("--rpm <n>", "optional request-per-minute cap (pace a free/limited key)", "")
+  .action(async (name: string, opts: { baseUrlOpenai: string; baseUrlAnthropic: string; key: string; formats: string; rpm: string }) => {
     const formats = opts.formats.split(",").map((s) => s.trim()).filter(Boolean) as ("openai" | "anthropic")[];
-    const r = await api(ctx(), "POST", "/admin/providers", {
+    const rpm = Number(opts.rpm);
+    const body: Record<string, unknown> = {
       name,
       baseUrlOpenai: opts.baseUrlOpenai,
       baseUrlAnthropic: opts.baseUrlAnthropic,
       apiKey: opts.key,
       formats,
-    });
+    };
+    if (Number.isFinite(rpm) && rpm > 0) body.rpm = Math.floor(rpm);
+    const r = await api(ctx(), "POST", "/admin/providers", body);
     console.log(`Added provider ${(r as any).provider.name} (${(r as any).provider.id})`);
   });
 

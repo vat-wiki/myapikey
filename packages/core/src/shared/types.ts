@@ -19,6 +19,13 @@ export interface Provider {
   apiKey: string;
   /** Which wire formats this backend responds to. */
   formats: Format[];
+  /** Optional request-per-minute cap (RPM pacing). When set, dispatch skips this
+   *  source once it has forwarded `rpm` calls in the trailing 60s window — the
+   *  request fails over to the next source instead of racing the upstream's own
+   *  rate limit (and burning a free/quota-bound key). 0/absent = unlimited.
+   *  The limit is on the key, so it's per-source and shared across every model
+   *  routed through it. Tracked in-memory only (see Store.rpmUsed). */
+  rpm?: number;
   /** Whether this backend also implements the OpenAI Responses API (/responses).
    *  NOT implied by `formats` — many openai-compatible backends lack it. Opt-in. */
   supportsResponses?: boolean;

@@ -221,6 +221,50 @@ describe("server/admin", () => {
       expect(res.status).toBe(404);
     });
 
+    it("POST persists rpm (positive int) and toPublic returns it", async () => {
+      const res = await createApp(store).request("/admin/providers", {
+        method: "POST", headers: H,
+        body: JSON.stringify({ name: "nim", apiKey: "k", formats: ["openai"], baseUrlOpenai: "https://up.test/v1", rpm: 40 }),
+      });
+      expect(res.status).toBe(201);
+      const created = await json<{ provider: { rpm: number } }>(res);
+      expect(created.provider.rpm).toBe(40);
+      expect(store.get().providers[0].rpm).toBe(40);
+    });
+
+    it("POST treats 0 / blank / non-positive rpm as unlimited (absent)", async () => {
+      const app = createApp(store);
+      await app.request("/admin/providers", {
+        method: "POST", headers: H,
+        body: JSON.stringify({ name: "a", apiKey: "k", formats: ["openai"], baseUrlOpenai: "https://up.test/v1", rpm: 0 }),
+      });
+      expect(store.get().providers.find((p) => p.name === "a")!.rpm).toBeUndefined();
+    });
+
+    it("PUT rpm: omitted keeps, provided sets, 0 clears", async () => {
+      const app = createApp(store);
+      const created = await json<{ provider: { id: string } }>(app.request("/admin/providers", {
+        method: "POST", headers: H,
+        body: JSON.stringify({ name: "src", apiKey: "k", formats: ["openai"], baseUrlOpenai: "https://up.test/v1", rpm: 30 }),
+      }));
+      const id = created.provider.id;
+      expect(store.get().providers.find((p) => p.id === id)!.rpm).toBe(30);
+
+      // rpm OMITTED on PUT → keeps 30.
+      await app.request(`/admin/providers/${id}`, {
+        method: "PUT", headers: H,
+        body: JSON.stringify({ name: "src", formats: ["openai"], baseUrlOpenai: "https://up.test/v1" }),
+      });
+      expect(store.get().providers.find((p) => p.id === id)!.rpm).toBe(30);
+
+      // rpm: 0 on PUT → clears to unlimited.
+      await app.request(`/admin/providers/${id}`, {
+        method: "PUT", headers: H,
+        body: JSON.stringify({ name: "src", formats: ["openai"], baseUrlOpenai: "https://up.test/v1", rpm: 0 }),
+      });
+      expect(store.get().providers.find((p) => p.id === id)!.rpm).toBeUndefined();
+    });
+
     it("DELETE /admin/providers/:id removes it AND purges it from model chains + modelMaps", async () => {
       const app = createApp(store);
       await seedStore(store, {

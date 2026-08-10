@@ -98,6 +98,11 @@ export default {
     keyPh: "sk-…",
     keyPhEdit: "输入新 Key（留空则保持不变）",
     currentKeyLabel: "当前",
+    rpmLabel: "速率限制 (RPM)",
+    rpmPh: "不限",
+    rpmHint: "每分钟最多向此来源转发多少次,超出即溢出到下一个来源。给免费/有限额度的 Key 留点余量,而不是顶满它自身的上限。留空 = 不限速。",
+    rpmBadge: "{n} rpm",
+    rpmBadgeHint: "限制为每分钟 {n} 次,超出的请求会切换到下一个来源。",
     formats: "格式",
     responses: "支持 Responses",
     addBtn: "添加",
@@ -242,6 +247,11 @@ export default {
       cooldown: "冷却 {s}s",
       reset: "立即重置",
       reasonUnknown: "临时错误",
+    },
+    pacing: {
+      stripTitle: "已达速率上限的来源",
+      at: "{used}/{cap} rpm",
+      reason: "限速中 —— 超出部分切换到下一个来源",
     },
   },
   stats: {

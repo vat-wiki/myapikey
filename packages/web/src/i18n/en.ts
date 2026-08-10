@@ -98,6 +98,11 @@ export default {
     keyPh: "sk-…",
     keyPhEdit: "Enter new key (leave blank to keep current)",
     currentKeyLabel: "current",
+    rpmLabel: "Rate limit (RPM)",
+    rpmPh: "unlimited",
+    rpmHint: "Max requests/min to forward here before overflowing to the next source. Leaves a free/limited key some headroom instead of racing its cap. Blank = no pacing.",
+    rpmBadge: "{n} rpm",
+    rpmBadgeHint: "Paced to {n} requests/min — calls past that overflow to the next source.",
     formats: "Formats",
     responses: "Responses API",
     addBtn: "Add",
@@ -242,6 +247,11 @@ export default {
       cooldown: "cooldown {s}s",
       reset: "Reset now",
       reasonUnknown: "transient failure",
+    },
+    pacing: {
+      stripTitle: "Sources at their rate limit",
+      at: "{used}/{cap} rpm",
+      reason: "pacing — overflowing to the next source",
     },
   },
   stats: {

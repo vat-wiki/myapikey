@@ -60,6 +60,9 @@ export interface ProviderPublic {
   formats: string[];
   supportsResponses?: boolean;
   apiKey: string;
+  /** Request-per-minute cap (0 = unlimited). Pacing: once hit, dispatch fails
+   *  over to the next source instead of racing the upstream's own limit. */
+  rpm: number;
   discoveredModels?: string[];
   discoveredAt?: number | null;
   createdAt: number;
@@ -96,6 +99,10 @@ export interface CircuitProvider {
   lastStatus: number;
   lastReason: string;
   lastTs: number;
+  /** Configured RPM cap (0 = unlimited). */
+  rpm: number;
+  /** Calls forwarded to this source in the trailing 60s window. */
+  rpmUsed: number;
 }
 
 /** One bucket in a stats breakdown (GET /admin/stats). `id` is set only on

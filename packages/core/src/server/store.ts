@@ -24,6 +24,10 @@ const LOG_TAIL_BYTES = 512 * 1024;
 const CB_BASE = 30_000;
 const CB_CAP = 300_000;
 
+/** RPM pacing window: a source's `rpm` cap counts calls within this trailing
+ *  window. 60s matches the usual "requests per minute" limit. */
+const RPM_WINDOW_MS = 60_000;
+
 /** Per-provider circuit state (in-memory, never persisted). */
 interface CircuitEntry {
   fails: number;
@@ -45,6 +49,10 @@ export interface CircuitView {
   lastStatus: number;
   lastReason: string;
   lastTs: number;
+  /** Configured RPM cap (0 = unlimited). */
+  rpm: number;
+  /** Calls forwarded to this source within the trailing 60s window. */
+  rpmUsed: number;
 }
 
 /** One bucket in a stats breakdown (by model / provider / format). `id` is set
@@ -108,6 +116,9 @@ export class Store {
    *  NOT persisted (resets on restart). Mutated via the circuit* methods only,
    *  never through update()/persist(). */
   private circuit = new Map<string, CircuitEntry>();
+  /** Per-provider dispatch timestamps within the RPM pacing window. In-memory,
+   *  NOT persisted (resets on restart). Pruned as `rpmUsed` reads. */
+  private rpm = new Map<string, number[]>();
 
   constructor(dataDir: string) {
     this.dataDir = dataDir;
@@ -431,6 +442,30 @@ export class Store {
     this.circuit.set(id, { ...cur, fails: 0, until: 0 });
   }
 
+  // --- RPM pacing (in-memory sliding window, never persisted) ---
+
+  /** Count this source's forwarded calls in the trailing RPM_WINDOW_MS, pruning
+   *  expired entries as it reads (timestamps are appended oldest-first). Returns
+   *  0 for a source with no recent activity. */
+  rpmUsed(id: string): number {
+    const arr = this.rpm.get(id);
+    if (!arr || !arr.length) return 0;
+    const cutoff = Date.now() - RPM_WINDOW_MS;
+    let i = 0;
+    while (i < arr.length && arr[i] < cutoff) i++;
+    if (i > 0) arr.splice(0, i);
+    if (!arr.length) this.rpm.delete(id);
+    return arr.length;
+  }
+
+  /** Record that we forwarded a call to this source (called by dispatch right
+   *  before the upstream fetch). Lets the next pacing check count this attempt. */
+  recordDispatch(id: string): void {
+    const arr = this.rpm.get(id);
+    if (arr) arr.push(Date.now());
+    else this.rpm.set(id, [Date.now()]);
+  }
+
   /** Snapshot of every configured provider's circuit state for GET /admin/circuit.
    *  Healthy providers appear as state "open"; a provider deleted while cooling
    *  simply drops out (we iterate the live config, not the map). */
@@ -449,6 +484,8 @@ export class Store {
         lastStatus: c?.lastStatus ?? 0,
         lastReason: c?.lastReason ?? "",
         lastTs: c?.lastTs ?? 0,
+        rpm: p.rpm ?? 0,
+        rpmUsed: this.rpmUsed(p.id),
       };
     });
   }

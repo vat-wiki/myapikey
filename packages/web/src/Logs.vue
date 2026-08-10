@@ -10,7 +10,7 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@
 import { Input } from "@/components/ui/input";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
-import { Activity, RefreshCw, Pause, Play, Loader2, Search, ChevronRight, ChevronDown, Filter, X, Timer } from "lucide-vue-next";
+import { Activity, RefreshCw, Pause, Play, Loader2, Search, ChevronRight, ChevronDown, Filter, X, Timer, Gauge } from "lucide-vue-next";
 
 const { t } = useI18n();
 
@@ -37,6 +37,9 @@ const refreshing = ref(false);
 /** Sources currently in circuit-breaker cooldown (drives the "cooling" strip).
  *  Polled alongside /admin/logs; empty = all healthy (strip hidden). */
 const cooling = ref<CircuitProvider[]>([]);
+/** Sources currently at their RPM cap (drives the "pacing" strip). Distinct from
+ *  cooling — pacing is intentional throttling, not a failure timeout. */
+const throttled = ref<CircuitProvider[]>([]);
 
 const filterModel = ref("all");
 const filterProvider = ref("all");
@@ -93,7 +96,12 @@ async function load() {
       req<{ providers: CircuitProvider[] }>("GET", "/admin/circuit").catch(() => null),
     ]);
     if (logsRes) logs.value = logsRes.logs;
-    if (circuitRes) cooling.value = circuitRes.providers.filter((p) => p.state === "cooling");
+    if (circuitRes) {
+      cooling.value = circuitRes.providers.filter((p) => p.state === "cooling");
+      // A source can be both cooling AND over its cap; show it under cooling (the
+      // more urgent, actionable state) so it isn't listed twice.
+      throttled.value = circuitRes.providers.filter((p) => p.rpm > 0 && p.rpmUsed >= p.rpm && p.state !== "cooling");
+    }
   } finally {
     refreshing.value = false;
   }
@@ -384,6 +392,27 @@ onUnmounted(stopPolling);
               <RefreshCw class="h-3 w-3" />
               {{ t("logs.circuit.reset") }}
             </Button>
+          </li>
+        </ul>
+      </div>
+
+      <!-- live "at its RPM cap right now" strip — pacing is intentional throttling
+           (a free/limited source being used gently), not a failure, so it gets its
+           own tone. Hidden unless ≥1 configured source is at its cap; self-clears
+           as the 60s window slides, so there's no reset button. -->
+      <div v-if="throttled.length" class="space-y-2 rounded-lg border border-orange-500/30 bg-orange-500/5 p-3">
+        <div class="flex items-center gap-1.5 text-xs font-medium text-orange-700 dark:text-orange-400">
+          <Gauge class="h-4 w-4" />
+          {{ t("logs.pacing.stripTitle") }}
+        </div>
+        <ul class="space-y-1.5">
+          <li v-for="p in throttled" :key="p.id" class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+            <span class="font-medium">{{ p.name }}</span>
+            <Badge variant="outline" class="gap-1 whitespace-nowrap">
+              <Gauge class="h-3 w-3" />
+              {{ t("logs.pacing.at", { used: p.rpmUsed, cap: p.rpm }) }}
+            </Badge>
+            <span class="text-muted-foreground">{{ t("logs.pacing.reason") }}</span>
           </li>
         </ul>
       </div>

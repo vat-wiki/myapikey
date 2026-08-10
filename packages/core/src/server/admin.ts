@@ -31,6 +31,13 @@ function formatsKey(f: Format[]): string {
   return [...f].sort().join(",");
 }
 
+/** Coerce an RPM cap to a positive integer, or undefined (0/blank/invalid =
+ *  unlimited). Accepts a number or a numeric string (form fields send strings). */
+function coerceRpm(v: unknown): number | undefined {
+  const n = typeof v === "string" ? Number(v.trim()) : v;
+  return typeof n === "number" && Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined;
+}
+
 /** Whether a provider is a valid source for a routing slot: openai/anthropic
  *  require that wire format; responses requires supportsResponses. */
 function providerSpeaks(p: Provider, key: RouteKey): boolean {
@@ -58,6 +65,7 @@ function toPublic(p: Provider) {
     formats: p.formats,
     supportsResponses: p.supportsResponses ?? false,
     apiKey: mask(p.apiKey),
+    rpm: p.rpm ?? 0,
     discoveredModels: p.discoveredModels ?? [],
     discoveredAt: p.discoveredAt ?? null,
     createdAt: p.createdAt,
@@ -176,7 +184,7 @@ export function adminApi(store: Store, auth: MiddlewareHandler, v1: Hono): Hono 
   app.get("/providers", (c) => c.json({ providers: store.get().providers.map(toPublic) }));
 
   app.post("/providers", async (c) => {
-    const body = await readJson<{ name?: string; baseUrlOpenai?: string; baseUrlAnthropic?: string; apiKey?: string; formats?: Format[]; supportsResponses?: boolean }>(c.req.raw);
+    const body = await readJson<{ name?: string; baseUrlOpenai?: string; baseUrlAnthropic?: string; apiKey?: string; formats?: Format[]; supportsResponses?: boolean; rpm?: number }>(c.req.raw);
     const formats = body?.formats ?? [];
     const needOpenai = formats.includes("openai");
     const needAnthropic = formats.includes("anthropic");
@@ -189,6 +197,7 @@ export function adminApi(store: Store, auth: MiddlewareHandler, v1: Hono): Hono 
     const id = newProviderId();
     const baseUrlOpenai = trimBase(body.baseUrlOpenai ?? "");
     const baseUrlAnthropic = trimBase(body.baseUrlAnthropic ?? "");
+    const rpm = coerceRpm(body!.rpm);
     await store.update((d) => {
       d.providers.push({
         id,
@@ -198,6 +207,7 @@ export function adminApi(store: Store, auth: MiddlewareHandler, v1: Hono): Hono 
         apiKey: body.apiKey!,
         formats,
         supportsResponses: body.supportsResponses === true,
+        ...(rpm ? { rpm } : {}),
         createdAt: Date.now(),
       });
     });
@@ -209,7 +219,7 @@ export function adminApi(store: Store, auth: MiddlewareHandler, v1: Hono): Hono 
 
   app.put("/providers/:id", async (c) => {
     const id = c.req.param("id");
-    const body = await readJson<{ name?: string; baseUrlOpenai?: string; baseUrlAnthropic?: string; apiKey?: string; formats?: Format[]; supportsResponses?: boolean }>(c.req.raw);
+    const body = await readJson<{ name?: string; baseUrlOpenai?: string; baseUrlAnthropic?: string; apiKey?: string; formats?: Format[]; supportsResponses?: boolean; rpm?: number }>(c.req.raw);
     const formats = body?.formats ?? [];
     const needOpenai = formats.includes("openai");
     const needAnthropic = formats.includes("anthropic");
@@ -239,6 +249,12 @@ export function adminApi(store: Store, auth: MiddlewareHandler, v1: Hono): Hono 
       p.apiKey = newKey;
       p.formats = formats;
       if (body.supportsResponses !== undefined) p.supportsResponses = body.supportsResponses;
+      // rpm: present in the body → set (0/invalid clears to unlimited); absent → keep.
+      if (body!.rpm !== undefined) {
+        const rpm = coerceRpm(body!.rpm);
+        if (rpm) p.rpm = rpm;
+        else delete p.rpm;
+      }
     });
     const found = store.get().providers.find((x) => x.id === id);
     if (!found) return c.json({ error: { message: "provider not found" } }, 404);

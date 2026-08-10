@@ -141,13 +141,14 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
     let lastStatus = 502;
     let lastErr = "";
 
-    // Skip providers currently in circuit-breaker cooldown. If every candidate
-    // is cooling, fall back to the full list anyway — cooldown is a heuristic,
-    // and one real attempt beats a guaranteed 502 (a cooled provider that now
-    // succeeds also resets its circuit). A pinned (per-source) probe ignores
-    // cooldown entirely: the user is asking to test THIS source now, whatever
-    // its breaker state.
-    const live = pinId ? list : list.filter((p) => !store.isCooling(p.id));
+    // Skip providers that are either in circuit-breaker cooldown OR over their
+    // RPM pacing cap. Both are heuristics: if every candidate is skipped, fall
+    // back to the full list anyway — one real attempt beats a guaranteed 502
+    // (a skipped provider that now succeeds also resets its state). A pinned
+    // (per-source) probe ignores both — the user is testing THIS source now,
+    // whatever its breaker/pacing state.
+    const skipped = (p: Provider) => store.isCooling(p.id) || (!!p.rpm && store.rpmUsed(p.id) >= p.rpm);
+    const live = pinId ? list : list.filter((p) => !skipped(p));
     const order = live.length ? live : list;
 
     for (const provider of order) {
@@ -157,6 +158,9 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
       // previous provider's upstream name. Absent map/key → send the public name.
       const mapped = store.get().models[model]?.[key]?.modelMap?.[provider.id];
       body.model = mapped ?? model;
+      // Count this attempt toward the source's RPM window — but not for a pinned
+      // probe, which (like circuit state) takes no routing side-effects.
+      if (!pinId) store.recordDispatch(provider.id);
       let upstream: Response;
       try {
         upstream = await fetch(upstreamTarget(provider, key).url, {

@@ -233,6 +233,74 @@ describe("proxy", () => {
     });
   });
 
+  describe("dispatch rpm pacing", () => {
+    it("skips a source at its rpm cap and fails over without hitting it", async () => {
+      await seedStore(store, {
+        providers: [{ ...A, rpm: 1 }, B],
+        models: { m: makeModel({ openai: fe(["prv_A", "prv_B"]) }) },
+      });
+      // Pre-fill A's window to its cap of 1.
+      store.recordDispatch("prv_A");
+      expect(store.rpmUsed("prv_A")).toBe(1);
+      mock = mockFetch([
+        { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "from-B" } }] } } },
+      ]);
+      const res = await post("/v1/chat/completions", { model: "m", messages: [] });
+      expect(res.status).toBe(200);
+      expect((await json<ChatBody>(res)).choices[0].message.content).toBe("from-B");
+      // A was skipped entirely — the upstream was never hit.
+      expect(mock.calls.filter((c) => c.url.includes("/a/")).length).toBe(0);
+      expect(mock.calls.filter((c) => c.url.includes("/b/")).length).toBe(1);
+    });
+
+    it("does not pace a source still under its cap", async () => {
+      await seedStore(store, {
+        providers: [{ ...A, rpm: 5 }],
+        models: { m: makeModel({ openai: fe(["prv_A", "prv_B"]) }) },
+      });
+      store.recordDispatch("prv_A"); // 1 < 5 — still under
+      mock = mockFetch([
+        { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "from-A" } }] } } },
+      ]);
+      const res = await post("/v1/chat/completions", { model: "m", messages: [] });
+      expect(res.status).toBe(200);
+      expect(mock.calls.filter((c) => c.url.includes("/a/")).length).toBe(1);
+    });
+
+    it("falls back to trying anyway when EVERY source is over its cap", async () => {
+      await seedStore(store, {
+        providers: [{ ...A, rpm: 1 }, { ...B, rpm: 1 }],
+        models: { m: makeModel({ openai: fe(["prv_A", "prv_B"]) }) },
+      });
+      // Both at their cap → heuristic would skip both, but the gateway falls back
+      // to the full chain rather than returning a guaranteed 502.
+      store.recordDispatch("prv_A");
+      store.recordDispatch("prv_B");
+      mock = mockFetch([
+        { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "from-A" } }] } } },
+      ]);
+      const res = await post("/v1/chat/completions", { model: "m", messages: [] });
+      expect(res.status).toBe(200);
+      expect(mock.calls.filter((c) => c.url.includes("/a/")).length).toBe(1);
+    });
+
+    it("a pinned per-source probe ignores the rpm cap and records nothing", async () => {
+      await seedStore(store, {
+        providers: [{ ...A, rpm: 1 }],
+        models: { m: makeModel({ openai: fe(["prv_A"]) }) },
+      });
+      store.recordDispatch("prv_A"); // at cap
+      mock = mockFetch([
+        { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "ok" } }] } } },
+      ]);
+      const res = await post("/v1/chat/completions", { model: "m", messages: [] }, { "x-myapikey-probe-provider": "prv_A" });
+      expect(res.status).toBe(200);
+      expect(mock.calls.filter((c) => c.url.includes("/a/")).length).toBe(1);
+      // A pinned probe takes no pacing side-effects: the window is unchanged.
+      expect(store.rpmUsed("prv_A")).toBe(1);
+    });
+  });
+
   describe("dispatch model mapping", () => {
     it("rewrites model per provider and recomputes from the original on failover", async () => {
       // Reseed m so only B has an upstream name mapped.
