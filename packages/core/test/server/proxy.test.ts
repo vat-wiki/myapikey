@@ -3,7 +3,7 @@ import { createApp } from "../../src/server/app";
 import { shortError, anthropicAuthHeaders } from "../../src/server/proxy";
 import type { Store } from "../../src/server/store";
 import { tmpStore } from "../helpers/store";
-import { mockFetch, type FetchMock } from "../helpers/mock";
+import { mockFetch, sseBody, chunkedBody, type FetchMock } from "../helpers/mock";
 import { json } from "../helpers/json";
 import { makeProvider, fe, makeModel, seedStore } from "../helpers/fixtures";
 
@@ -340,6 +340,125 @@ describe("proxy", () => {
       // A was skipped entirely; B answered once.
       expect(mock.calls.filter((c) => c.url.includes("/a/")).length).toBe(0);
       expect(mock.calls.filter((c) => c.url.includes("/b/")).length).toBe(1);
+    });
+  });
+
+  describe("stream truncation monitoring", () => {
+    // A healthy anthropic stream carries its terminal `message_stop` event.
+    const anthropicOk = () =>
+      sseBody([
+        "event: message_start", 'data: {"type":"message_start"}', "",
+        'event: content_block_delta', 'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}', "",
+        "event: message_stop", 'data: {"type":"message_stop"}', "",
+      ]);
+    // Same start but the stream ENDS before message_stop — the silent-EOF mode
+    // some incompatible backends produce (200 headers, then a truncated body).
+    const anthropicTrunc = () =>
+      sseBody([
+        "event: message_start", 'data: {"type":"message_start"}', "",
+        'event: content_block_delta', 'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}', "",
+      ]);
+    const sseHeaders = { "content-type": "text/event-stream" };
+
+    it("logs a healthy anthropic stream as 200 and forwards the body intact", async () => {
+      mock = mockFetch([{ match: "/a/v1/messages", response: { status: 200, bodyStream: anthropicOk(), headers: sseHeaders } }]);
+      const res = await post("/v1/messages", { model: "m", messages: [], stream: true });
+      expect(res.status).toBe(200);
+      const text = await res.text();
+      expect(text).toContain("message_stop");
+      const call = store.getLogs().find((e) => e.model === "m" && !e.kind);
+      expect(call?.status).toBe(200);
+      expect(call?.error).toBeUndefined();
+      expect(store.isCooling("prv_A")).toBe(false);
+    });
+
+    it("detects a truncated anthropic stream: logs 502, trips the circuit, injects an SSE error", async () => {
+      mock = mockFetch([{ match: "/a/v1/messages", response: { status: 200, bodyStream: anthropicTrunc(), headers: sseHeaders } }]);
+      const res = await post("/v1/messages", { model: "m", messages: [], stream: true });
+      expect(res.status).toBe(200); // HTTP status was already committed at the headers
+      const text = await res.text();
+      expect(text).toContain("text_delta"); // partial bytes still forwarded verbatim
+      expect(text).toContain("event: error"); // synthetic error appended
+      expect(text).toContain("api_error");
+      const call = store.getLogs().find((e) => e.model === "m" && !e.kind);
+      expect(call?.status).toBe(502);
+      expect(call?.error).toContain("truncated");
+      expect(store.isCooling("prv_A")).toBe(true); // → next call fails over
+    });
+
+    it("detects an upstream stream that errors mid-flight (reader rejects)", async () => {
+      const sse = sseBody(["event: message_start", 'data: {"type":"message_start"}', ""], "error", new TypeError("terminated"));
+      mock = mockFetch([{ match: "/a/v1/messages", response: { status: 200, bodyStream: sse, headers: sseHeaders } }]);
+      const res = await post("/v1/messages", { model: "m", messages: [], stream: true });
+      const text = await res.text();
+      expect(text).toContain("event: error");
+      const call = store.getLogs().find((e) => e.model === "m" && !e.kind);
+      expect(call?.status).toBe(502);
+      expect(call?.error).toContain("terminated");
+      expect(store.isCooling("prv_A")).toBe(true);
+    });
+
+    it("logs a healthy openai stream ([DONE]) as 200", async () => {
+      const sse = sseBody(['data: {"choices":[{"delta":{"content":"hi"}}]}', "", "data: [DONE]", ""]);
+      mock = mockFetch([{ match: "/a/v1/chat/completions", response: { status: 200, bodyStream: sse, headers: sseHeaders } }]);
+      const res = await post("/v1/chat/completions", { model: "m", messages: [], stream: true });
+      await res.text();
+      const call = store.getLogs().find((e) => e.model === "m" && !e.kind);
+      expect(call?.status).toBe(200);
+    });
+
+    it("truncated openai stream: logs 502 + trips the circuit, injects NO error frame (v1 anthropic-only)", async () => {
+      const sse = sseBody(['data: {"choices":[{"delta":{"content":"hi"}}]}', ""]); // no [DONE]
+      mock = mockFetch([{ match: "/a/v1/chat/completions", response: { status: 200, bodyStream: sse, headers: sseHeaders } }]);
+      const res = await post("/v1/chat/completions", { model: "m", messages: [], stream: true });
+      const text = await res.text();
+      expect(text).not.toContain("event: error");
+      const call = store.getLogs().find((e) => e.model === "m" && !e.kind);
+      expect(call?.status).toBe(502);
+      expect(store.isCooling("prv_A")).toBe(true);
+    });
+
+    it("a pinned per-source probe with a truncated stream logs 502 but does NOT trip the circuit", async () => {
+      mock = mockFetch([{ match: "/a/v1/messages", response: { status: 200, bodyStream: anthropicTrunc(), headers: sseHeaders } }]);
+      const res = await post("/v1/messages", { model: "m", messages: [], stream: true }, { "x-myapikey-probe-provider": "prv_A" });
+      await res.text();
+      const call = store.getLogs().find((e) => e.model === "m" && !e.kind);
+      expect(call?.status).toBe(502);
+      expect(store.isCooling("prv_A")).toBe(false);
+      expect(store.circuitState().find((x) => x.id === "prv_A")?.fails).toBe(0);
+    });
+
+    it("a source that truncated enters cooling, so the NEXT call fails over to the next source", async () => {
+      // m's anthropic slot defaults to A only — reseed A→B so failover exists.
+      await seedStore(store, {
+        providers: [A, B],
+        models: { m: makeModel({ anthropic: fe(["prv_A", "prv_B"]) }) },
+      });
+      mock = mockFetch([
+        { match: "/a/v1/messages", response: { status: 200, bodyStream: anthropicTrunc(), headers: sseHeaders } },
+        { match: "/b/v1/messages", response: { status: 200, bodyStream: anthropicOk(), headers: sseHeaders } },
+      ]);
+      // 1st call: A truncates → settles 502, A enters cooling.
+      await (await post("/v1/messages", { model: "m", messages: [], stream: true })).text();
+      expect(store.isCooling("prv_A")).toBe(true);
+      // 2nd call: A is cooling → skipped, B streams cleanly to completion.
+      const r2 = await post("/v1/messages", { model: "m", messages: [], stream: true });
+      expect((await r2.text()).includes("message_stop")).toBe(true);
+      expect(mock.calls.filter((c) => c.url.includes("/a/")).length).toBe(1);
+      expect(mock.calls.filter((c) => c.url.includes("/b/")).length).toBe(1);
+    });
+
+    it("detects a terminal marker split across two byte chunks", async () => {
+      const enc = new TextEncoder();
+      // "message_stop" straddles the boundary between the two chunks.
+      const split = chunkedBody([
+        enc.encode('event: message_sto'),
+        enc.encode('p\ndata: {"type":"message_stop"}\n\n'),
+      ]);
+      mock = mockFetch([{ match: "/a/v1/messages", response: { status: 200, bodyStream: split, headers: sseHeaders } }]);
+      await (await post("/v1/messages", { model: "m", messages: [], stream: true })).text();
+      const call = store.getLogs().find((e) => e.model === "m" && !e.kind);
+      expect(call?.status).toBe(200); // marker seen despite the split → healthy
     });
   });
 

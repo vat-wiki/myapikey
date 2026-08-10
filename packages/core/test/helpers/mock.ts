@@ -9,10 +9,14 @@ export interface RecordedCall {
 }
 
 /** What a mocked upstream responds with. `body` may be a string or a plain
- *  object (objects are JSON.stringified); defaults give a 200 JSON response. */
+ *  object (objects are JSON.stringified); defaults give a 200 JSON response.
+ *  `bodyStream` (a raw ReadableStream) overrides `body` — use it to simulate a
+ *  streaming upstream, including the 200-then-die-mid-stream failure mode
+ *  (truncation / errored reader) that a plain string body can't express. */
 export interface MockResponseSpec {
   status?: number;
   body?: unknown;
+  bodyStream?: ReadableStream<Uint8Array>;
   headers?: Record<string, string>;
 }
 
@@ -35,9 +39,13 @@ export interface FetchMock {
 
 function toResponse(spec: MockResponseSpec): Response {
   const status = spec.status ?? 200;
+  const headers = new Headers({ "content-type": "application/json", ...(spec.headers ?? {}) });
+  // A raw stream body flows straight through (the proxy pipes upstream.body
+  // verbatim), so a text/event-stream stream with mid-stream close/error behaves
+  // like a live, flaky upstream. The spec's headers (e.g. text/event-stream) win.
+  if (spec.bodyStream) return new Response(spec.bodyStream, { status, headers });
   const body = spec.body ?? "";
   const text = typeof body === "string" ? body : JSON.stringify(body);
-  const headers = new Headers({ "content-type": "application/json", ...(spec.headers ?? {}) });
   // A real Response built from a string carries a proper ReadableStream body,
   // so the proxy's passThrough() (new Response(upstream.body, …)) flows through,
   // and .ok/.status/.headers/.text()/.clone() all behave like a live upstream.
@@ -101,4 +109,39 @@ export function mockFetch(routes: Route[]): FetchMock {
  *  script: `sequence([{ status: 500 }, { status: 200, body: {...} }])`. */
 export function sequence(specs: MockResponseSpec[]): (c: RecordedCall, i: number) => MockResponseSpec {
   return (_c, i) => specs[Math.min(i, specs.length - 1)];
+}
+
+/** Build a ReadableStream that emits `chunks` in order, then either closes
+ *  cleanly (default) or errors — for simulating an upstream that returns 200 and
+ *  then dies mid-stream. `mode: "error"` makes the consumer's final read()
+ *  reject with `err`, the shape a truncated/terminated upstream reader produces.
+ *  NOTE: drains (mutates) the passed array. */
+export function chunkedBody(
+  chunks: Uint8Array[],
+  mode: "close" | "error" = "close",
+  err: unknown = new Error("stream broke"),
+): ReadableStream<Uint8Array> {
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (chunks.length) {
+        controller.enqueue(chunks.shift()!);
+        return;
+      }
+      if (mode === "error") controller.error(err);
+      else controller.close();
+    },
+  });
+}
+
+/** SSE text emitted as one chunk per line (each line + "\n"). Pass the lines of
+ *  each event INCLUDING the separating blank line. OMIT the terminal event
+ *  (anthropic `message_stop` / openai `data: [DONE]`) to simulate a truncated
+ *  stream; pass `mode: "error"` to simulate a reader that rejects mid-flight. */
+export function sseBody(
+  lines: string[],
+  mode: "close" | "error" = "close",
+  err?: unknown,
+): ReadableStream<Uint8Array> {
+  const enc = new TextEncoder();
+  return chunkedBody(lines.map((l) => enc.encode(l + "\n")), mode, err);
 }

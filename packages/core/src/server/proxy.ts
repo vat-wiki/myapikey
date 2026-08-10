@@ -68,18 +68,23 @@ function upstreamTarget(p: Provider, key: RouteKey): { url: string; wire: Format
   return { url: `${trimBase(p.baseUrlOpenai)}/${path}`, wire: "openai" };
 }
 
-function passThrough(upstream: Response, servedBy?: string): Response {
+/** Copy through the headers we reflect to the client (content-type, rate-limit
+ *  hints, request id, …) and optionally tag the in-process probe with which
+ *  source answered. The probe tag never reaches a real agent client (set only
+ *  on isProbe calls — see dispatch). */
+function downHeaders(upstream: Response, servedBy?: string): Headers {
   const headers = new Headers();
   for (const h of COPY_DOWN) {
     const v = upstream.headers.get(h);
     if (v) headers.set(h, v);
   }
-  // Internal hook for the model-page "test": report which provider answered.
-  // Only set on in-process probe calls (see isProbe in dispatch), so it never
-  // appears on responses to real agent clients.
   if (servedBy) headers.set("x-myapikey-provider", servedBy);
+  return headers;
+}
+
+function passThrough(upstream: Response, servedBy?: string): Response {
   // Stream the upstream body straight through (handles SSE + normal JSON).
-  return new Response(upstream.body, { status: upstream.status, headers });
+  return new Response(upstream.body, { status: upstream.status, headers: downHeaders(upstream, servedBy) });
 }
 
 /** Pull a short human-readable message out of an upstream error body. */
@@ -90,6 +95,106 @@ export function shortError(text: string): string {
   } catch {
     return text.slice(0, 200);
   }
+}
+
+/** Outcome of observing an upstream body to completion. A 200 at the headers is
+ *  not proof the call succeeded — some backends 200 then truncate the stream or
+ *  emit nothing for request shapes they mishandle. `ok` means the stream truly
+ *  ended cleanly (terminal marker seen for streaming; clean close otherwise). */
+interface SettleInfo {
+  ok: boolean;
+  status: number;
+  error?: string;
+}
+
+/** Wrap an upstream body so every byte is forwarded to the client VERBATIM while
+ *  we watch — out of band — for whether the stream completed cleanly. The 200
+ *  status is already committed before the body flows, so on a bad end we can't
+ *  change THAT; instead we (a) [anthropic] inject a synthetic SSE `error` event
+ *  so the client learns the stream died rather than seeing a silent EOF, and
+ *  (b) settle {ok:false} so dispatch logs a 502 and trips the circuit (the NEXT
+ *  call then fails over — this call can't be salvaged once streaming started).
+ *
+ *  Detection keys on the stream's terminal marker (anthropic message_stop /
+ *  openai [DONE] / responses response.completed), buffered across chunk
+ *  boundaries — NOT on content, which would false-positive on legitimate
+ *  tool-use responses that carry only input_json_delta. A client cancel settles
+ *  nothing (the client walked away — not a provider failure, don't log/cool). */
+function observedBody(
+  upstream: Response,
+  opts: { stream: boolean; wire: Format; onSettle: (info: SettleInfo) => void },
+): ReadableStream<Uint8Array> {
+  const reader = upstream.body?.getReader();
+  const enc = new TextEncoder();
+  const dec = new TextDecoder();
+  const markers = opts.stream
+    ? opts.wire === "anthropic"
+      ? ["message_stop"]
+      : ["[DONE]", "response.completed"]
+    : [];
+  const anthropic = opts.wire === "anthropic";
+  let tail = ""; // rolling window so a marker split across chunks is still caught
+  let terminal = false;
+  let settled = false;
+
+  const settle = (info: SettleInfo) => {
+    if (settled) return;
+    settled = true;
+    opts.onSettle(info);
+  };
+  // v1: inject only on the anthropic wire (where the reported silent-EOF bug
+  // bites Claude Code). OpenAI/Responses still get detect + 502 + circuit (the
+  // resilience guarantee is format-agnostic) but no fabricated in-band frame.
+  const injectError = (controller: ReadableStreamDefaultController<Uint8Array>, reason: string) => {
+    if (!anthropic) return;
+    controller.enqueue(
+      enc.encode(
+        `event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "api_error", message: reason } })}\n\n`,
+      ),
+    );
+  };
+
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (!reader) {
+        settle({ ok: true, status: 200 });
+        controller.close();
+        return;
+      }
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          if (opts.stream && !terminal) {
+            const reason = "upstream stream truncated (no terminal marker)";
+            injectError(controller, reason);
+            settle({ ok: false, status: 502, error: reason });
+          } else {
+            settle({ ok: true, status: 200 });
+          }
+          controller.close();
+          return;
+        }
+        if (!terminal && markers.length) {
+          const txt = dec.decode(value, { stream: true });
+          const win = tail + txt;
+          if (markers.some((m) => win.includes(m))) terminal = true;
+          tail = win.slice(-128);
+        }
+        controller.enqueue(value);
+      } catch (e) {
+        const reason = `upstream stream error: ${e instanceof Error ? e.message : String(e)}`;
+        injectError(controller, reason);
+        settle({ ok: false, status: 502, error: reason });
+        controller.close();
+      }
+    },
+    cancel() {
+      // Client abort (Esc / disconnect) — not a provider failure. Suppress the
+      // settle so we neither log nor cool down a source the client simply left.
+      settled = true;
+      reader?.cancel().catch(() => {});
+    },
+  });
 }
 
 export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
@@ -181,10 +286,34 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
       }
 
       if (upstream.ok) {
-        // A success closes the circuit (provider is healthy again).
-        store.recordCircuitSuccess(provider.id);
-        store.pushLog({ ts: Date.now(), model, provider: provider.name, providerId: provider.id, format: wire, status: upstream.status, ms: Date.now() - start, stream });
-        return passThrough(upstream, isProbe ? provider.name : undefined);
+        // A 200 from the upstream is NOT proof the call succeeded: some backends
+        // return 200 then truncate the stream (or emit no content) for request
+        // shapes they mishandle. We commit the 200 status to the client right
+        // away (headers are already sent) but OBSERVE the body as it flows and
+        // settle once — on a clean, fully-terminated stream we close the circuit
+        // + log 200; on a truncated/errored stream we log 502, trip the circuit
+        // (so the NEXT call fails over), and — on the anthropic wire — inject a
+        // synthetic SSE error event so the client learns the stream died instead
+        // of seeing a silent EOF. TTFB is captured now; logging is deferred to
+        // the body's end (so the row reflects the real outcome, not just the
+        // headers). See observedBody() for the detection rules.
+        const ttfb = Date.now() - start;
+        const body = observedBody(upstream, {
+          stream,
+          wire,
+          onSettle: (info) => {
+            if (info.ok) {
+              store.recordCircuitSuccess(provider.id);
+              store.pushLog({ ts: Date.now(), model, provider: provider.name, providerId: provider.id, format: wire, status: 200, ms: ttfb, stream });
+            } else {
+              // A pinned per-source probe takes no circuit side-effects (a manual
+              // test must not trip the breaker) — mirrors the retryable branch.
+              if (!pinId) store.recordCircuitFailure(provider.id, info.status, info.error || "stream failed");
+              store.pushLog({ ts: Date.now(), model, provider: provider.name, providerId: provider.id, format: wire, status: info.status, ms: ttfb, stream, error: info.error });
+            }
+          },
+        });
+        return new Response(body, { status: upstream.status, headers: downHeaders(upstream, isProbe ? provider.name : undefined) });
       }
       if (RETRYABLE.has(upstream.status)) {
         lastStatus = upstream.status;
