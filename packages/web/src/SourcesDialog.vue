@@ -27,7 +27,6 @@ const newName = ref("");
 const newBaseUrlOpenai = ref("");
 const newBaseUrlAnthropic = ref("");
 const newKey = ref("");
-const newRpm = ref("");
 const fmtOpenai = ref(true);
 const fmtAnthropic = ref(false);
 const newResponses = ref(false);
@@ -116,12 +115,10 @@ async function add() {
       apiKey: newKey.value,
       formats,
       supportsResponses: fmtOpenai.value && newResponses.value,
-      rpm: Number(newRpm.value) || 0,
     });
     providers.value = [...providers.value, r.provider];
     newName.value = newKey.value = "";
     newBaseUrlOpenai.value = newBaseUrlAnthropic.value = "";
-    newRpm.value = "";
     newResponses.value = false;
     showAdd.value = false;
     toast(t("sources.added"), "success");
@@ -343,11 +340,6 @@ function discTitle(p: ProviderPublic): string {
         <div class="space-y-1.5">
           <label class="text-xs font-medium text-muted-foreground">{{ t("sources.keyLabel") }}</label>
           <Input v-model="newKey" type="password" :placeholder="t('sources.keyPh')" autocomplete="new-password" aria-label="api key" />
-        </div>
-        <div class="space-y-1.5">
-          <label class="text-xs font-medium text-muted-foreground">{{ t("sources.rpmLabel") }}</label>
-          <Input v-model="newRpm" type="number" min="0" inputmode="numeric" :placeholder="t('sources.rpmPh')" aria-label="rpm" />
-          <p class="text-xs text-muted-foreground">{{ t("sources.rpmHint") }}</p>
         </div>
         <p v-if="formErr" class="text-sm text-destructive">{{ formErr }}</p>
         <div class="flex justify-end gap-2">

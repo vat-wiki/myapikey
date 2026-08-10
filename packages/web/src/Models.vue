@@ -24,6 +24,7 @@ import {
   MoreHorizontal,
   Pencil,
   Zap,
+  Gauge,
 } from "lucide-vue-next";
 import SourcesDialog from "@/SourcesDialog.vue";
 import ConfirmDialog from "@/ConfirmDialog.vue";
@@ -484,6 +485,68 @@ function revertMap(r: Row, f: Fmt, p: ChainSrc, el: HTMLInputElement): void {
   el.blur();
 }
 
+// --- per-source RPM cap editing (on-demand, one source at a time) ---
+// rpm is a SOURCE property — the key's per-minute limit, shared across every
+// model routed through this source (NOT per-model like the upstream name). So
+// editing it from a model row updates the source globally; every row using that
+// source reflects the new cap once providers reload.
+
+/** The single source whose rpm field is an <input> right now (entered via the ⋯
+ *  "rate limit" action or by clicking the rpm badge). */
+const rpmEditingId = ref<string>("");
+const rpmDraft = ref<string>("");
+/** This source's configured RPM cap (0 = unlimited), read off the live provider. */
+function srcRpm(pid: string): number {
+  return providerById.value.get(pid)?.rpm ?? 0;
+}
+function isRpmEditing(p: ChainSrc): boolean {
+  return rpmEditingId.value === p.id;
+}
+function enterRpmEdit(p: ChainSrc): void {
+  rpmEditingId.value = p.id;
+  rpmDraft.value = srcRpm(p.id) ? String(srcRpm(p.id)) : "";
+}
+function onRpmInput(v: string): void {
+  rpmDraft.value = v;
+}
+/** Send a full provider PUT (the endpoint is a whole-resource update, not a
+ *  patch) carrying the current fields plus the rpm override. apiKey omitted →
+ *  server keeps the existing key; base URLs/formats unchanged → no rediscovery.
+ *  Blank/0 clears the cap (back to unlimited). */
+async function patchProviderRpm(id: string, rpm: number): Promise<void> {
+  const cur = providerById.value.get(id);
+  if (!cur) return;
+  await req("PUT", `/admin/providers/${id}`, {
+    name: cur.name,
+    baseUrlOpenai: cur.baseUrlOpenai,
+    baseUrlAnthropic: cur.baseUrlAnthropic,
+    formats: cur.formats,
+    supportsResponses: cur.supportsResponses ?? false,
+    rpm,
+  });
+}
+/** Commit on blur/Enter. No-op when the draft matches the current cap, so
+ *  Enter→blur and Esc→blur don't double-write or clobber on revert. */
+async function commitRpm(p: ChainSrc): Promise<void> {
+  const id = p.id;
+  rpmEditingId.value = "";
+  const n = Number(rpmDraft.value);
+  const rpm = Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+  if (rpm === srcRpm(id)) return;
+  try {
+    await patchProviderRpm(id, rpm);
+    providers.value = providers.value.map((x) => (x.id === id ? { ...x, rpm } : x));
+    toast(rpm ? t("sources.rpmSaved", { n: rpm }) : t("sources.rpmCleared"), rpm ? "success" : "default");
+  } catch (e) {
+    toast((e as Error).message, "error");
+  }
+}
+/** Esc: reset the draft to the current cap, then blur (→ commit is a no-op). */
+function revertRpm(p: ChainSrc, el: HTMLInputElement): void {
+  rpmDraft.value = srcRpm(p.id) ? String(srcRpm(p.id)) : "";
+  el.blur();
+}
+
 async function removeSource(r: Row, pid: string, fmt: Fmt) {
   const key = `${r.name}:${pid}:${fmt}`;
   if (removingSrc.value[key]) return;
@@ -694,6 +757,37 @@ onMounted(load);
                         <Badge v-for="tag in srcTags(p.id)" :key="tag" variant="secondary" :class="FMT_ACCENT[tag].badge">{{ t(FMT_META[tag].chip) }}</Badge>
                         <Badge v-if="i === 0" variant="default">{{ t("models.primary") }}</Badge>
                         <Badge v-else variant="muted">{{ t("models.fallback") }}</Badge>
+                        <!-- RPM cap (source-global): an input while editing, otherwise a
+                             clickable pill shown only when a cap is set. Uncapped sources
+                             expose it via the ⋯ menu instead. -->
+                        <span v-if="isRpmEditing(p)" class="flex items-center gap-1">
+                          <Gauge class="h-3 w-3 text-muted-foreground" />
+                          <input
+                            v-focus
+                            type="number"
+                            min="0"
+                            inputmode="numeric"
+                            :value="rpmDraft"
+                            :placeholder="t('sources.rpmPh')"
+                            :aria-label="t('sources.rpmLabel')"
+                            :title="t('sources.rpmHint')"
+                            class="h-6 w-16 rounded-md border border-input bg-background px-2 font-mono text-xs shadow-sm transition-colors placeholder:font-sans placeholder:text-muted-foreground/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+                            @input="onRpmInput(($event.target as HTMLInputElement).value)"
+                            @keyup.enter="($event.target as HTMLInputElement).blur()"
+                            @keyup.esc="revertRpm(p, $event.target as HTMLInputElement)"
+                            @blur="commitRpm(p)"
+                          />
+                        </span>
+                        <button
+                          v-else-if="srcRpm(p.id) > 0"
+                          type="button"
+                          :title="t('sources.rpmBadgeHint')"
+                          class="inline-flex items-center gap-1 rounded-full border border-input bg-background px-2 py-0.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                          @click="enterRpmEdit(p)"
+                        >
+                          <Gauge class="h-3 w-3" />
+                          {{ t("sources.rpmBadge", { n: srcRpm(p.id) }) }}
+                        </button>
                         <!-- per-source probe result (only for sources that have been tested) -->
                         <Badge v-if="srcTesting[`${r.name}:${f}:${p.id}`]" variant="muted" class="gap-1"><Loader2 class="h-3 w-3 animate-spin" />{{ t("models.probeTesting") }}</Badge>
                         <Badge v-else-if="srcProbe[`${r.name}:${f}:${p.id}`]?.ok" variant="success" :title="t('models.probeOkHint', { name: p.name })">{{ t("models.probeOk") }}</Badge>
@@ -751,6 +845,10 @@ onMounted(load);
                               <DropdownMenuItem @select="enterEdit(r, f, p)">
                                 <Pencil class="h-4 w-4" />
                                 {{ t("models.editUpstream") }}
+                              </DropdownMenuItem>
+                              <DropdownMenuItem @select="enterRpmEdit(p)">
+                                <Gauge class="h-4 w-4" />
+                                {{ t("sources.rpmLabel") }}
                               </DropdownMenuItem>
                               <DropdownMenuSeparator />
                               <DropdownMenuItem class="text-destructive focus:bg-destructive/10 focus:text-destructive" @select="removeSource(r, p.id, f)">
