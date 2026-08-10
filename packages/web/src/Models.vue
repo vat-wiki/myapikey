@@ -198,8 +198,9 @@ const visibleAvailableRows = computed(() => (hideNonChat.value ? availableRows.v
 
 /** Group the (filtered) available models by the source that offers them, so a
  *  source that dumped 100 models reads as one collapsible bucket instead of a
- *  wall. A model offered by several sources appears under each — at the "should
- *  I enable this?" stage that multiplicity is information, not clutter. */
+ *  wall. A model offered by several sources appears under each: each source
+ *  lists what IT discovered, so a shared model shows up under every source that
+ *  carries it. */
 const availableGrouped = computed(() => {
   const out: { source: ProviderPublic; rows: Row[] }[] = [];
   for (const p of providers.value) {
@@ -977,11 +978,6 @@ onMounted(load);
                       >
                         <div class="flex min-w-0 items-center gap-2">
                           <span class="truncate font-mono text-sm">{{ r.name }}</span>
-                          <!-- other sources also offering this model (the bucket's
-                               own source is implied), shown only on sm+ screens -->
-                          <div class="hidden gap-1 sm:flex">
-                            <Badge v-for="o in r.offering.filter((o) => o.id !== g.source.id)" :key="o.id" variant="secondary" :class="providerColor(o.id).badge">{{ o.name }}</Badge>
-                          </div>
                         </div>
                         <!-- per-format toggle chips: every offered route is ○ (click to enable) -->
                         <div class="flex shrink-0 items-center gap-1.5">
