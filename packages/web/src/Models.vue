@@ -25,6 +25,7 @@ import {
   Pencil,
   Zap,
   Gauge,
+  Filter,
 } from "lucide-vue-next";
 import SourcesDialog from "@/SourcesDialog.vue";
 import ConfirmDialog from "@/ConfirmDialog.vue";
@@ -179,6 +180,52 @@ const filtered = computed(() => {
 const enabledRows = computed(() => filtered.value.filter((r) => r.openai.enabled || r.anthropic.enabled || r.responses.enabled));
 const availableRows = computed(() => filtered.value.filter((r) => !(r.openai.enabled || r.anthropic.enabled || r.responses.enabled) && availFormats(r).length > 0));
 
+/** Discovery returns only model names — no capability metadata — so "is this a
+ *  chat model" is a name heuristic. These are the families a chat-completions
+ *  gateway won't route: embeddings, audio/voice, image/video gen, moderation,
+ *  rerankers. Used to default-hide the noise that floods the Available list. */
+const NON_CHAT_HINTS = ["embed", "whisper", "tts", "dall-e", "dall_e", "image", "moderation", "audio", "transcribe", "rerank", "realtime", "sora"];
+function isNonChatModel(name: string): boolean {
+  const n = name.toLowerCase();
+  return NON_CHAT_HINTS.some((k) => n.includes(k));
+}
+
+/** Hide non-conversational models by default so the list stays focused on what
+ *  you'd actually route. The toggle is only surfaced when there's noise to hide. */
+const hideNonChat = ref(true);
+const nonChatAvailableCount = computed(() => availableRows.value.filter((r) => isNonChatModel(r.name)).length);
+const visibleAvailableRows = computed(() => (hideNonChat.value ? availableRows.value.filter((r) => !isNonChatModel(r.name)) : availableRows.value));
+
+/** Group the (filtered) available models by the source that offers them, so a
+ *  source that dumped 100 models reads as one collapsible bucket instead of a
+ *  wall. A model offered by several sources appears under each — at the "should
+ *  I enable this?" stage that multiplicity is information, not clutter. */
+const availableGrouped = computed(() => {
+  const out: { source: ProviderPublic; rows: Row[] }[] = [];
+  for (const p of providers.value) {
+    const rows = visibleAvailableRows.value
+      .filter((r) => r.offering.some((o) => o.id === p.id))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    if (rows.length) out.push({ source: p, rows });
+  }
+  return out;
+});
+
+/** Per-bucket collapse override. Small buckets stay open on their own; large
+ *  ones (≥ threshold) collapse to just their count until opened. Searching
+ *  forces every bucket open so matches are never hidden inside a header. */
+const COLLAPSE_THRESHOLD = 8;
+const sourceOpenOverride = ref<Record<string, boolean>>({});
+function isSourceOpen(id: string, count: number): boolean {
+  if (query.value.trim()) return true;
+  if (id in sourceOpenOverride.value) return sourceOpenOverride.value[id];
+  return count <= COLLAPSE_THRESHOLD;
+}
+function toggleSource(id: string, count: number): void {
+  if (query.value.trim()) return;
+  sourceOpenOverride.value = { ...sourceOpenOverride.value, [id]: !isSourceOpen(id, count) };
+}
+
 /** Every source that can still attach to ≥1 enabled route of this model —
  *  candidates for the model-level "add source" dialog. */
 function addableFor(r: Row): ProviderPublic[] {
@@ -218,15 +265,6 @@ function joinChain(chain: ChainSrc[]): string {
 /** One-line chain summary across every enabled route, shown under the name. */
 function summaryChain(r: Row): string {
   return enabledFormats(r).map((f) => `${t(FMT_META[f].chip)}: ${joinChain(r[f].chain)}`).join("  ·  ");
-}
-/** Capability tags for a chain source: its wire formats plus /responses when
- *  supported — all rendered as colored family badges. */
-function srcTags(id: string): Fmt[] {
-  const p = providerById.value.get(id);
-  if (!p) return [];
-  const tags = p.formats.filter((f): f is Fmt => f === "openai" || f === "anthropic");
-  if (p.supportsResponses) tags.push("responses");
-  return tags;
 }
 function isStale(r: Row, fmt: Fmt): boolean {
   const chain = r[fmt].chain;
@@ -316,7 +354,7 @@ async function enableAll() {
   if (enablingAll.value) return;
   enablingAll.value = true;
   const tasks: { name: string; fmt: Fmt; providers: string[] }[] = [];
-  for (const r of availableRows.value) {
+  for (const r of visibleAvailableRows.value) {
     for (const f of enableableFormats(r)) tasks.push({ name: r.name, fmt: f, providers: offeringIds(r, f) });
   }
   for (const tk of tasks) enabling.value[`${tk.name}:${tk.fmt}`] = true;
@@ -626,10 +664,6 @@ onMounted(load);
             <Button size="sm" @click="addOpen = true">
               <Plus class="h-4 w-4" />{{ t("models.addModels") }}
             </Button>
-            <Button variant="outline" size="sm" :disabled="refreshingAll" @click="refreshAll">
-              <Loader2 v-if="refreshingAll" class="h-4 w-4 animate-spin" />
-              <RefreshCw v-else class="h-4 w-4" />{{ t("sources.refreshAll") }}
-            </Button>
             <Button variant="outline" size="sm" @click="sourcesOpen = true">
               <ServerCog class="h-4 w-4" />{{ t("models.manageSources") }}
             </Button>
@@ -754,7 +788,6 @@ onMounted(load);
                           <span class="h-1.5 w-1.5 rounded-full" :class="providerColor(p.id).solid" />
                           {{ p.name }}
                         </span>
-                        <Badge v-for="tag in srcTags(p.id)" :key="tag" variant="secondary" :class="FMT_ACCENT[tag].badge">{{ t(FMT_META[tag].chip) }}</Badge>
                         <Badge v-if="i === 0" variant="default">{{ t("models.primary") }}</Badge>
                         <Badge v-else variant="muted">{{ t("models.fallback") }}</Badge>
                         <!-- RPM cap (source-global): an input while editing, otherwise a
@@ -885,46 +918,95 @@ onMounted(load);
                   <ChevronDown class="h-4 w-4 shrink-0 text-muted-foreground transition-transform" :class="{ '-rotate-90': !showAvailable }" />
                   <span class="h-2 w-2 shrink-0 rounded-full bg-muted-foreground/40" />
                   <span class="text-sm font-semibold">{{ t("models.availableSection") }}</span>
-                  <span class="ml-auto inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 text-xs font-medium tabular-nums text-muted-foreground">{{ availableRows.length }}</span>
+                  <span class="ml-auto inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 text-xs font-medium tabular-nums text-muted-foreground">{{ visibleAvailableRows.length }}</span>
                 </button>
-                <Button v-if="availableRows.length" size="sm" variant="secondary" class="h-7 gap-1.5 px-2.5" :disabled="enablingAll" @click="enableAll">
+                <!-- chat-only filter: hides embeddings/audio/image/etc. so the
+                     list isn't dominated by models this gateway won't route.
+                     Surfaced only when there's non-chat noise to hide. -->
+                <Button
+                  v-if="nonChatAvailableCount > 0"
+                  variant="ghost"
+                  size="sm"
+                  class="h-7 gap-1.5 px-2.5"
+                  :class="hideNonChat ? 'bg-accent text-accent-foreground' : 'text-muted-foreground'"
+                  :title="hideNonChat ? t('models.filterChatHint', { n: nonChatAvailableCount }) : t('models.filterAllHint')"
+                  @click="hideNonChat = !hideNonChat"
+                >
+                  <Filter class="h-3.5 w-3.5" />
+                  {{ hideNonChat ? t("models.filterChatOnly") : t("models.filterInclude") }}
+                </Button>
+                <!-- refresh discovery for every source; repopulates this list
+                     (surfaces newly-released upstream models). Lives here next to
+                     enableAll because its whole job is to feed this list. -->
+                <Button variant="ghost" size="sm" class="h-7 gap-1.5 px-2.5" :disabled="refreshingAll" :title="t('sources.refreshAll')" @click="refreshAll">
+                  <Loader2 v-if="refreshingAll" class="h-3.5 w-3.5 animate-spin" />
+                  <RefreshCw v-else class="h-3.5 w-3.5" />
+                  {{ t("sources.refreshAll") }}
+                </Button>
+                <Button v-if="visibleAvailableRows.length" size="sm" variant="secondary" class="h-7 gap-1.5 px-2.5" :disabled="enablingAll" @click="enableAll">
                   <Loader2 v-if="enablingAll" class="h-3.5 w-3.5 animate-spin" />
                   <Zap v-else class="h-3.5 w-3.5" />
                   {{ t("models.enableAll") }}
                 </Button>
               </div>
-              <div v-if="showAvailable" class="divide-y divide-border">
-                <p v-if="!availableRows.length" class="py-3 text-center text-xs text-muted-foreground">
-                  {{ t("models.availableDesc") }}
+              <div v-if="showAvailable">
+                <p v-if="!visibleAvailableRows.length" class="py-3 text-center text-xs text-muted-foreground">
+                  {{ hideNonChat && availableRows.length ? t("models.availableAllFiltered", { n: nonChatAvailableCount }) : t("models.availableDesc") }}
                 </p>
-                <div v-for="r in availableRows" :key="r.name" class="flex items-center justify-between gap-2 px-3 py-2">
-                  <div class="flex min-w-0 items-center gap-2">
-                    <span class="truncate font-mono text-sm">{{ r.name }}</span>
-                    <div class="hidden gap-1 sm:flex">
-                      <Badge v-for="o in r.offering" :key="o.id" variant="secondary" :class="providerColor(o.id).badge">{{ o.name }}</Badge>
-                    </div>
-                  </div>
-                  <!-- per-format toggle chips: every offered route is ○ (click to enable) -->
-                  <div class="flex shrink-0 items-center gap-1.5">
+                <div v-else class="divide-y divide-border">
+                  <div v-for="g in availableGrouped" :key="g.source.id">
+                    <!-- source bucket header: dot + name + count, click to expand.
+                         Large buckets collapse to just their count by default. -->
                     <button
-                      v-for="f in FORMATS"
-                      :key="f"
                       type="button"
-                      :disabled="fmtStatus(r, f) === 'unsupported' || enabling[`${r.name}:${f}`]"
-                      :title="chipTitle(r, f)"
-                      :aria-label="chipTitle(r, f)"
-                      class="inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs font-medium transition-colors disabled:cursor-not-allowed"
-                      :class="chipClass(r, f)"
-                      @click="toggle(r, f)"
+                      class="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted/40"
+                      :aria-expanded="isSourceOpen(g.source.id, g.rows.length)"
+                      :aria-label="g.source.name"
+                      @click="toggleSource(g.source.id, g.rows.length)"
                     >
-                      <Loader2 v-if="enabling[`${r.name}:${f}`]" class="h-3 w-3 animate-spin" />
-                      <span
-                        v-else
-                        class="rounded-full"
-                        :class="fmtStatus(r, f) === 'enabled' ? 'h-1.5 w-1.5 bg-current' : fmtStatus(r, f) === 'enableable' ? 'h-1.5 w-1.5 border border-current' : 'h-1.5 w-1.5'"
-                      />
-                      {{ t(FMT_META[f].chip) }}
+                      <ChevronRight class="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform" :class="{ 'rotate-90': isSourceOpen(g.source.id, g.rows.length) }" />
+                      <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="providerColor(g.source.id).solid" />
+                      <span class="text-sm font-medium">{{ g.source.name }}</span>
+                      <span class="inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 text-xs font-medium tabular-nums text-muted-foreground">{{ g.rows.length }}</span>
                     </button>
+                    <div v-if="isSourceOpen(g.source.id, g.rows.length)" class="divide-y divide-border/50 bg-muted/10">
+                      <div
+                        v-for="r in g.rows"
+                        :key="r.name"
+                        class="flex items-center justify-between gap-2 px-3 py-2 pl-9"
+                      >
+                        <div class="flex min-w-0 items-center gap-2">
+                          <span class="truncate font-mono text-sm">{{ r.name }}</span>
+                          <!-- other sources also offering this model (the bucket's
+                               own source is implied), shown only on sm+ screens -->
+                          <div class="hidden gap-1 sm:flex">
+                            <Badge v-for="o in r.offering.filter((o) => o.id !== g.source.id)" :key="o.id" variant="secondary" :class="providerColor(o.id).badge">{{ o.name }}</Badge>
+                          </div>
+                        </div>
+                        <!-- per-format toggle chips: every offered route is ○ (click to enable) -->
+                        <div class="flex shrink-0 items-center gap-1.5">
+                          <button
+                            v-for="f in FORMATS"
+                            :key="f"
+                            type="button"
+                            :disabled="fmtStatus(r, f) === 'unsupported' || enabling[`${r.name}:${f}`]"
+                            :title="chipTitle(r, f)"
+                            :aria-label="chipTitle(r, f)"
+                            class="inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs font-medium transition-colors disabled:cursor-not-allowed"
+                            :class="chipClass(r, f)"
+                            @click="toggle(r, f)"
+                          >
+                            <Loader2 v-if="enabling[`${r.name}:${f}`]" class="h-3 w-3 animate-spin" />
+                            <span
+                              v-else
+                              class="rounded-full"
+                              :class="fmtStatus(r, f) === 'enabled' ? 'h-1.5 w-1.5 bg-current' : fmtStatus(r, f) === 'enableable' ? 'h-1.5 w-1.5 border border-current' : 'h-1.5 w-1.5'"
+                            />
+                            {{ t(FMT_META[f].chip) }}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
