@@ -149,6 +149,14 @@ function fmtBadge(format: string): string {
 function fmtMs(ms: number): string {
   return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
 }
+/** Error rate as a tidy percentage string (0 / 0.5 / 10 — no trailing .0, ≤1
+ *  decimal). Shown as a pulse on the Logs summary so the reader sees the
+ *  proportion of failures, not a raw count stripped of its denominator. */
+function fmtRate(frac: number): string {
+  if (frac <= 0) return "0";
+  const v = Math.round(frac * 1000) / 10;
+  return Number.isInteger(v) ? String(v) : v.toFixed(1);
+}
 function fmtTime(ts: number): string {
   return new Date(ts).toLocaleTimeString();
 }
@@ -186,13 +194,12 @@ const filtered = computed(() => {
 
 const summary = computed(() => {
   // Circuit events are timeline annotations, not calls — keep them out of the
-  // call stats so a degraded source doesn't inflate total/fail/avg-latency.
+  // call stats so a degraded source doesn't inflate total/error-rate/avg-latency.
   const all = filtered.value.filter((l) => l.kind !== "cooldown");
   const total = all.length;
-  const success = all.filter((l) => l.status >= 200 && l.status < 300).length;
   const fail = all.filter((l) => l.status >= 400).length;
   const avgMs = total ? Math.round(all.reduce((s, l) => s + l.ms, 0) / total) : 0;
-  return { total, success, fail, avgMs };
+  return { total, fail, avgMs, errorRateStr: fmtRate(total ? fail / total : 0) };
 });
 
 /** How many structured filters are currently active (badge on the filter button). */
@@ -365,12 +372,14 @@ onUnmounted(stopPolling);
         </button>
       </div>
 
-      <!-- light summary over the filtered view -->
+      <!-- light summary over the filtered view: window count + error rate (the
+           actionable pulse) + recent-mean latency. Lead with "近 N 次调用" so the
+           count reads as the recent window rather than a lifetime total, and show
+           failures as a rate so 1-in-200 isn't confused with 1-in-10. -->
       <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
-        <span>{{ t("logs.summary.total", { n: summary.total }) }}</span>
-        <span class="text-emerald-600 dark:text-emerald-500">{{ t("logs.summary.success", { n: summary.success }) }}</span>
-        <span class="text-destructive">{{ t("logs.summary.fail", { n: summary.fail }) }}</span>
-        <span>{{ t("logs.summary.avgLatency", { ms: summary.avgMs }) }}</span>
+        <span>{{ t("logs.summary.window", { n: summary.total }) }}</span>
+        <span :class="{ 'text-destructive': summary.fail > 0 }">{{ t("logs.summary.errorRate", { pct: summary.errorRateStr }) }}</span>
+        <span>{{ t("logs.summary.avgLatency", { ms: fmtMs(summary.avgMs) }) }}</span>
       </div>
 
       <!-- live "currently cooling" strip — only rendered when ≥1 source is in

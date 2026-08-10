@@ -239,7 +239,7 @@ export default {
     stream: "stream",
     filter: { title: "Filters", model: "Model", provider: "Source", status: "Status", all: "All", success: "Success", error: "Error", clear: "Clear filters", remove: "Remove {label}" },
     searchPh: "Search model or source…",
-    summary: { total: "{n} calls", success: "{n} success", fail: "{n} failed", avgLatency: "avg {ms}ms" },
+    summary: { window: "last {n} calls", errorRate: "error rate {pct}%", avgLatency: "recent avg {ms}" },
     detail: { time: "Time", latency: "Latency", stream: "Streaming", streamYes: "yes", streamNo: "no", error: "Error", errorNone: "None" },
     circuit: {
       stripTitle: "Sources in cooldown",

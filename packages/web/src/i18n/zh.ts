@@ -239,7 +239,7 @@ export default {
     stream: "流式",
     filter: { title: "筛选", model: "模型", provider: "来源", status: "状态", all: "全部", success: "成功", error: "失败", clear: "清除筛选", remove: "移除 {label}" },
     searchPh: "搜索模型或来源…",
-    summary: { total: "{n} 次调用", success: "{n} 次成功", fail: "{n} 次失败", avgLatency: "平均 {ms}ms" },
+    summary: { window: "近 {n} 次调用", errorRate: "错误率 {pct}%", avgLatency: "近期均值 {ms}" },
     detail: { time: "时间", latency: "延迟", stream: "流式", streamYes: "是", streamNo: "否", error: "错误", errorNone: "无" },
     circuit: {
       stripTitle: "冷却中的来源",
