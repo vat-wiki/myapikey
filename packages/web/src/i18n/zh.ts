@@ -224,6 +224,8 @@ export default {
     providerPh: "选择来源",
     newSourceOpt: "＋ 新建来源",
     addModelsNewHint: "先建一个新来源,再把这些模型挂到它上面。",
+    noneSourceOpt: "✎ 仅自定义名(不绑来源)",
+    addModelsNoneHint: "只把模型名登记进来,暂不绑定任何来源。添加后到列表里展开该模型,点「添加来源」再挂上去。",
     namesLabel: "模型名",
     addModelsNamesPh: "每行一个,或用逗号 / 空格分隔,例如 gpt-4o, claude-…",
     addModelsCount: "将添加 {n} 个模型",

@@ -380,6 +380,20 @@ describe("server/admin", () => {
       expect((await json<{ error: { message: string } }>(res)).error.message).toContain("does not serve");
     });
 
+    it("POST /admin/models with empty providers registers a sourceless name", async () => {
+      // The web "Custom names (no source)" flow: park a model name enabled on a
+      // slot with no provider attached. A source is wired in later via
+      // /models/:name/providers. providers is optional and defaults to [].
+      const app = createApp(store);
+      const res = await app.request("/admin/models", {
+        method: "POST", headers: H, body: JSON.stringify({ name: "my-custom-model", format: "openai", providers: [] }),
+      });
+      expect(res.status).toBe(201);
+      const m = find(await modelsOf(app), "my-custom-model")!;
+      expect(m.openai.enabled).toBe(true);
+      expect(m.openai.providers).toEqual([]);
+    });
+
     it("POST /admin/models/:name/providers → 404 'enable it first' if model not created", async () => {
       const a = makeProvider({ formats: ["openai"] });
       await seedStore(store, { providers: [a] });

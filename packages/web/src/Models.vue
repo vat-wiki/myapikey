@@ -4,6 +4,7 @@ import { useI18n } from "vue-i18n";
 import { req, type ModelView, type ProviderPublic } from "@/api";
 import { FMT_ACCENT, providerColor } from "@/lib/format";
 import { toast } from "@/lib/toast";
+import { copyText } from "@/lib/clipboard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
@@ -26,6 +27,7 @@ import {
   Zap,
   Gauge,
   Filter,
+  Copy,
 } from "lucide-vue-next";
 import SourcesDialog from "@/SourcesDialog.vue";
 import ConfirmDialog from "@/ConfirmDialog.vue";
@@ -259,6 +261,22 @@ function toggleExpand(name: string) {
   if (s.has(name)) s.delete(name);
   else s.add(name);
   expandedModels.value = s;
+}
+/** Copy a model name to the clipboard. Reuses the connect.* copy labels — they're
+ *  the codebase's generic copy strings (Settings.vue uses them for the password). */
+async function copyName(name: string) {
+  const ok = await copyText(name);
+  toast(ok ? t("connect.copied") : t("connect.copyFailed"), ok ? "success" : "error");
+}
+/** Keyboard activate for the summary row, which is a div(role=button) so it can
+ *  nest a real copy <button>. Only fires when the row itself has focus — the
+ *  inner copy button owns its own keystrokes (e.target !== currentTarget). */
+function onRowKeydown(e: KeyboardEvent, name: string) {
+  if (e.target !== e.currentTarget) return;
+  if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    toggleExpand(name);
+  }
 }
 function joinChain(chain: ChainSrc[]): string {
   return chain.length ? chain.map((p) => p.name).join(" → ") : t("models.noSourcesShort");
@@ -692,17 +710,33 @@ onMounted(load);
                        sits at the LEFT (tree-style disclosure) so it can't be
                        confused with the per-source Move up/down on the right. -->
                   <div class="flex items-center gap-3">
-                    <button
-                      type="button"
-                      class="flex min-w-0 flex-1 items-center gap-2 text-left"
+                    <!-- The summary row is a div(role=button) rather than a <button>
+                         so it can nest the per-name copy <button> without invalid
+                         markup (a <button> can't contain interactive descendants).
+                         Enter/Space on the row toggles; the copy button stops click
+                         propagation and owns its own keystrokes. -->
+                    <div
+                      role="button"
+                      tabindex="0"
+                      class="flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
                       :aria-expanded="isExpanded(r.name)"
                       :aria-label="isExpanded(r.name) ? t('models.collapseAria') : t('models.expandAria')"
                       @click="toggleExpand(r.name)"
+                      @keydown="onRowKeydown($event, r.name)"
                     >
                       <ChevronRight class="h-4 w-4 shrink-0 text-muted-foreground transition-transform" :class="{ 'rotate-90': isExpanded(r.name) }" />
                       <span class="flex min-w-0 flex-1 flex-col items-start">
-                        <span class="flex w-full items-center gap-2">
+                        <span class="flex w-full items-center gap-1.5">
                           <span class="truncate font-mono text-sm font-medium">{{ r.name }}</span>
+                          <button
+                            type="button"
+                            :title="t('connect.copy')"
+                            :aria-label="t('connect.copy')"
+                            class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/50 transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            @click.stop="copyName(r.name)"
+                          >
+                            <Copy class="h-3 w-3" />
+                          </button>
                           <Badge v-if="rowProbe(r)?.state === 'testing'" variant="muted" class="gap-1"><Loader2 class="h-3 w-3 animate-spin" />{{ t("models.probeTesting") }}</Badge>
                           <Badge v-else-if="rowProbe(r)?.state === 'ok'" variant="success" :title="t('models.probeOkHint', { name: rowProbe(r)?.provider ?? '' })">{{ t("models.probeOk") }}</Badge>
                           <Badge v-else-if="rowProbe(r)?.state === 'fail'" variant="destructive" :title="rowProbe(r)?.error || t('models.probeFailHint')">{{ t("models.probeFail") }} · {{ rowProbe(r)?.status || '?' }}</Badge>
@@ -710,7 +744,7 @@ onMounted(load);
                         </span>
                         <span class="w-full truncate text-xs text-muted-foreground">{{ summaryChain(r) }}</span>
                       </span>
-                    </button>
+                    </div>
                     <!-- per-format toggle chips -->
                     <div class="flex shrink-0 items-center gap-1.5">
                       <button
@@ -976,8 +1010,17 @@ onMounted(load);
                         :key="r.name"
                         class="flex items-center justify-between gap-2 px-3 py-2 pl-9"
                       >
-                        <div class="flex min-w-0 items-center gap-2">
+                        <div class="flex min-w-0 items-center gap-1.5">
                           <span class="truncate font-mono text-sm">{{ r.name }}</span>
+                          <button
+                            type="button"
+                            :title="t('connect.copy')"
+                            :aria-label="t('connect.copy')"
+                            class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/50 transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            @click="copyName(r.name)"
+                          >
+                            <Copy class="h-3 w-3" />
+                          </button>
                         </div>
                         <!-- per-format toggle chips: every offered route is ○ (click to enable) -->
                         <div class="flex shrink-0 items-center gap-1.5">

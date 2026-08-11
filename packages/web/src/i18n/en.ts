@@ -224,6 +224,8 @@ export default {
     providerPh: "Select a source",
     newSourceOpt: "＋ New source",
     addModelsNewHint: "Create a new source, then attach these models to it.",
+    noneSourceOpt: "✎ Custom names (no source)",
+    addModelsNoneHint: "Register just the model names with no source attached. After adding, expand the model in the list and click \"Add source\" to attach one.",
     namesLabel: "Model names",
     addModelsNamesPh: "One per line, or comma / space separated, e.g. gpt-4o, claude-…",
     addModelsCount: "{n} model(s) will be added",

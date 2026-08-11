@@ -20,6 +20,11 @@ const emit = defineEmits<{ changed: [] }>();
 /** Sentinel select value: create a brand-new source inline, then attach the
  *  pasted models to it — collapses the Sources→Models round-trip into one dialog. */
 const NEW_SOURCE = "__new__";
+/** Sentinel select value: register the model names with NO source. The model is
+ *  created enabled-but-chain-empty; the user attaches a source from the model
+ *  row's "Add source" action afterwards. Lets you park a custom name before you
+ *  know which backend should serve it. */
+const NO_SOURCE = "__none__";
 
 const providerId = ref("");
 const raw = ref("");
@@ -49,6 +54,7 @@ watch(open, (o) => {
 });
 
 const isNew = computed(() => providerId.value === NEW_SOURCE);
+const isNone = computed(() => providerId.value === NO_SOURCE);
 
 /** Routing slots a provider serves — its wire formats, plus /responses when the
  *  source opted into it. "全挂" enables a model on every one of these. */
@@ -60,7 +66,7 @@ function slotsFor(p: { formats: string[]; supportsResponses?: boolean }): string
 
 /** Live preview of the slots the chosen source will enable, shown under the select. */
 const selectedSlots = computed(() => {
-  if (isNew.value)
+  if (isNew.value || isNone.value)
     return slotsFor({ formats: pickedFormats(), supportsResponses: fmtOpenai.value && newResponses.value });
   const p = props.providers.find((x) => x.id === providerId.value);
   return p ? slotsFor(p) : [];
@@ -107,7 +113,7 @@ const names = computed(() => {
   return out;
 });
 
-const canSubmit = computed(() => !!providerId.value && names.value.length > 0 && !submitting.value);
+const canSubmit = computed(() => !!providerId.value && names.value.length > 0 && selectedSlots.value.length > 0 && !submitting.value);
 
 /** Enable every pasted model on every format the chosen provider speaks — one
  *  POST per (name, slot). If "new source" is selected, create it first, then
@@ -142,6 +148,10 @@ async function submit() {
       slots = slotsFor(r.provider);
       createdSource = true;
       toast(t("sources.added"), "success");
+    } else if (isNone.value) {
+      // No source: enable the picked slots with an empty provider chain. The
+      // models show up enabled-but-sourceless; the user attaches a source later.
+      slots = slotsFor({ formats: pickedFormats(), supportsResponses: fmtOpenai.value && newResponses.value });
     } else {
       const p = props.providers.find((x) => x.id === pid);
       slots = p ? slotsFor(p) : [];
@@ -149,7 +159,7 @@ async function submit() {
     const tasks: { name: string; slot: string }[] = [];
     for (const name of names.value) for (const slot of slots) tasks.push({ name, slot });
     const results = await Promise.allSettled(
-      tasks.map((task) => req("POST", "/admin/models", { name: task.name, format: task.slot, providers: [pid] })),
+      tasks.map((task) => req("POST", "/admin/models", { name: task.name, format: task.slot, providers: isNone.value ? [] : [pid] })),
     );
     const okNames = new Set<string>();
     let fail = 0;
@@ -189,6 +199,7 @@ async function submit() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem :value="NEW_SOURCE">{{ t("models.newSourceOpt") }}</SelectItem>
+              <SelectItem :value="NO_SOURCE">{{ t("models.noneSourceOpt") }}</SelectItem>
               <SelectItem v-for="p in providers" :key="p.id" :value="p.id">{{ p.name }}</SelectItem>
             </SelectContent>
           </Select>
@@ -197,10 +208,12 @@ async function submit() {
           </p>
         </div>
 
-        <!-- Inline new-source form: create the source, then the models attach to it. -->
-        <div v-if="isNew" class="space-y-3 rounded-lg border bg-muted/30 p-4">
-          <p class="text-xs text-muted-foreground">{{ t("models.addModelsNewHint") }}</p>
-          <div class="space-y-1.5">
+        <!-- Shared picker for the two "no existing source" modes: the format
+             checkboxes drive which endpoints the names land on. "New source"
+             additionally fills in name/base URLs/key to create that source first. -->
+        <div v-if="isNew || isNone" class="space-y-3 rounded-lg border bg-muted/30 p-4">
+          <p class="text-xs text-muted-foreground">{{ isNew ? t("models.addModelsNewHint") : t("models.addModelsNoneHint") }}</p>
+          <div v-if="isNew" class="space-y-1.5">
             <label class="text-xs font-medium text-muted-foreground">{{ t("sources.nameLabel") }}</label>
             <Input v-model="newName" :placeholder="t('sources.namePh')" autocomplete="off" aria-label="name" />
           </div>
@@ -237,21 +250,21 @@ async function submit() {
               </div>
             </div>
           </div>
-          <div v-if="fmtOpenai" class="space-y-1.5">
+          <div v-if="isNew && fmtOpenai" class="space-y-1.5">
             <label class="text-xs font-medium text-muted-foreground">{{ t("sources.urlLabelOpenai") }}</label>
             <Input v-model="newBaseUrlOpenai" :placeholder="t('sources.urlPhOpenai')" autocomplete="off" aria-label="openai base url" />
             <p class="text-xs text-muted-foreground">{{ t("sources.urlHintOpenai") }}</p>
           </div>
-          <div v-if="fmtAnthropic" class="space-y-1.5">
+          <div v-if="isNew && fmtAnthropic" class="space-y-1.5">
             <label class="text-xs font-medium text-muted-foreground">{{ t("sources.urlLabelAnthropic") }}</label>
             <Input v-model="newBaseUrlAnthropic" :placeholder="t('sources.urlPhAnthropic')" autocomplete="off" aria-label="anthropic base url" />
             <p class="text-xs text-muted-foreground">{{ t("sources.urlHintAnthropic") }}</p>
           </div>
-          <div class="space-y-1.5">
+          <div v-if="isNew" class="space-y-1.5">
             <label class="text-xs font-medium text-muted-foreground">{{ t("sources.keyLabel") }}</label>
             <Input v-model="newKey" type="password" :placeholder="t('sources.keyPh')" autocomplete="new-password" aria-label="api key" />
           </div>
-          <p v-if="formErr" class="text-sm text-destructive">{{ formErr }}</p>
+          <p v-if="isNew && formErr" class="text-sm text-destructive">{{ formErr }}</p>
         </div>
 
         <div class="space-y-1.5">
