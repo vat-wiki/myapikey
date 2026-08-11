@@ -27,6 +27,13 @@ const CB_CAP = 300_000;
 // lenient "Retry-After: 0"/sub-second) shouldn't read as "no cooldown" and let
 // us re-hammer a just-rate-limited source in a tight loop.
 const CB_MIN = 1_000;
+// Ceiling for a reset DEADLINE parsed out of an error body (e.g. Volcengine Ark's
+// 1308 "您的限额将在 <datetime> 重置" — a quota window, not a backoff guess).
+// Larger than CB_CAP because a quota reset is a real future event the source
+// explicitly told us about: while cooling the source is SKIPPED, so honoring the
+// true reset avoids re-probing a source we KNOW is rate-limited. Sanity-bound so a
+// malformed body can't take a source offline for more than a work day.
+const RESET_CAP_MS = 6 * 60 * 60 * 1000;
 
 /** RPM pacing window: a source's `rpm` cap counts calls within this trailing
  *  window. 60s matches the usual "requests per minute" limit. */
@@ -417,20 +424,29 @@ export class Store {
    *  across cooldown expirations and is reset only by success — unless the
    *  provider has been quiet for > CAP, in which case it starts fresh at 1.
    *  When the upstream told us exactly how long to back off (`retryAfterMs`,
-   *  parsed from a 429/overloaded Retry-After header), honor it — clamped to
-   *  [CB_MIN, CAP] — instead of the escalating guess: the source isn't sicker,
-   *  it just said when it'll be ready. `fails` still increments either way so a
-   *  later hint-less failure continues the escalation from where it left off.
-   *  Returns `entered` = transitioned from healthy → cooling this call (the
-   *  caller logs a cooldown row only then, to avoid timeline spam), plus the
-   *  fails count and cooldown duration for that row. */
-  recordCircuitFailure(id: string, status: number, reason: string, retryAfterMs?: number): { entered: boolean; fails: number; cooldownMs: number } {
+   *  parsed from a 429/overloaded Retry-After header, OR a reset deadline parsed
+   *  from a Volcengine-Ark-style error body — `resetDeadline` selects the larger
+   *  RESET_CAP_MS ceiling for the latter), honor it — clamped to [CB_MIN, cap] —
+   *  instead of the escalating guess: the source isn't sicker, it just said when
+   *  it'll be ready. `fails` still increments either way so a later hint-less
+   *  failure continues the escalation from where it left off. Returns `entered` =
+   *  transitioned from healthy → cooling this call (the caller logs a cooldown
+   *  row only then, to avoid timeline spam), plus the fails count and cooldown
+   *  duration for that row. */
+  recordCircuitFailure(id: string, status: number, reason: string, retryAfterMs?: number, resetDeadline?: boolean): { entered: boolean; fails: number; cooldownMs: number } {
     const now = Date.now();
     const cur = this.circuit.get(id);
     const stale = !cur || now - cur.lastTs > CB_CAP;
     const fails = stale ? 1 : cur!.fails + 1;
     const hint = retryAfterMs && Number.isFinite(retryAfterMs) && retryAfterMs > 0 ? retryAfterMs : 0;
-    const cooldownMs = hint ? Math.min(CB_CAP, Math.max(CB_MIN, Math.round(hint))) : Math.min(CB_CAP, CB_BASE * 2 ** (fails - 1));
+    // A hint's ceiling depends on what it represents: a Retry-After backoff guess
+    // caps at CB_CAP (5min — OpenAI-style org-quota Retry-Afters can span
+    // hours/days, and we'd rather re-probe than write the source off that long);
+    // a reset DEADLINE parsed from an Ark-style body caps at RESET_CAP_MS (a real
+    // future event worth waiting for). The no-hint escalating guess always caps at
+    // CB_CAP.
+    const cap = resetDeadline ? RESET_CAP_MS : CB_CAP;
+    const cooldownMs = hint ? Math.min(cap, Math.max(CB_MIN, Math.round(hint))) : Math.min(CB_CAP, CB_BASE * 2 ** (fails - 1));
     const until = now + cooldownMs;
     const wasCooling = !!cur && cur.until > now;
     this.circuit.set(id, { fails, until, lastStatus: status, lastReason: reason, lastTs: now });

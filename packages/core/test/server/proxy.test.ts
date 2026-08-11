@@ -366,6 +366,44 @@ describe("proxy", () => {
       const cd = store.getLogs().find((e) => e.providerId === "prv_A" && e.kind === "cooldown");
       expect(cd?.cooldownMs).toBe(30_000);
     });
+
+    it("parses the reset time out of an Ark-style 429 body when there is no Retry-After", async () => {
+      // Volcengine Ark 1308: reset time embedded in the error message, no header.
+      // Build the datetime ~20min out as Beijing wall-clock (UTC+8), which is how
+      // parseResetFromBody reads a bare datetime regardless of the gateway's TZ.
+      const reset = new Date(Date.now() + 20 * 60_000);
+      const u = new Date(reset.getTime() + 8 * 3600_000);
+      const p = (n: number) => String(n).padStart(2, "0");
+      const ts = `${u.getUTCFullYear()}-${p(u.getUTCMonth() + 1)}-${p(u.getUTCDate())} ${p(u.getUTCHours())}:${p(u.getUTCMinutes())}:${p(u.getUTCSeconds())}`;
+      mock = mockFetch([
+        { match: "/a/v1/chat/completions", response: { status: 429, body: { error: { code: "1308", message: `[1308][已达到 5 小时的使用上限。您的限额将在 ${ts} 重置。][2026081118012623401256bc9b4019]` } } } },
+        { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "B" } }] } } },
+      ]);
+      const res = await post("/v1/chat/completions", { model: "m", messages: [] });
+      expect(res.status).toBe(200); // failed over to B
+      expect(store.isCooling("prv_A")).toBe(true);
+      const cd = store.getLogs().find((e) => e.providerId === "prv_A" && e.kind === "cooldown");
+      // Honored the parsed reset window (~20min) — past the 5min CB_CAP ceiling the
+      // escalating/backoff path clamps to, and NOT the escalating 30s first rung.
+      expect(cd?.cooldownMs!).toBeGreaterThan(300_000);
+      expect(cd?.cooldownMs!).toBeGreaterThan(19 * 60_000);
+      expect(cd?.cooldownMs!).toBeLessThanOrEqual(20 * 60_000);
+    });
+
+    it("ignores a reset datetime in the past (falls back to the escalating guess)", async () => {
+      const past = new Date(Date.now() - 60_000);
+      const u = new Date(past.getTime() + 8 * 3600_000);
+      const p = (n: number) => String(n).padStart(2, "0");
+      const ts = `${u.getUTCFullYear()}-${p(u.getUTCMonth() + 1)}-${p(u.getUTCDate())} ${p(u.getUTCHours())}:${p(u.getUTCMinutes())}:${p(u.getUTCSeconds())}`;
+      mock = mockFetch([
+        { match: "/a/v1/chat/completions", response: { status: 429, body: { error: { message: `限额将在 ${ts} 重置` } } } },
+        { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "B" } }] } } },
+      ]);
+      const res = await post("/v1/chat/completions", { model: "m", messages: [] });
+      expect(res.status).toBe(200);
+      const cd = store.getLogs().find((e) => e.providerId === "prv_A" && e.kind === "cooldown");
+      expect(cd?.cooldownMs).toBe(30_000); // escalating first rung, not a parsed hint
+    });
   });
 
   describe("stream truncation monitoring", () => {

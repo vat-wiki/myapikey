@@ -29,6 +29,30 @@ function parseRetryAfter(v: string | null | undefined): number | undefined {
   return undefined;
 }
 
+/** Parse a quota-reset DATETIME out of an upstream error body, for backends that
+ *  put it in the message instead of a Retry-After header. Volcengine Ark's 1308
+ *  ("已达到 5 小时的使用上限。您的限额将在 2026-08-11 18:33:11 重置。") is the case
+ *  that bit us: no Retry-After, so the cooldown fell back to the escalating guess
+ *  and re-hit the limit every 30/60/120…s. Returns ms-until-reset so the caller
+ *  can cool for the real remaining window.
+ *
+ *  Bare datetimes in these Chinese-vendor bodies are Beijing time (UTC+8); force
+ *  that zone so the cooldown is right no matter what TZ the gateway itself runs
+ *  in (Date.parse on a zone-less space-separated string would otherwise read it
+ *  as the gateway's LOCAL time). An explicit zone (Z / ±HH:MM) is honored as-is.
+ *  Returns undefined for no match / unparseable / already-in-the-past so the
+ *  caller falls back to the escalating backoff. */
+function parseResetFromBody(text: string): number | undefined {
+  if (!text) return undefined;
+  const m = text.match(/(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2})?)(Z|[+-]\d{2}:?\d{2})?/);
+  if (!m) return undefined;
+  const zone = m[3] ?? "+08:00";
+  const t = Date.parse(`${m[1]}T${m[2]}${zone}`);
+  if (!Number.isFinite(t)) return undefined;
+  const ms = t - Date.now();
+  return ms > 0 ? ms : undefined;
+}
+
 /** Resolve the ordered, compatible provider list for a model on a routing slot. */
 function candidates(store: Store, model: string, key: RouteKey): Provider[] {
   const d = store.get();
@@ -365,9 +389,12 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
         if (pinId) break; // per-source probe: fail fast, no circuit impact.
         // A 429/overloaded upstream usually carries Retry-After; honoring it
         // cools for exactly as long as asked (clamped) instead of the escalating
-        // guess. Absent (5xx often, or a proxy that stripped it) → escalate.
+        // guess. Absent (5xx often, OR a quota error that buried the reset time
+        // in the BODY — e.g. Volcengine Ark's 1308 "您的限额将在 <datetime> 重置")
+        // → parse that deadline out of the body, else fall back to escalating.
         const retryAfterMs = parseRetryAfter(upstream.headers.get("retry-after"));
-        const r = store.recordCircuitFailure(provider.id, lastStatus, lastErr, retryAfterMs);
+        const resetInMs = retryAfterMs ? undefined : parseResetFromBody(txt);
+        const r = store.recordCircuitFailure(provider.id, lastStatus, lastErr, retryAfterMs ?? resetInMs, !!resetInMs);
         if (r.entered) {
           store.pushLog({ ts: Date.now(), model, provider: provider.name, providerId: provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: lastErr });
         }

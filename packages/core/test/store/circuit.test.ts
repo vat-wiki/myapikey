@@ -98,6 +98,21 @@ describe("store circuit breaker", () => {
     });
   });
 
+  describe("reset-deadline hint (resetDeadline, parsed from an Ark-style body)", () => {
+    it("honors a quota-reset duration beyond CB_CAP (the 5-min backoff ceiling)", () => {
+      // e.g. Ark 1308 "限额将在 <now+32min> 重置" → 32-min cooldown, not 5-min.
+      const r = env.store.recordCircuitFailure("prv_1", 429, "quota", 32 * 60_000, true);
+      expect(r.cooldownMs).toBe(32 * 60_000);
+      expect(env.store.isCooling("prv_1")).toBe(true);
+    });
+    it("clamps to RESET_CAP_MS (6h) so a malformed body can't disable a source all day", () => {
+      expect(env.store.recordCircuitFailure("prv_1", 429, "x", 7 * 60 * 60_000, true).cooldownMs).toBe(6 * 60 * 60_000);
+    });
+    it("still floors a tiny deadline to CB_MIN", () => {
+      expect(env.store.recordCircuitFailure("prv_1", 429, "x", 200, true).cooldownMs).toBe(1_000);
+    });
+  });
+
   describe("entered semantics", () => {
     it("is true only on the healthy→cooling transition (one cooldown row)", () => {
       expect(env.store.recordCircuitFailure("prv_1", 503, "e1").entered).toBe(true);
