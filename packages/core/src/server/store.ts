@@ -78,6 +78,36 @@ export interface StatBucket {
   /** Token totals for this bucket (success rows only). */
   inputTokens: number;
   outputTokens: number;
+  /** Prompt-cache read hits summed across this bucket's rows (Anthropic/Ark
+   *  cache_read_input_tokens). 0 for buckets with no caching. */
+  cacheRead: number;
+  /** Prompt-cache creation (write) tokens summed across this bucket's rows
+   *  (cache_creation_input_tokens). */
+  cacheCreation: number;
+  /** cacheRead / (inputTokens + cacheRead + cacheCreation): "of all prompt
+   *  tokens, how many were served from cache." 0 when there were no prompt
+   *  tokens. */
+  cacheHitRate: number;
+}
+
+/** One provider×model cell in the cache breakdown (GET /admin/stats). Groups
+ *  the retained history by the stable provider id × the model name, so each
+ *  source's per-model cache hit rate is visible. `provider` is the LIVE display
+ *  name (resolved at read time from the config, so renaming a source doesn't
+ *  split history — same invariant as `byProvider`). */
+export interface ProviderModelStat {
+  /** Stable provider id, or "" when the row had none (legacy name-only). */
+  providerId: string;
+  /** Live provider display name. */
+  provider: string;
+  model: string;
+  calls: number;
+  success: number;
+  /** Fresh (non-cached) prompt tokens summed across this cell's rows. */
+  inputTokens: number;
+  cacheRead: number;
+  cacheCreation: number;
+  cacheHitRate: number;
 }
 
 /** One day in the stats time series. */
@@ -114,6 +144,10 @@ export interface StatsResult {
   byModel: StatBucket[];
   byProvider: StatBucket[];
   byFormat: StatBucket[];
+  /** Cache hit rate per source × model — every retained (provider, model) cell,
+   *  so the UI can show each source's per-model caching. Rows with no cache
+   *  activity carry 0 cache fields; the UI filters those for the cache view. */
+  byProviderModel: ProviderModelStat[];
   byDay: StatDay[];
 }
 
@@ -343,6 +377,7 @@ export class Store {
       byModel: [],
       byProvider: [],
       byFormat: [],
+      byProviderModel: [],
       byDay: [],
     };
     if (!existsSync(this.logsPath)) return empty;
@@ -352,6 +387,10 @@ export class Store {
     const provider = new Map<string, Acc>();
     const format = new Map<string, Acc>();
     const day = new Map<string, Acc>();
+    /** provider×model cells for the cache breakdown. Keyed by `pid model`
+     *  (null byte so a provider name can't collide with a model name). The
+     *  display name is resolved at projection time, not stored here. */
+    const providerModel = new Map<string, { providerId: string; model: string; a: Acc }>();
     const tot = newAcc();
     const latencies: number[] = [];
 
@@ -376,6 +415,15 @@ export class Store {
       bump(acc(provider, e.providerId ?? e.provider ?? "?"), ok, err, e);
       bump(acc(format, e.format ?? "?"), ok, err, e);
       bump(acc(day, dayKey(e.ts)), ok, err, e);
+      // provider×model cell for the cache breakdown.
+      const pid = e.providerId ?? e.provider ?? "?";
+      const pmKey = pid + " " + e.model;
+      let pm = providerModel.get(pmKey);
+      if (!pm) {
+        pm = { providerId: pid, model: e.model, a: newAcc() };
+        providerModel.set(pmKey, pm);
+      }
+      bump(pm.a, ok, err, e);
     }
 
     latencies.sort((a, b) => a - b);
@@ -423,6 +471,26 @@ export class Store {
         })
         .sort(sortDesc),
       byFormat: [...format].map(([k, a]) => ({ key: k, ...fields(a) })).sort(sortDesc),
+      byProviderModel: [...providerModel.values()]
+        .map(({ providerId: pid, model: m, a }) => {
+          // Resolve the live display name when pid is a real provider id (so a
+          // rename doesn't split history); otherwise fall back to the raw key.
+          const isId = !!pid && pid !== "?" && this.data.providers.some((p) => p.id === pid);
+          return {
+            providerId: isId ? pid : "",
+            provider: isId ? providerName.get(pid) ?? pid : pid,
+            model: m,
+            calls: a.calls,
+            success: a.success,
+            inputTokens: a.sumInput,
+            cacheRead: a.sumCacheRead,
+            cacheCreation: a.sumCacheCreation,
+            cacheHitRate: hitRate(a.sumCacheRead, a.sumInput, a.sumCacheCreation),
+          } satisfies ProviderModelStat;
+        })
+        // Group siblings together (provider name asc), busiest models first —
+        // the UI regroups by provider regardless, this just keeps it readable.
+        .sort((x, y) => (x.provider < y.provider ? -1 : x.provider > y.provider ? 1 : y.calls - x.calls)),
       byDay,
     };
   }
@@ -571,7 +639,9 @@ function dayKey(ts: number): string {
   const d = new Date(ts);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
-function fields(a: Acc): Pick<StatBucket, "calls" | "success" | "error" | "avgMs" | "inputTokens" | "outputTokens"> {
+function fields(
+  a: Acc,
+): Pick<StatBucket, "calls" | "success" | "error" | "avgMs" | "inputTokens" | "outputTokens" | "cacheRead" | "cacheCreation" | "cacheHitRate"> {
   return {
     calls: a.calls,
     success: a.success,
@@ -579,7 +649,17 @@ function fields(a: Acc): Pick<StatBucket, "calls" | "success" | "error" | "avgMs
     avgMs: a.calls ? Math.round(a.sumMs / a.calls) : 0,
     inputTokens: a.sumInput,
     outputTokens: a.sumOutput,
+    cacheRead: a.sumCacheRead,
+    cacheCreation: a.sumCacheCreation,
+    cacheHitRate: hitRate(a.sumCacheRead, a.sumInput, a.sumCacheCreation),
   };
+}
+/** Cache hit rate: cacheRead / (input + cacheRead + cacheCreation) — "of all
+ *  prompt tokens, how many were served from cache." 0 when there were no prompt
+ *  tokens (guard against divide-by-zero). */
+function hitRate(cacheRead: number, input: number, cacheCreation: number): number {
+  const denom = input + cacheRead + cacheCreation;
+  return denom > 0 ? cacheRead / denom : 0;
 }
 
 /**

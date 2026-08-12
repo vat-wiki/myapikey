@@ -126,6 +126,26 @@ export interface StatBucket {
   avgMs: number;
   inputTokens: number;
   outputTokens: number;
+  /** Prompt-cache read hits (Anthropic/Ark cache_read_input_tokens). */
+  cacheRead: number;
+  /** Prompt-cache creation/write tokens (cache_creation_input_tokens). */
+  cacheCreation: number;
+  /** cacheRead / (inputTokens + cacheRead + cacheCreation). 0 when none. */
+  cacheHitRate: number;
+}
+
+/** One provider×model cell in the cache breakdown. `provider` is the live
+ *  display name (rename-safe). */
+export interface ProviderModelStat {
+  providerId: string;
+  provider: string;
+  model: string;
+  calls: number;
+  success: number;
+  inputTokens: number;
+  cacheRead: number;
+  cacheCreation: number;
+  cacheHitRate: number;
 }
 
 /** One day in the stats time series (YYYY-MM-DD, local). */
@@ -156,5 +176,6 @@ export interface StatsResult {
   byModel: StatBucket[];
   byProvider: StatBucket[];
   byFormat: StatBucket[];
+  byProviderModel: ProviderModelStat[];
   byDay: StatDay[];
 }

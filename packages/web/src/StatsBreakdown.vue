@@ -17,6 +17,12 @@ function fmtTokens(n: number): string {
   if (n < 1_000_000) return (n / 1000).toFixed(n < 10_000 ? 1 : 0).replace(/\.0$/, "") + "k";
   return (n / 1_000_000).toFixed(1) + "M";
 }
+/** 0–1 fraction → "62%" / "62.5%" / "0%". Mirrors Stats.vue's fmtPct. */
+function fmtPct(x: number): string {
+  if (!x) return "0%";
+  const p = Math.round(x * 1000) / 10; // one decimal
+  return (p % 1 === 0 ? p.toFixed(0) : p.toFixed(1)) + "%";
+}
 const props = defineProps<{
   title: string;
   buckets: StatBucket[];
@@ -27,6 +33,9 @@ const props = defineProps<{
 /** Whether any bucket carries token data — hides the Tokens column entirely on
  *  ranges with only legacy (pre-usage-tracking) log rows. */
 const anyTokens = (): boolean => props.buckets.some((b) => b.inputTokens || b.outputTokens);
+/** Whether any bucket carries cache data (Anthropic/Ark prompt caching) — hides
+ *  the Cache column on ranges with no caching (e.g. a pure-OpenAI setup). */
+const anyCache = (): boolean => props.buckets.some((b) => b.cacheRead || b.cacheCreation);
 function share(calls: number, max: number): number {
   return max ? Math.round((calls / max) * 100) : 0;
 }
@@ -51,6 +60,7 @@ function fmtDot(format: string): string | undefined {
             <TableHead class="text-right">{{ t("stats.col.error") }}</TableHead>
             <TableHead class="text-right">{{ t("stats.col.avgLatency") }}</TableHead>
             <TableHead v-if="anyTokens()" class="text-right">{{ t("stats.col.tokens") }}</TableHead>
+            <TableHead v-if="anyCache()" class="text-right">{{ t("stats.col.cacheHit") }}</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -78,6 +88,13 @@ function fmtDot(format: string): string | undefined {
                 <span class="text-foreground/80">{{ fmtTokens(b.inputTokens) }}</span>
                 <span class="text-muted-foreground/50"> / </span>
                 <span class="text-foreground/80">{{ fmtTokens(b.outputTokens) }}</span>
+              </span>
+              <span v-else class="text-muted-foreground/40">—</span>
+            </TableCell>
+            <TableCell v-if="anyCache()" class="py-1.5 text-right font-mono text-xs tabular-nums">
+              <span v-if="b.cacheRead || b.cacheCreation" class="inline-flex flex-col items-end leading-tight">
+                <span class="text-amber-600 dark:text-amber-400">{{ fmtPct(b.cacheHitRate) }}</span>
+                <span class="text-[10px] text-muted-foreground/60">↑{{ fmtTokens(b.cacheRead) }}</span>
               </span>
               <span v-else class="text-muted-foreground/40">—</span>
             </TableCell>

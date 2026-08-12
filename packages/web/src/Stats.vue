@@ -74,6 +74,37 @@ const cacheTokens = computed(() => (stats.value?.totals.cacheRead ?? 0) + (stats
 const hasTokens = computed(
   () => !!stats.value && !!(stats.value.totals.inputTokens || stats.value.totals.outputTokens || cacheTokens.value),
 );
+/** Cache hit rate per source, grouped: each entry is one provider's models
+ *  (only providers with cache activity), sorted by total cache-read desc. Drives
+ *  the "Cache hit rate by source" section — reuses StatsBreakdown as one card
+ *  per provider so each source's per-model hit rate is visible at a glance. */
+const cacheByProvider = computed(() => {
+  const rows = (stats.value?.byProviderModel ?? []).filter((r) => r.cacheRead || r.cacheCreation);
+  const groups = new Map<string, { providerId: string; provider: string; models: StatBucket[]; cacheRead: number }>();
+  for (const r of rows) {
+    const key = r.providerId || r.provider;
+    let g = groups.get(key);
+    if (!g) {
+      g = { providerId: r.providerId, provider: r.provider, models: [], cacheRead: 0 };
+      groups.set(key, g);
+    }
+    g.models.push({
+      key: r.model,
+      calls: r.calls,
+      success: r.success,
+      error: 0,
+      avgMs: 0,
+      inputTokens: r.inputTokens,
+      outputTokens: 0,
+      cacheRead: r.cacheRead,
+      cacheCreation: r.cacheCreation,
+      cacheHitRate: r.cacheHitRate,
+    });
+    g.cacheRead += r.cacheRead;
+  }
+  return [...groups.values()].sort((a, b) => b.cacheRead - a.cacheRead);
+});
+const hasCacheStats = computed(() => cacheByProvider.value.length > 0);
 /** Compact token count: 0 / 999 / 1.2k / 12k / 1.2M. */
 function fmtTokens(n: number): string {
   if (!n) return "0";
@@ -223,6 +254,22 @@ function fmtTokens(n: number): string {
           </div>
           <StatsBreakdown :title="t('stats.byProvider')" :buckets="stats.byProvider" :max="maxCalls(stats.byProvider)" kind="provider" />
           <StatsBreakdown :title="t('stats.byFormat')" :buckets="stats.byFormat" :max="maxCalls(stats.byFormat)" kind="format" />
+        </div>
+
+        <!-- cache hit rate per source × model (Anthropic/Ark prompt caching only).
+             One card per source; each lists its models with their hit rate. -->
+        <div v-if="hasCacheStats" class="space-y-3">
+          <div class="text-sm font-medium">{{ t("stats.cacheBySource") }}</div>
+          <div class="grid gap-4 lg:grid-cols-2">
+            <StatsBreakdown
+              v-for="g in cacheByProvider"
+              :key="g.providerId || g.provider"
+              :title="g.provider"
+              :buckets="g.models"
+              :max="maxCalls(g.models)"
+              kind="model"
+            />
+          </div>
         </div>
       </template>
     </CardContent>

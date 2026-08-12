@@ -31,6 +31,7 @@ describe("store/getStats", () => {
       expect(s.byModel).toEqual([]);
       expect(s.byProvider).toEqual([]);
       expect(s.byFormat).toEqual([]);
+      expect(s.byProviderModel).toEqual([]);
       expect(s.byDay).toEqual([]);
     });
   });
@@ -83,12 +84,12 @@ describe("store/getStats", () => {
       const s = env.store.getStats(0);
       const alphaAvg = Math.round((100 + 200 + 50) / 3);
       expect(s.byModel).toEqual([
-        { key: "alpha", calls: 3, success: 2, error: 1, avgMs: alphaAvg, inputTokens: 0, outputTokens: 0 },
-        { key: "beta", calls: 1, success: 1, error: 0, avgMs: 40, inputTokens: 0, outputTokens: 0 },
+        { key: "alpha", calls: 3, success: 2, error: 1, avgMs: alphaAvg, inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0, cacheHitRate: 0 },
+        { key: "beta", calls: 1, success: 1, error: 0, avgMs: 40, inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0, cacheHitRate: 0 },
       ]);
       expect(s.byFormat).toEqual([
-        { key: "openai", calls: 3, success: 2, error: 1, avgMs: alphaAvg, inputTokens: 0, outputTokens: 0 },
-        { key: "anthropic", calls: 1, success: 1, error: 0, avgMs: 40, inputTokens: 0, outputTokens: 0 },
+        { key: "openai", calls: 3, success: 2, error: 1, avgMs: alphaAvg, inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0, cacheHitRate: 0 },
+        { key: "anthropic", calls: 1, success: 1, error: 0, avgMs: 40, inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0, cacheHitRate: 0 },
       ]);
     });
   });
@@ -105,8 +106,47 @@ describe("store/getStats", () => {
 
       const s = env.store.getStats(0);
       expect(s.byProvider).toEqual([
-        { id: "prv_1", key: "new", calls: 2, success: 2, error: 0, avgMs: 50, inputTokens: 0, outputTokens: 0 },
+        { id: "prv_1", key: "new", calls: 2, success: 2, error: 0, avgMs: 50, inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0, cacheHitRate: 0 },
       ]);
+    });
+  });
+
+  describe("byProviderModel cache hit rate", () => {
+    it("groups by provider×model and computes cacheRead/(input+cacheRead+cacheCreation); rename resolves live", async () => {
+      await seedStore(env.store, {
+        providers: [makeProvider({ id: "prv_a", name: "Alpha" }), makeProvider({ id: "prv_b", name: "Beta" })],
+      });
+      const now = Date.now();
+      // Alpha / claude: input 100, cacheRead 300, cacheCreation 100 → 300/500 = 0.6
+      env.store.pushLog(
+        makeLog({ ts: now - 1000, status: 200, providerId: "prv_a", provider: "Alpha", model: "claude", usage: { input: 100, output: 10, cacheRead: 300, cacheCreation: 100 } }),
+      );
+      // Beta / claude: no cache → hit rate 0
+      env.store.pushLog(
+        makeLog({ ts: now - 1000, status: 200, providerId: "prv_b", provider: "Beta", model: "claude", usage: { input: 50, output: 5 } }),
+      );
+
+      const s = env.store.getStats(0);
+      const a = s.byProviderModel.find((r) => r.providerId === "prv_a" && r.model === "claude");
+      const b = s.byProviderModel.find((r) => r.providerId === "prv_b" && r.model === "claude");
+      expect(a).toBeTruthy();
+      expect(a?.cacheRead).toBe(300);
+      expect(a?.cacheCreation).toBe(100);
+      expect(a?.inputTokens).toBe(100);
+      expect(a?.cacheHitRate).toBeCloseTo(0.6, 5);
+      expect(a?.provider).toBe("Alpha");
+      expect(b?.cacheHitRate).toBe(0);
+
+      // Rename Alpha → Alpha2 (same id): history stays grouped under prv_a and
+      // the label resolves to the live name, not the old written one.
+      await seedStore(env.store, {
+        providers: [makeProvider({ id: "prv_a", name: "Alpha2" }), makeProvider({ id: "prv_b", name: "Beta" })],
+      });
+      const s2 = env.store.getStats(0);
+      const a2 = s2.byProviderModel.filter((r) => r.providerId === "prv_a");
+      expect(a2.length).toBe(1); // not split by the old display name
+      expect(a2[0].provider).toBe("Alpha2");
+      expect(a2[0].cacheHitRate).toBeCloseTo(0.6, 5);
     });
   });
 
@@ -193,7 +233,7 @@ describe("store/getStats", () => {
 
     it("rolls usage into per-model buckets", () => {
       const now = Date.now();
-      env.store.pushLog(makeLog({ ts: now - 1000, status: 200, model: "a", usage: { input: 100, output: 20 } }));
+      env.store.pushLog(makeLog({ ts: now - 1000, status: 200, model: "a", usage: { input: 100, output: 20, cacheRead: 60, cacheCreation: 40 } }));
       env.store.pushLog(makeLog({ ts: now - 1000, status: 200, model: "a", usage: { input: 40, output: 8 } }));
       env.store.pushLog(makeLog({ ts: now - 1000, status: 200, model: "b", usage: { input: 7, output: 3 } }));
 
@@ -202,8 +242,13 @@ describe("store/getStats", () => {
       const b = s.byModel.find((m) => m.key === "b");
       expect(a?.inputTokens).toBe(140);
       expect(a?.outputTokens).toBe(28);
+      expect(a?.cacheRead).toBe(60);
+      expect(a?.cacheCreation).toBe(40);
+      // hit rate = 60 / (140 + 60 + 40) = 0.25
+      expect(a?.cacheHitRate).toBeCloseTo(0.25, 5);
       expect(b?.inputTokens).toBe(7);
       expect(b?.outputTokens).toBe(3);
+      expect(b?.cacheHitRate).toBe(0);
     });
   });
 });
