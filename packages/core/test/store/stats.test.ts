@@ -23,6 +23,10 @@ describe("store/getStats", () => {
         avgMs: 0,
         p50Ms: 0,
         p95Ms: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheRead: 0,
+        cacheCreation: 0,
       });
       expect(s.byModel).toEqual([]);
       expect(s.byProvider).toEqual([]);
@@ -79,12 +83,12 @@ describe("store/getStats", () => {
       const s = env.store.getStats(0);
       const alphaAvg = Math.round((100 + 200 + 50) / 3);
       expect(s.byModel).toEqual([
-        { key: "alpha", calls: 3, success: 2, error: 1, avgMs: alphaAvg },
-        { key: "beta", calls: 1, success: 1, error: 0, avgMs: 40 },
+        { key: "alpha", calls: 3, success: 2, error: 1, avgMs: alphaAvg, inputTokens: 0, outputTokens: 0 },
+        { key: "beta", calls: 1, success: 1, error: 0, avgMs: 40, inputTokens: 0, outputTokens: 0 },
       ]);
       expect(s.byFormat).toEqual([
-        { key: "openai", calls: 3, success: 2, error: 1, avgMs: alphaAvg },
-        { key: "anthropic", calls: 1, success: 1, error: 0, avgMs: 40 },
+        { key: "openai", calls: 3, success: 2, error: 1, avgMs: alphaAvg, inputTokens: 0, outputTokens: 0 },
+        { key: "anthropic", calls: 1, success: 1, error: 0, avgMs: 40, inputTokens: 0, outputTokens: 0 },
       ]);
     });
   });
@@ -101,7 +105,7 @@ describe("store/getStats", () => {
 
       const s = env.store.getStats(0);
       expect(s.byProvider).toEqual([
-        { id: "prv_1", key: "new", calls: 2, success: 2, error: 0, avgMs: 50 },
+        { id: "prv_1", key: "new", calls: 2, success: 2, error: 0, avgMs: 50, inputTokens: 0, outputTokens: 0 },
       ]);
     });
   });
@@ -165,6 +169,41 @@ describe("store/getStats", () => {
       const s = env.store.getStats(2 * 24 * 60 * 60 * 1000);
       expect(s.byDay.length).toBeGreaterThanOrEqual(2);
       expect(s.byDay.filter((d) => d.calls > 0).length).toBe(1);
+    });
+  });
+
+  describe("token usage aggregation", () => {
+    it("sums input/output/cache across usage-bearing rows into totals", () => {
+      const now = Date.now();
+      env.store.pushLog(
+        makeLog({ ts: now - 1000, status: 200, model: "a", usage: { input: 100, output: 20, cacheRead: 5, cacheCreation: 3 } }),
+      );
+      env.store.pushLog(makeLog({ ts: now - 1000, status: 200, model: "a", usage: { input: 50, output: 10 } }));
+      // A failed call carries no usage → contributes 0.
+      env.store.pushLog(makeLog({ ts: now - 1000, status: 500, model: "a" }));
+      // A legacy row with no usage field → 0.
+      env.store.pushLog(makeLog({ ts: now - 1000, status: 200, model: "b" }));
+
+      const s = env.store.getStats(0);
+      expect(s.totals.inputTokens).toBe(150);
+      expect(s.totals.outputTokens).toBe(30);
+      expect(s.totals.cacheRead).toBe(5);
+      expect(s.totals.cacheCreation).toBe(3);
+    });
+
+    it("rolls usage into per-model buckets", () => {
+      const now = Date.now();
+      env.store.pushLog(makeLog({ ts: now - 1000, status: 200, model: "a", usage: { input: 100, output: 20 } }));
+      env.store.pushLog(makeLog({ ts: now - 1000, status: 200, model: "a", usage: { input: 40, output: 8 } }));
+      env.store.pushLog(makeLog({ ts: now - 1000, status: 200, model: "b", usage: { input: 7, output: 3 } }));
+
+      const s = env.store.getStats(0);
+      const a = s.byModel.find((m) => m.key === "a");
+      const b = s.byModel.find((m) => m.key === "b");
+      expect(a?.inputTokens).toBe(140);
+      expect(a?.outputTokens).toBe(28);
+      expect(b?.inputTokens).toBe(7);
+      expect(b?.outputTokens).toBe(3);
     });
   });
 });

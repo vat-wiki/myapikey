@@ -70,6 +70,17 @@ function maxCalls(buckets: StatBucket[]): number {
 }
 
 const hasData = computed(() => !!stats.value && stats.value.totals.calls > 0);
+const cacheTokens = computed(() => (stats.value?.totals.cacheRead ?? 0) + (stats.value?.totals.cacheCreation ?? 0));
+const hasTokens = computed(
+  () => !!stats.value && !!(stats.value.totals.inputTokens || stats.value.totals.outputTokens || cacheTokens.value),
+);
+/** Compact token count: 0 / 999 / 1.2k / 12k / 1.2M. */
+function fmtTokens(n: number): string {
+  if (!n) return "0";
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return (n / 1000).toFixed(n < 10_000 ? 1 : 0).replace(/\.0$/, "") + "k";
+  return (n / 1_000_000).toFixed(1) + "M";
+}
 </script>
 
 <template>
@@ -136,6 +147,24 @@ const hasData = computed(() => !!stats.value && stats.value.totals.calls > 0);
           <div class="rounded-lg border bg-muted/20 p-3">
             <div class="text-xs text-muted-foreground">{{ t("stats.totals.p95") }}</div>
             <div class="mt-1 font-mono text-xl tabular-nums">{{ fmtMs(stats.totals.p95Ms) }}</div>
+          </div>
+        </div>
+
+        <!-- token totals (success rows only; cache = prompt-cache hits, Anthropic).
+             A small fraction of rows (OpenAI chat streams where the upstream
+             omitted usage) contribute local-tokenizer ESTIMATES, not billed. -->
+        <div v-if="hasTokens" class="grid grid-cols-3 gap-2">
+          <div class="rounded-lg border bg-muted/20 p-3">
+            <div class="text-xs text-muted-foreground">↑ {{ t("stats.totals.inputTokens") }}</div>
+            <div class="mt-1 font-mono text-lg tabular-nums">{{ fmtTokens(stats.totals.inputTokens) }}</div>
+          </div>
+          <div class="rounded-lg border bg-muted/20 p-3">
+            <div class="text-xs text-muted-foreground">↓ {{ t("stats.totals.outputTokens") }}</div>
+            <div class="mt-1 font-mono text-lg tabular-nums">{{ fmtTokens(stats.totals.outputTokens) }}</div>
+          </div>
+          <div class="rounded-lg border bg-muted/20 p-3">
+            <div class="text-xs text-muted-foreground">⚡ {{ t("stats.totals.cache") }}</div>
+            <div class="mt-1 font-mono text-lg tabular-nums">{{ fmtTokens(cacheTokens) }}</div>
           </div>
         </div>
 

@@ -86,6 +86,22 @@ export interface GateConfig {
   models: Record<string, ModelEntry>;
 }
 
+/** Token usage for a single call. Captured from the upstream's reported usage
+ *  when available — that's the exact billed count (Anthropic streams, non-
+ *  streaming bodies, /responses all carry it). For OpenAI /chat/completions
+ *  streams where the upstream omits usage (most agents don't set
+ *  stream_options.include_usage), `estimated` is set and input/output come from
+ *  a local tokenizer approximation (gpt-tokenizer, o200k_base) instead — the UI
+ *  renders those with a ≈ marker. cacheRead/cacheCreation (prompt-caching hits,
+ *  Anthropic-only) are surfaced separately from `input`. */
+export interface Usage {
+  input: number;
+  output: number;
+  cacheRead?: number;
+  cacheCreation?: number;
+  estimated?: boolean;
+}
+
 /** One persisted call-history entry (stored in logs.jsonl, one JSON object per line). */
 export interface LogEntry {
   ts: number;
@@ -101,6 +117,10 @@ export interface LogEntry {
   ms: number;
   /** Whether the request asked for streaming. */
   stream: boolean;
+  /** Token usage for this call (success rows only). Absent when the upstream
+   *  reported none AND no local estimate was possible (e.g. a failed/truncated
+   *  stream), or on legacy log lines written before usage tracking. */
+  usage?: Usage;
   /** Short upstream error text on non-2xx (omitted on success). */
   error?: string;
   /** Row kind. Absent on legacy lines → treated as a normal call. "cooldown"

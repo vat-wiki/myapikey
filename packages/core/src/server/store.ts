@@ -75,6 +75,9 @@ export interface StatBucket {
   success: number;
   error: number;
   avgMs: number;
+  /** Token totals for this bucket (success rows only). */
+  inputTokens: number;
+  outputTokens: number;
 }
 
 /** One day in the stats time series. */
@@ -98,6 +101,15 @@ export interface StatsResult {
     avgMs: number;
     p50Ms: number;
     p95Ms: number;
+    /** Token totals across the window (success rows only). cacheRead/
+     *  cacheCreation are prompt-cache hits (Anthropic) — the cached input
+     *  tokens, counted separately from `inputTokens`. A small fraction of
+     *  rows (OpenAI chat streams where the upstream omitted usage) contribute
+     *  local tokenizer ESTIMATES rather than billed counts. */
+    inputTokens: number;
+    outputTokens: number;
+    cacheRead: number;
+    cacheCreation: number;
   };
   byModel: StatBucket[];
   byProvider: StatBucket[];
@@ -327,7 +339,7 @@ export class Store {
     const empty: StatsResult = {
       from,
       to,
-      totals: { calls: 0, success: 0, error: 0, errorRate: 0, avgMs: 0, p50Ms: 0, p95Ms: 0 },
+      totals: { calls: 0, success: 0, error: 0, errorRate: 0, avgMs: 0, p50Ms: 0, p95Ms: 0, inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
       byModel: [],
       byProvider: [],
       byFormat: [],
@@ -358,12 +370,12 @@ export class Store {
       const ok = e.status >= 200 && e.status < 300;
       const err = e.status >= 400;
       const ms = e.ms || 0;
-      bump(tot, ok, err, ms);
+      bump(tot, ok, err, e);
       latencies.push(ms);
-      bump(acc(model, e.model), ok, err, ms);
-      bump(acc(provider, e.providerId ?? e.provider ?? "?"), ok, err, ms);
-      bump(acc(format, e.format ?? "?"), ok, err, ms);
-      bump(acc(day, dayKey(e.ts)), ok, err, ms);
+      bump(acc(model, e.model), ok, err, e);
+      bump(acc(provider, e.providerId ?? e.provider ?? "?"), ok, err, e);
+      bump(acc(format, e.format ?? "?"), ok, err, e);
+      bump(acc(day, dayKey(e.ts)), ok, err, e);
     }
 
     latencies.sort((a, b) => a - b);
@@ -398,6 +410,10 @@ export class Store {
         avgMs: tot.calls ? Math.round(tot.sumMs / tot.calls) : 0,
         p50Ms: pick(0.5),
         p95Ms: pick(0.95),
+        inputTokens: tot.sumInput,
+        outputTokens: tot.sumOutput,
+        cacheRead: tot.sumCacheRead,
+        cacheCreation: tot.sumCacheCreation,
       },
       byModel: [...model].map(([k, a]) => ({ key: k, ...fields(a) })).sort(sortDesc),
       byProvider: [...provider]
@@ -523,15 +539,26 @@ interface Acc {
   success: number;
   error: number;
   sumMs: number;
+  sumInput: number;
+  sumOutput: number;
+  sumCacheRead: number;
+  sumCacheCreation: number;
 }
 function newAcc(): Acc {
-  return { calls: 0, success: 0, error: 0, sumMs: 0 };
+  return { calls: 0, success: 0, error: 0, sumMs: 0, sumInput: 0, sumOutput: 0, sumCacheRead: 0, sumCacheCreation: 0 };
 }
-function bump(a: Acc, ok: boolean, err: boolean, ms: number): void {
+function bump(a: Acc, ok: boolean, err: boolean, e: LogEntry): void {
   a.calls++;
   if (ok) a.success++;
   if (err) a.error++;
-  a.sumMs += ms;
+  a.sumMs += e.ms || 0;
+  const u = e.usage;
+  if (u) {
+    a.sumInput += u.input || 0;
+    a.sumOutput += u.output || 0;
+    a.sumCacheRead += u.cacheRead || 0;
+    a.sumCacheCreation += u.cacheCreation || 0;
+  }
 }
 /** Get-or-create a bucket entry in a stats map. */
 function acc(m: Map<string, Acc>, k: string): Acc {
@@ -544,8 +571,15 @@ function dayKey(ts: number): string {
   const d = new Date(ts);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
-function fields(a: Acc): Pick<StatBucket, "calls" | "success" | "error" | "avgMs"> {
-  return { calls: a.calls, success: a.success, error: a.error, avgMs: a.calls ? Math.round(a.sumMs / a.calls) : 0 };
+function fields(a: Acc): Pick<StatBucket, "calls" | "success" | "error" | "avgMs" | "inputTokens" | "outputTokens"> {
+  return {
+    calls: a.calls,
+    success: a.success,
+    error: a.error,
+    avgMs: a.calls ? Math.round(a.sumMs / a.calls) : 0,
+    inputTokens: a.sumInput,
+    outputTokens: a.sumOutput,
+  };
 }
 
 /**

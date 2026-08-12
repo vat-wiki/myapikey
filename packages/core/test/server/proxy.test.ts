@@ -567,6 +567,117 @@ describe("proxy", () => {
     });
   });
 
+  describe("usage capture", () => {
+    const sseH = { "content-type": "text/event-stream" };
+    const find = () => store.getLogs().find((e) => e.model === "m" && !e.kind);
+
+    it("anthropic stream: merges message_start input/cache + message_delta output (exact)", async () => {
+      const sse = sseBody([
+        "event: message_start",
+        'data: {"type":"message_start","message":{"usage":{"input_tokens":42,"cache_read_input_tokens":10,"cache_creation_input_tokens":2}}}',
+        "",
+        'event: content_block_delta',
+        'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}',
+        "",
+        "event: message_delta",
+        'data: {"type":"message_delta","usage":{"output_tokens":7}}',
+        "",
+        "event: message_stop",
+        'data: {"type":"message_stop"}',
+        "",
+      ]);
+      mock = mockFetch([{ match: "/a/v1/messages", response: { status: 200, bodyStream: sse, headers: sseH } }]);
+      await (await post("/v1/messages", { model: "m", messages: [], stream: true })).text();
+      expect(find()?.usage).toEqual({ input: 42, output: 7, cacheRead: 10, cacheCreation: 2 });
+    });
+
+    it("openai chat stream WITHOUT usage: falls back to a local estimate (estimated:true)", async () => {
+      const sse = sseBody([
+        'data: {"choices":[{"delta":{"content":"hello world"}}]}',
+        "",
+        "data: [DONE]",
+        "",
+      ]);
+      mock = mockFetch([{ match: "/a/v1/chat/completions", response: { status: 200, bodyStream: sse, headers: sseH } }]);
+      await (
+        await post("/v1/chat/completions", { model: "m", messages: [{ role: "user", content: "hi there" }], stream: true })
+      ).text();
+      const u = find()?.usage;
+      expect(u?.estimated).toBe(true);
+      expect(u?.output).toBeGreaterThan(0); // tokens for "hello world"
+      expect(u?.input).toBeGreaterThan(0); // tokens for the request message
+    });
+
+    it("openai chat stream WITH usage (include_usage): records exact upstream usage", async () => {
+      const sse = sseBody([
+        'data: {"choices":[{"delta":{"content":"hi"}}]}',
+        "",
+        'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":3}}',
+        "",
+        "data: [DONE]",
+        "",
+      ]);
+      mock = mockFetch([{ match: "/a/v1/chat/completions", response: { status: 200, bodyStream: sse, headers: sseH } }]);
+      await (await post("/v1/chat/completions", { model: "m", messages: [], stream: true })).text();
+      const u = find()?.usage;
+      expect(u?.estimated).toBeUndefined();
+      expect(u).toEqual({ input: 5, output: 3 });
+    });
+
+    it("non-streaming openai body: records exact usage", async () => {
+      mock = mockFetch([
+        {
+          match: "/a/v1/chat/completions",
+          response: { status: 200, body: { choices: [{ message: { content: "hi" } }], usage: { prompt_tokens: 11, completion_tokens: 9 } } },
+        },
+      ]);
+      await (await post("/v1/chat/completions", { model: "m", messages: [] })).text();
+      expect(find()?.usage).toEqual({ input: 11, output: 9 });
+    });
+
+    it("non-streaming anthropic body: records exact usage incl. cache", async () => {
+      mock = mockFetch([
+        {
+          match: "/a/v1/messages",
+          response: {
+            status: 200,
+            body: { type: "message", usage: { input_tokens: 6, output_tokens: 2, cache_read_input_tokens: 1 } },
+          },
+        },
+      ]);
+      await (await post("/v1/messages", { model: "m", messages: [] })).text();
+      expect(find()?.usage).toEqual({ input: 6, output: 2, cacheRead: 1 });
+    });
+
+    it("responses stream: records usage from response.completed (exact)", async () => {
+      const sse = sseBody([
+        "event: response.created",
+        'data: {"type":"response.created"}',
+        "",
+        "event: response.completed",
+        'data: {"type":"response.completed","response":{"usage":{"input_tokens":8,"output_tokens":4}}}',
+        "",
+      ]);
+      mock = mockFetch([{ match: "/a/v1/responses", response: { status: 200, bodyStream: sse, headers: sseH } }]);
+      await (await post("/v1/responses", { model: "m", input: "x", stream: true })).text();
+      expect(find()?.usage).toEqual({ input: 8, output: 4 });
+    });
+
+    it("anthropic stream with NO usage events records nothing (no estimate for this wire)", async () => {
+      const sse = sseBody([
+        "event: message_start",
+        'data: {"type":"message_start"}',
+        "",
+        "event: message_stop",
+        'data: {"type":"message_stop"}',
+        "",
+      ]);
+      mock = mockFetch([{ match: "/a/v1/messages", response: { status: 200, bodyStream: sse, headers: sseH } }]);
+      await (await post("/v1/messages", { model: "m", messages: [], stream: true })).text();
+      expect(find()?.usage).toBeUndefined();
+    });
+  });
+
   describe("GET /v1/models", () => {
     it("lists only openai-enabled models, owned by each model's first provider", async () => {
       const res = await createApp(store).request("/v1/models", {

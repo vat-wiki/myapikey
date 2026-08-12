@@ -105,6 +105,16 @@ export interface CircuitProvider {
   rpmUsed: number;
 }
 
+/** Token usage for one call. `estimated` marks local-tokenizer approximations
+ *  (OpenAI chat streams where the upstream omitted usage) — rendered with ≈. */
+export interface Usage {
+  input: number;
+  output: number;
+  cacheRead?: number;
+  cacheCreation?: number;
+  estimated?: boolean;
+}
+
 /** One bucket in a stats breakdown (GET /admin/stats). `id` is set only on
  *  provider buckets (the stable grouping key); `key` is the display label. */
 export interface StatBucket {
@@ -114,6 +124,8 @@ export interface StatBucket {
   success: number;
   error: number;
   avgMs: number;
+  inputTokens: number;
+  outputTokens: number;
 }
 
 /** One day in the stats time series (YYYY-MM-DD, local). */
@@ -136,6 +148,10 @@ export interface StatsResult {
     avgMs: number;
     p50Ms: number;
     p95Ms: number;
+    inputTokens: number;
+    outputTokens: number;
+    cacheRead: number;
+    cacheCreation: number;
   };
   byModel: StatBucket[];
   byProvider: StatBucket[];

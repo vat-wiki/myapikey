@@ -1,7 +1,8 @@
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { trimBase } from "../shared/config";
-import type { Format, Provider, RouteKey } from "../shared/types";
+import type { Format, Provider, RouteKey, Usage } from "../shared/types";
 import type { Store } from "./store";
+import { UsageCollector } from "./tokens";
 
 /** HTTP statuses that should trigger failover to the next provider. */
 const RETRYABLE = new Set([408, 425, 429, 500, 502, 503, 504]);
@@ -149,6 +150,9 @@ interface SettleInfo {
   ok: boolean;
   status: number;
   error?: string;
+  /** Token usage captured from the body as it flowed (success rows only).
+   *  Undefined for failed/truncated streams and for a body with no usage. */
+  usage?: Usage;
 }
 
 /** Wrap an upstream body so every byte is forwarded to the client VERBATIM while
@@ -200,7 +204,14 @@ function errorFrame(key: RouteKey, reason: string): string {
 
 function observedBody(
   upstream: Response,
-  opts: { stream: boolean; key: RouteKey; onSettle: (info: SettleInfo) => void },
+  opts: {
+    stream: boolean;
+    key: RouteKey;
+    /** The original request's `messages`, used only to estimate prompt tokens
+     *  on the openai-chat-stream fallback path (see tokens.ts). */
+    requestMessages?: unknown;
+    onSettle: (info: SettleInfo) => void;
+  },
 ): ReadableStream<Uint8Array> {
   const reader = upstream.body?.getReader();
   const enc = new TextEncoder();
@@ -209,6 +220,7 @@ function observedBody(
   let tail = ""; // rolling window so a marker split across chunks is still caught
   let terminal = false;
   let settled = false;
+  const usage = new UsageCollector();
 
   const settle = (info: SettleInfo) => {
     if (settled) return;
@@ -234,13 +246,14 @@ function observedBody(
             injectError(controller, reason);
             settle({ ok: false, status: 502, error: reason });
           } else {
-            settle({ ok: true, status: 200 });
+            settle({ ok: true, status: 200, usage: usage.finalize({ stream: opts.stream, key: opts.key, requestMessages: opts.requestMessages }) });
           }
           controller.close();
           return;
         }
+        const txt = dec.decode(value, { stream: true });
+        usage.feed(txt, { stream: opts.stream, key: opts.key });
         if (!terminal && markers.length) {
-          const txt = dec.decode(value, { stream: true });
           const win = tail + txt;
           if (markers.some((m) => win.includes(m))) terminal = true;
           tail = win.slice(-128);
@@ -363,13 +376,14 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
         // the body's end (so the row reflects the real outcome, not just the
         // headers). See observedBody() for the detection rules.
         const ttfb = Date.now() - start;
-        const body = observedBody(upstream, {
+        const out = observedBody(upstream, {
           stream,
           key,
+          requestMessages: body.messages,
           onSettle: (info) => {
             if (info.ok) {
               store.recordCircuitSuccess(provider.id);
-              store.pushLog({ ts: Date.now(), model, provider: provider.name, providerId: provider.id, format: wire, status: 200, ms: ttfb, stream });
+              store.pushLog({ ts: Date.now(), model, provider: provider.name, providerId: provider.id, format: wire, status: 200, ms: ttfb, stream, usage: info.usage });
             } else {
               // A pinned per-source probe takes no circuit side-effects (a manual
               // test must not trip the breaker) — mirrors the retryable branch.
@@ -378,7 +392,7 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
             }
           },
         });
-        return new Response(body, { status: upstream.status, headers: downHeaders(upstream, isProbe ? provider.name : undefined) });
+        return new Response(out, { status: upstream.status, headers: downHeaders(upstream, isProbe ? provider.name : undefined) });
       }
       if (RETRYABLE.has(upstream.status)) {
         lastStatus = upstream.status;

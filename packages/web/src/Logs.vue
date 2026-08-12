@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 import { useI18n } from "vue-i18n";
-import { req, type CircuitProvider } from "@/api";
+import { req, type CircuitProvider, type Usage } from "@/api";
 import { FMT_ACCENT, type Fmt } from "@/lib/format";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -29,6 +29,9 @@ interface LogEntry {
   kind?: "call" | "cooldown";
   cooldownMs?: number;
   fails?: number;
+  /** Token usage for this call (success rows only). `estimated` marks local-
+   *  tokenizer approximations (OpenAI chat streams w/o include_usage) → ≈. */
+  usage?: Usage;
 }
 
 const logs = ref<LogEntry[]>([]);
@@ -148,6 +151,13 @@ function fmtBadge(format: string): string {
 
 function fmtMs(ms: number): string {
   return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
+/** Compact token count for the row detail. */
+function fmtTokens(n: number): string {
+  if (!n) return "0";
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return (n / 1000).toFixed(n < 10_000 ? 1 : 0).replace(/\.0$/, "") + "k";
+  return (n / 1_000_000).toFixed(1) + "M";
 }
 /** Error rate as a tidy percentage string (0 / 0.5 / 10 — no trailing .0, ≤1
  *  decimal). Shown as a pulse on the Logs summary so the reader sees the
@@ -491,6 +501,19 @@ onUnmounted(stopPolling);
                     <dd class="font-mono">{{ fmtMs(l.ms) }}</dd>
                     <dt class="text-muted-foreground">{{ t("logs.detail.stream") }}</dt>
                     <dd>{{ l.stream ? t("logs.detail.streamYes") : t("logs.detail.streamNo") }}</dd>
+                    <template v-if="l.usage">
+                      <dt class="text-muted-foreground">{{ t("logs.detail.tokens") }}</dt>
+                      <dd class="font-mono">
+                        <span class="text-foreground/80">↑ {{ fmtTokens(l.usage.input) }}</span>
+                        <span class="text-muted-foreground/50"> · </span>
+                        <span class="text-foreground/80">↓ {{ fmtTokens(l.usage.output) }}</span>
+                        <Badge v-if="l.usage.estimated" variant="muted" class="ml-1.5 text-[10px]">≈ {{ t("logs.detail.estimated") }}</Badge>
+                        <template v-if="(l.usage.cacheRead || 0) + (l.usage.cacheCreation || 0)">
+                          <span class="text-muted-foreground/50"> · </span>
+                          <span class="text-amber-600 dark:text-amber-400">⚡ {{ t("logs.detail.cache") }} {{ fmtTokens((l.usage.cacheRead || 0) + (l.usage.cacheCreation || 0)) }}</span>
+                        </template>
+                      </dd>
+                    </template>
                     <dt class="text-muted-foreground">{{ t("logs.detail.error") }}</dt>
                     <dd class="break-all font-mono">{{ l.error || t("logs.detail.errorNone") }}</dd>
                   </dl>
