@@ -89,3 +89,47 @@ jobs:
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  release:
+    name: Tag & GitHub Release
+    needs: publish
+    # Same gate as publish: only on a real push to main (never on PRs).
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      # gh release create (via GITHUB_TOKEN) needs this to make the tag + release.
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # Idempotent: if a release for this version already exists (e.g. created
+      # out-of-band, or a re-run of the workflow), do nothing. Independent of the
+      # npm check above so a publish that shipped without a release still gets one.
+      - name: Check if release exists
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="v$(node -p "require('./package.json').version")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "Release $VERSION already exists — skipping."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # gh release create makes BOTH the vX.Y.Z tag (pointing at the release
+      # commit pushed to main) and the release, with auto-generated notes
+      # (diffed against the previous release). So nothing to do by hand after a
+      # bump+push — npm publish, the tag, and the release all happen here.
+      - name: Create tag + GitHub Release
+        if: steps.check.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.check.outputs.version }}" \
+            --target "$GITHUB_SHA" \
+            --title "${{ steps.check.outputs.version }}" \
+            --generate-notes
