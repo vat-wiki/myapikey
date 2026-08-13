@@ -585,6 +585,45 @@ describe("server/admin", () => {
       }
     });
 
+    it("POST /admin/models/:name/test survives a non-ASCII provider name in the probe header (商汤)", async () => {
+      // The probe tags the response with x-myapikey-provider = provider.name so the
+      // badge can name the source that answered. HTTP header values are Latin-1
+      // (ByteString), so a name like "商汤" must be %-encoded on the way out and
+      // decoded on the way back — otherwise Headers.set throws, the probe crashes
+      // with 500, and (dying before the success log fires) leaves no log either.
+      const sn = makeProvider({ name: "商汤", formats: ["openai"], baseUrlOpenai: "https://up.test/v1", apiKey: "sk-up" });
+      await seedStore(store, { providers: [sn], apiKey: "sk-test", models: { "sensenova-6.8-flash-lite": makeModel({ openai: fe([sn.id]) }) } });
+      const chat = mockFetch([{ match: "/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "pong" } }] } } }]);
+      try {
+        const res = await createApp(store).request("/admin/models/sensenova-6.8-flash-lite/test", { method: "POST", headers: H_GET });
+        expect(res.status).toBe(200);
+        const result = (await json<{ result: { ok: boolean; status: number; provider?: string; format: string } }>(res)).result;
+        expect(result.ok).toBe(true);
+        expect(result.status).toBe(200);
+        expect(result.provider).toBe("商汤"); // decoded back to unicode, not left %-encoded
+      } finally {
+        chat.restore();
+      }
+    });
+
+    it("a successful /test writes a 200 log row (drains the probe body so the success log fires)", async () => {
+      // The success log lives in the response stream's completion callback
+      // (observedBody's onSettle), which only fires once the loopback body is
+      // consumed — a 200 at the headers is committed before the body flows. A
+      // missing row here means a green test silently leaves no trace in Logs.
+      const a = makeProvider({ name: "alpha", formats: ["openai"], baseUrlOpenai: "https://up.test/v1", apiKey: "sk-up" });
+      await seedStore(store, { providers: [a], apiKey: "sk-test", models: { "gpt-4o": makeModel({ openai: fe([a.id]) }) } });
+      const chat = mockFetch([{ match: "/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "hi" } }] } } }]);
+      try {
+        await createApp(store).request("/admin/models/gpt-4o/test", { method: "POST", headers: H_GET });
+        const row = store.getLogs().find((l) => l.model === "gpt-4o");
+        expect(row).toBeTruthy();
+        expect(row?.status).toBe(200);
+      } finally {
+        chat.restore();
+      }
+    });
+
     it("POST /admin/models/:name/test → 404 if model not found", async () => {
       const res = await createApp(store).request("/admin/models/nope/test", { method: "POST", headers: H_GET });
       expect(res.status).toBe(404);

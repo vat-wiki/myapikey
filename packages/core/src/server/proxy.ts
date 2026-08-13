@@ -125,6 +125,12 @@ function upstreamTarget(p: Provider, key: RouteKey): { url: string; wire: Format
   return { url: `${trimBase(p.baseUrlOpenai)}/${path}`, wire: "openai" };
 }
 
+/** HTTP header values are ByteStrings (Latin-1, code points ≤ 255) — a value
+ *  with any wider char throws at Headers.set time. Provider names can be any
+ *  unicode (e.g. "商汤"), so %-encode the probe tag and %-decode it on the admin
+ *  read side. encodeURIComponent is a no-op on plain-ASCII names. */
+const encodeTag = (s: string): string => encodeURIComponent(s);
+
 /** Copy through the headers we reflect to the client (content-type, rate-limit
  *  hints, request id, …) and optionally tag the in-process probe with which
  *  source answered. The probe tag never reaches a real agent client (set only
@@ -135,7 +141,7 @@ function downHeaders(upstream: Response, servedBy?: string): Headers {
     const v = upstream.headers.get(h);
     if (v) headers.set(h, v);
   }
-  if (servedBy) headers.set("x-myapikey-provider", servedBy);
+  if (servedBy) headers.set("x-myapikey-provider", encodeTag(servedBy));
   return headers;
 }
 
@@ -448,7 +454,7 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
     // x-myapikey-provider so the source-row badge names the tested source.
     if (pinIndex != null) {
       const h = new Headers({ "content-type": "application/json" });
-      if (isProbe) h.set("x-myapikey-provider", last.provider.name);
+      if (isProbe) h.set("x-myapikey-provider", encodeTag(last.provider.name));
       return new Response(
         JSON.stringify({ error: { message: lastErr || `provider failed (status ${lastStatus})`, type: "upstream_error" } }),
         { status: lastStatus, headers: h },

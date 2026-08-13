@@ -4,6 +4,7 @@ dist/
 data.json
 calls.jsonl
 logs.jsonl
+credentials.txt
 .DS_Store
 *.log
 .playwright-cli/

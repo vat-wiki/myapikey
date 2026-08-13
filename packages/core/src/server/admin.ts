@@ -44,6 +44,19 @@ function providerSpeaks(p: Provider, key: RouteKey): boolean {
   return key === "responses" ? !!p.supportsResponses : p.formats.includes(key);
 }
 
+/** Inverse of proxy's encodeTag: the probe's x-myapikey-provider header carries
+ *  a %-encoded provider name (HTTP headers are Latin-1, so a name like "商汤"
+ *  can't travel raw). Decode it back for display; fall back to the raw value if
+ *  it wasn't encoded (older gateway / already-ASCII). */
+function decodeTag(v: string | null): string | undefined {
+  if (!v) return undefined;
+  try {
+    return decodeURIComponent(v);
+  } catch {
+    return v;
+  }
+}
+
 /** Drop every slot for a provider id from a routing slot — used when a provider
  *  is deleted outright or removed from this model's chain. A provider may occupy
  *  more than one slot (each mapped to a different upstream model); all go. */
@@ -529,9 +542,15 @@ export function adminApi(store: Store, auth: MiddlewareHandler, v1: Hono): Hono 
     } catch (e) {
       return c.json({ result: { ok: false, status: 0, format, error: `gateway loopback failed: ${(e as Error).message}` } });
     }
-    const provider = res.headers.get("x-myapikey-provider") ?? undefined;
-    if (res.ok) return c.json({ result: { ok: true, status: res.status, provider, format } });
+    const provider = decodeTag(res.headers.get("x-myapikey-provider"));
+    // Drain the loopback body so a SUCCESSFUL probe's log row is actually
+    // written: the success log lives in the response stream's completion
+    // callback (observedBody's onSettle), which only fires once the body is
+    // consumed — a 200 at the headers is committed before the body flows, so
+    // returning here without reading would silently drop the log. The text is
+    // reused for the failure message below.
     const txt = await res.text().catch(() => "");
+    if (res.ok) return c.json({ result: { ok: true, status: res.status, provider, format } });
     return c.json({ result: { ok: false, status: res.status, provider, format, error: shortError(txt) || `HTTP ${res.status}` } });
   });
 
@@ -581,9 +600,11 @@ export function adminApi(store: Store, auth: MiddlewareHandler, v1: Hono): Hono 
     } catch (e) {
       return c.json({ result: { ok: false, status: 0, format, error: `gateway loopback failed: ${(e as Error).message}` } });
     }
-    const answeredBy = res.headers.get("x-myapikey-provider") ?? undefined;
-    if (res.ok) return c.json({ result: { ok: true, status: res.status, provider: answeredBy, format } });
+    const answeredBy = decodeTag(res.headers.get("x-myapikey-provider"));
+    // Drain the loopback body (see /test above) so a successful pinned probe's
+    // log row is written — the success log fires only when the body is consumed.
     const txt = await res.text().catch(() => "");
+    if (res.ok) return c.json({ result: { ok: true, status: res.status, provider: answeredBy, format } });
     return c.json({ result: { ok: false, status: res.status, provider: answeredBy, format, error: shortError(txt) || `HTTP ${res.status}` } });
   });
 
