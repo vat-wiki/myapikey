@@ -118,6 +118,13 @@ export interface Usage {
 export interface LogEntry {
   ts: number;
   model: string;
+  /** The actual upstream model name forwarded to the provider, when a per-slot
+   *  rewrite changed it (a ChainSlot `model` that differs from the public name —
+   *  an alias, a model swap, or one of several models on a repeated source).
+   *  Absent when the public name was forwarded verbatim, so identity + legacy
+   *  rows stay clean. Lets the log show which real model answered when a source
+   *  remaps the public name. */
+  upstreamModel?: string;
   provider: string;
   /** Stable provider id (newer entries). Stats group by this so renaming a
    *  provider doesn't split its history; the display name is resolved from the

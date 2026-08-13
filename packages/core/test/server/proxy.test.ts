@@ -322,6 +322,11 @@ describe("proxy", () => {
       expect(JSON.parse(aCall!.body).model).toBe("m");
       // B's entry rewrites the model to its configured upstream name.
       expect(JSON.parse(bCall!.body).model).toBe("gpt-4o-2024");
+      // The success log row records the actual upstream model that answered (B's
+      // mapped name), so history shows which real model a routed call landed on.
+      await res.text(); // drain so the success row's onSettle fires + logs
+      const log = store.getLogs().find((e) => e.model === "m" && !e.kind);
+      expect(log?.upstreamModel).toBe("gpt-4o-2024");
     });
   });
 

@@ -17,6 +17,10 @@ const { t } = useI18n();
 interface LogEntry {
   ts: number;
   model: string;
+  /** The actual upstream model name forwarded, when a per-slot rewrite changed
+   *  it (differs from the public `model`). Absent when the public name went
+   *  through verbatim. */
+  upstreamModel?: string;
   provider: string;
   format: string;
   status: number;
@@ -197,7 +201,7 @@ const filtered = computed(() => {
     if (filterProvider.value !== "all" && l.provider !== filterProvider.value) return false;
     if (filterStatus.value === "success" && !(l.status >= 200 && l.status < 300)) return false;
     if (filterStatus.value === "error" && l.status < 400) return false;
-    if (q && !(l.model.toLowerCase().includes(q) || l.provider.toLowerCase().includes(q))) return false;
+    if (q && !(l.model.toLowerCase().includes(q) || l.upstreamModel?.toLowerCase().includes(q) || l.provider.toLowerCase().includes(q))) return false;
     return true;
   });
 });
@@ -479,7 +483,9 @@ onUnmounted(stopPolling);
                 <TableCell class="font-mono text-xs text-muted-foreground" :title="fmtFull(l.ts)">
                   {{ fmtTime(l.ts) }}
                 </TableCell>
-                <TableCell class="font-mono text-xs">{{ l.model }}</TableCell>
+                <TableCell class="font-mono text-xs">
+                  {{ l.model }}<span v-if="l.upstreamModel" class="text-muted-foreground/60"> → {{ l.upstreamModel }}</span>
+                </TableCell>
                 <TableCell class="text-sm">{{ l.provider }}</TableCell>
                 <TableCell>
                   <span class="inline-flex items-center gap-1.5">
@@ -501,6 +507,10 @@ onUnmounted(stopPolling);
                     <dd class="font-mono">{{ fmtMs(l.ms) }}</dd>
                     <dt class="text-muted-foreground">{{ t("logs.detail.stream") }}</dt>
                     <dd>{{ l.stream ? t("logs.detail.streamYes") : t("logs.detail.streamNo") }}</dd>
+                    <template v-if="l.upstreamModel">
+                      <dt class="text-muted-foreground">{{ t("logs.detail.upstreamModel") }}</dt>
+                      <dd class="break-all font-mono">{{ l.upstreamModel }}</dd>
+                    </template>
                     <template v-if="l.usage">
                       <dt class="text-muted-foreground">{{ t("logs.detail.tokens") }}</dt>
                       <dd class="font-mono">

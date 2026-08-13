@@ -367,6 +367,12 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
       // the slot each iteration, so failover never carries the previous slot's
       // upstream name.
       body.model = slot.model ?? model;
+      // The actual upstream model forwarded this attempt (after the per-slot
+      // rewrite). Recorded on the log row so history shows which real model a
+      // routed call landed on when a source remaps the public name. `undefined`
+      // when the public name went through verbatim — JSON.stringify drops it, so
+      // identity + legacy rows stay clean.
+      const upstreamModel = slot.model && slot.model !== model ? slot.model : undefined;
       // Count this attempt toward the source's RPM window — but not for a pinned
       // probe, which (like circuit state) takes no routing side-effects.
       if (pinIndex == null) store.recordDispatch(provider.id);
@@ -384,7 +390,7 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
         if (pinIndex != null) break; // per-source probe: fail fast, no circuit impact.
         const r = store.recordCircuitFailure(provider.id, lastStatus, lastErr);
         if (r.entered) {
-          store.pushLog({ ts: Date.now(), model, provider: provider.name, providerId: provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: lastErr });
+          store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: lastErr });
         }
         continue;
       }
@@ -409,12 +415,12 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
           onSettle: (info) => {
             if (info.ok) {
               store.recordCircuitSuccess(provider.id);
-              store.pushLog({ ts: Date.now(), model, provider: provider.name, providerId: provider.id, format: wire, status: 200, ms: ttfb, stream, usage: info.usage });
+              store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: 200, ms: ttfb, stream, usage: info.usage });
             } else {
               // A pinned per-source probe takes no circuit side-effects (a manual
               // test must not trip the breaker) — mirrors the retryable branch.
               if (pinIndex == null) store.recordCircuitFailure(provider.id, info.status, info.error || "stream failed");
-              store.pushLog({ ts: Date.now(), model, provider: provider.name, providerId: provider.id, format: wire, status: info.status, ms: ttfb, stream, error: info.error });
+              store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: info.status, ms: ttfb, stream, error: info.error });
             }
           },
         });
@@ -436,19 +442,20 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
         const resetInMs = retryAfterMs ? undefined : parseResetFromBody(txt);
         const r = store.recordCircuitFailure(provider.id, lastStatus, lastErr, retryAfterMs ?? resetInMs, !!resetInMs);
         if (r.entered) {
-          store.pushLog({ ts: Date.now(), model, provider: provider.name, providerId: provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: lastErr });
+          store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: lastErr });
         }
         continue;
       }
       // Non-retryable client error: return it to the caller as-is. Read the
       // error text off a CLONE so the original body still streams back.
       const errText = await upstream.clone().text().catch(() => "");
-      store.pushLog({ ts: Date.now(), model, provider: provider.name, providerId: provider.id, format: wire, status: upstream.status, ms: Date.now() - start, stream, error: shortError(errText) || `HTTP ${upstream.status}` });
+      store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: upstream.status, ms: Date.now() - start, stream, error: shortError(errText) || `HTTP ${upstream.status}` });
       return passThrough(upstream, isProbe ? provider.name : undefined);
     }
 
     const last = order[order.length - 1];
-    store.pushLog({ ts: Date.now(), model, provider: last.provider.name, providerId: last.provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, error: lastErr || `all providers failed (last status ${lastStatus})` });
+    const lastUpstreamModel = last.model && last.model !== model ? last.model : undefined;
+    store.pushLog({ ts: Date.now(), model, upstreamModel: lastUpstreamModel, provider: last.provider.name, providerId: last.provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, error: lastErr || `all providers failed (last status ${lastStatus})` });
     // A pinned (per-source) probe failed: surface the REAL upstream status the
     // one slot returned (429/500/…), not a collapsed 502, and tag it with
     // x-myapikey-provider so the source-row badge names the tested source.
