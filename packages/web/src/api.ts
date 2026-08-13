@@ -143,6 +143,7 @@ export interface ProviderModelStat {
   calls: number;
   success: number;
   inputTokens: number;
+  outputTokens: number;
   cacheRead: number;
   cacheCreation: number;
   cacheHitRate: number;

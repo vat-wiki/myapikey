@@ -105,6 +105,8 @@ export interface ProviderModelStat {
   success: number;
   /** Fresh (non-cached) prompt tokens summed across this cell's rows. */
   inputTokens: number;
+  /** Completion tokens summed across this cell's rows. */
+  outputTokens: number;
   cacheRead: number;
   cacheCreation: number;
   cacheHitRate: number;
@@ -489,6 +491,7 @@ export class Store {
             calls: a.calls,
             success: a.success,
             inputTokens: a.sumInput,
+            outputTokens: a.sumOutput,
             cacheRead: a.sumCacheRead,
             cacheCreation: a.sumCacheCreation,
             cacheHitRate: hitRate(a.sumCacheRead, a.sumInput, a.sumCacheCreation),

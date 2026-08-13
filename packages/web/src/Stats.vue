@@ -95,7 +95,7 @@ const cacheByProvider = computed(() => {
       error: 0,
       avgMs: 0,
       inputTokens: r.inputTokens,
-      outputTokens: 0,
+      outputTokens: r.outputTokens,
       cacheRead: r.cacheRead,
       cacheCreation: r.cacheCreation,
       cacheHitRate: r.cacheHitRate,

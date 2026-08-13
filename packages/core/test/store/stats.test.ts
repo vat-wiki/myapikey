@@ -133,6 +133,7 @@ describe("store/getStats", () => {
       expect(a?.cacheRead).toBe(300);
       expect(a?.cacheCreation).toBe(100);
       expect(a?.inputTokens).toBe(100);
+      expect(a?.outputTokens).toBe(10);
       expect(a?.cacheHitRate).toBeCloseTo(0.6, 5);
       expect(a?.provider).toBe("Alpha");
       expect(b?.cacheHitRate).toBe(0);
