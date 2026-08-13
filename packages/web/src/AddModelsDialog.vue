@@ -48,6 +48,10 @@ const picked = ref<Set<string>>(new Set());
 // won't contain it until the parent reloads, so we carry the list locally to
 // populate the picker for the just-created source immediately.
 const createdDiscovered = ref<string[]>([]);
+// Search filter over the discovered-model chip wall — a source can carry many
+// models (商汤, opencode, …), so this narrows the wall to matches instead of
+// scanning a wall of dozens.
+const discQuery = ref("");
 
 watch(open, (o) => {
   if (!o) return;
@@ -55,6 +59,7 @@ watch(open, (o) => {
   raw.value = "";
   picked.value = new Set();
   createdDiscovered.value = [];
+  discQuery.value = "";
   // reset the new-source form each time the dialog opens
   newName.value = newKey.value = "";
   newBaseUrlOpenai.value = newBaseUrlAnthropic.value = "";
@@ -67,6 +72,7 @@ watch(open, (o) => {
 // source shouldn't silently carry over to another.
 watch(providerId, () => {
   picked.value = new Set();
+  discQuery.value = "";
 });
 
 const isNew = computed(() => providerId.value === NEW_SOURCE);
@@ -151,6 +157,14 @@ const discoveredForSelected = computed<string[]>(() => {
   if (isNone.value) return [];
   const p = props.providers.find((x) => x.id === providerId.value);
   return p ? p.discoveredModels ?? [] : createdDiscovered.value;
+});
+
+/** Discovered models for the chip wall, narrowed by the search box. Empty query
+ *  shows the full list. */
+const filteredDiscovered = computed(() => {
+  const q = discQuery.value.trim().toLowerCase();
+  if (!q) return discoveredForSelected.value;
+  return discoveredForSelected.value.filter((n) => n.toLowerCase().includes(q));
 });
 
 function toggleDiscovered(name: string): void {
@@ -319,28 +333,33 @@ async function submit() {
 
         <!-- Existing source (or one just created inline): offer its discovered
              models as click-to-add chips, so adding more of a source's models
-             is one click each instead of typing or re-creating the source. -->
+             is one click each instead of typing or re-creating the source. The
+             search box narrows the wall — a source can carry many models. -->
         <div v-if="!isNew && !isNone" class="space-y-1.5">
           <div class="flex items-center justify-between gap-2">
             <label class="text-xs font-medium text-muted-foreground">{{ t("models.addModelsDiscoveredLabel") }}</label>
             <span v-if="discoveredForSelected.length" class="text-xs text-muted-foreground">{{ t("models.addModelsDiscoveredHint") }}</span>
           </div>
           <p v-if="!discoveredForSelected.length" class="text-xs text-muted-foreground">{{ t("models.addModelsDiscoveredEmpty") }}</p>
-          <div v-else class="flex max-h-40 flex-wrap gap-1 overflow-y-auto rounded-md border bg-background/50 p-2">
-            <button
-              v-for="name in discoveredForSelected"
-              :key="name"
-              type="button"
-              :aria-pressed="picked.has(name)"
-              class="inline-flex items-center rounded-md border px-2 py-0.5 font-mono text-xs transition-colors"
-              :class="picked.has(name)
-                ? 'border-transparent bg-primary text-primary-foreground shadow-sm'
-                : 'border-input text-muted-foreground hover:bg-accent hover:text-accent-foreground'"
-              @click="toggleDiscovered(name)"
-            >
-              {{ name }}
-            </button>
-          </div>
+          <template v-else>
+            <Input v-model="discQuery" :placeholder="t('models.searchPh')" autocomplete="off" />
+            <p v-if="!filteredDiscovered.length" class="text-xs text-muted-foreground">{{ t("models.addModelsDiscoveredNoMatch") }}</p>
+            <div v-else class="flex max-h-40 flex-wrap gap-1 overflow-y-auto rounded-md border bg-background/50 p-2">
+              <button
+                v-for="name in filteredDiscovered"
+                :key="name"
+                type="button"
+                :aria-pressed="picked.has(name)"
+                class="inline-flex items-center rounded-md border px-2 py-0.5 font-mono text-xs transition-colors"
+                :class="picked.has(name)
+                  ? 'border-transparent bg-primary text-primary-foreground shadow-sm'
+                  : 'border-input text-muted-foreground hover:bg-accent hover:text-accent-foreground'"
+                @click="toggleDiscovered(name)"
+              >
+                {{ name }}
+              </button>
+            </div>
+          </template>
         </div>
 
         <div class="space-y-1.5">

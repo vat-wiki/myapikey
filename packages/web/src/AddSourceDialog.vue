@@ -6,6 +6,7 @@ import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
+import Combobox from "@/components/Combobox.vue";
 import { Plus, Loader2 } from "lucide-vue-next";
 
 const { t } = useI18n();
@@ -56,6 +57,11 @@ const candidates = computed(() =>
     .filter((p) => props.enabledFormats.some((f) => supportsFmt(p, f)))
     .sort((a, b) => a.name.localeCompare(b.name)),
 );
+
+/** Discovered model names for the selected source — the pool the upstream-model
+ *  combobox offers. Lets you map this slot to a real upstream id by search
+ *  instead of typing it blind (a source like 商汤 carries many models). */
+const discoveredOptions = computed<string[]>(() => props.providers.find((p) => p.id === selectedId.value)?.discoveredModels ?? []);
 
 const SHORT: Record<string, string> = {
   openai: "models.fmtOpenaiShort",
@@ -139,14 +145,7 @@ async function submit() {
 
           <div class="space-y-1.5">
             <label class="text-xs font-medium text-muted-foreground">{{ t("models.upstreamLabel") }}</label>
-            <input
-              v-model="upstream"
-              type="text"
-              :placeholder="t('models.upstreamPh')"
-              :title="t('models.upstreamHint')"
-              spellcheck="false"
-              class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 font-mono text-sm shadow-sm transition-colors placeholder:font-sans placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
-            />
+            <Combobox v-model="upstream" :options="discoveredOptions" :placeholder="t('models.upstreamPh')" />
             <p class="text-xs text-muted-foreground">{{ t("models.upstreamHint") }}</p>
           </div>
         </template>

@@ -230,6 +230,7 @@ export default {
     addModelsDiscoveredLabel: "Discovered on this source",
     addModelsDiscoveredHint: "Click to pick, or type more below",
     addModelsDiscoveredEmpty: "No discovered models — type names below",
+    addModelsDiscoveredNoMatch: "No models match — type the name below",
     namesLabel: "Model names",
     addModelsNamesPh: "One per line, or comma / space separated, e.g. gpt-4o, claude-…",
     addModelsCount: "{n} model(s) will be added",

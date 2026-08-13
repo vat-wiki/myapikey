@@ -230,6 +230,7 @@ export default {
     addModelsDiscoveredLabel: "该来源已发现的模型",
     addModelsDiscoveredHint: "点选要添加的模型,也可在下方手动输入",
     addModelsDiscoveredEmpty: "该来源未发现模型 — 在下方手动输入名称",
+    addModelsDiscoveredNoMatch: "没有匹配的模型 — 可在下方手动输入",
     namesLabel: "模型名",
     addModelsNamesPh: "每行一个,或用逗号 / 空格分隔,例如 gpt-4o, claude-…",
     addModelsCount: "将添加 {n} 个模型",

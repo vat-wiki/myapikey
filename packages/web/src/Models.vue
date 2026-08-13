@@ -802,22 +802,17 @@ onMounted(load);
                   <!-- expanded: one chain editor per enabled route -->
                   <div v-if="isExpanded(r.name)" class="mt-2 space-y-3 rounded-md border bg-muted/30 p-2">
                     <div v-for="f in enabledFormats(r)" :key="f" class="space-y-1">
-                      <!-- route sub-header + per-route test -->
+                      <!-- route sub-header: the per-format Test button + badge were
+                           removed to cut button clutter — test the whole model from
+                           the row's ⋯ menu (aggregate badge) or a single source from
+                           the slot's ⋯ menu. testModel still runs per-format under
+                           the hood via testRow; its result rolls up into rowProbe. -->
                       <div class="flex items-center gap-2 px-1">
                         <span class="h-2 w-2 rounded-full" :class="FMT_ACCENT[f].solid" />
                         <span class="text-xs font-semibold">{{ t(FMT_META[f].key) }}</span>
                         <span class="font-mono text-[11px] text-muted-foreground">{{ FMT_META[f].endpoint }}</span>
-                        <div class="ml-auto flex items-center gap-1.5">
-                          <Badge v-if="probe[`${r.name}:${f}`]?.ok" variant="success" :title="t('models.probeOkHint', { name: probe[`${r.name}:${f}`]?.provider ?? '' })">{{ t("models.probeOk") }}</Badge>
-                          <Badge v-else-if="probe[`${r.name}:${f}`]" variant="destructive" :title="probe[`${r.name}:${f}`]?.error || t('models.probeFailHint')">{{ t("models.probeFail") }} · {{ probe[`${r.name}:${f}`]?.status || '?' }}</Badge>
-                          <Button variant="ghost" size="sm" class="h-6 gap-1 px-2 text-xs" :disabled="testing[`${r.name}:${f}`]" @click="testModel(r, f)">
-                            <Loader2 v-if="testing[`${r.name}:${f}`]" class="h-3 w-3 animate-spin" />
-                            <Zap v-else class="h-3 w-3" />
-                            {{ t("models.testModel") }}
-                          </Button>
-                        </div>
                       </div>
-                      <div v-if="isStale(r, f) && !probe[`${r.name}:${f}`]" class="flex items-start gap-2 rounded bg-muted px-2 py-1.5 text-xs text-muted-foreground">
+                      <div v-if="isStale(r, f)" class="flex items-start gap-2 rounded bg-muted px-2 py-1.5 text-xs text-muted-foreground">
                         <span class="shrink-0 font-medium">{{ t("models.delisted") }}</span>
                         <span>{{ t("models.delistedHint") }}</span>
                       </div>
