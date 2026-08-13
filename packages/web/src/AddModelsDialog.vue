@@ -40,10 +40,21 @@ const fmtAnthropic = ref(false);
 const newResponses = ref(false);
 const formErr = ref("");
 
+// Discovered models the user has ticked on (click-to-add chips), independent of
+// the textarea below; their results union with the typed names in effectiveNames.
+// Cleared on open and whenever the selected source changes.
+const picked = ref<Set<string>>(new Set());
+// Discovery returned when a brand-new source is created inline. props.providers
+// won't contain it until the parent reloads, so we carry the list locally to
+// populate the picker for the just-created source immediately.
+const createdDiscovered = ref<string[]>([]);
+
 watch(open, (o) => {
   if (!o) return;
   providerId.value = props.providers.length ? props.providers[0].id : NEW_SOURCE;
   raw.value = "";
+  picked.value = new Set();
+  createdDiscovered.value = [];
   // reset the new-source form each time the dialog opens
   newName.value = newKey.value = "";
   newBaseUrlOpenai.value = newBaseUrlAnthropic.value = "";
@@ -51,6 +62,11 @@ watch(open, (o) => {
   fmtAnthropic.value = false;
   newResponses.value = false;
   formErr.value = "";
+});
+// Clear chip selections when the chosen source changes — a model picked for one
+// source shouldn't silently carry over to another.
+watch(providerId, () => {
+  picked.value = new Set();
 });
 
 const isNew = computed(() => providerId.value === NEW_SOURCE);
@@ -113,7 +129,38 @@ const names = computed(() => {
   return out;
 });
 
-const canSubmit = computed(() => !!providerId.value && names.value.length > 0 && selectedSlots.value.length > 0 && !submitting.value);
+/** Effective model-name set = textarea names ∪ picked chips (deduped; typed
+ *  names first, picked appended). Chips and the textarea are two independent
+ *  input modes whose results merge here. */
+const effectiveNames = computed(() => {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const n of [...names.value, ...picked.value]) {
+    if (!seen.has(n)) {
+      seen.add(n);
+      out.push(n);
+    }
+  }
+  return out;
+});
+
+/** Discovered models for the selected source — the pool the chips draw from.
+ *  Found in props for an existing source; falls back to the captured list for a
+ *  source created inline this session (props hasn't reloaded yet). */
+const discoveredForSelected = computed<string[]>(() => {
+  if (isNone.value) return [];
+  const p = props.providers.find((x) => x.id === providerId.value);
+  return p ? p.discoveredModels ?? [] : createdDiscovered.value;
+});
+
+function toggleDiscovered(name: string): void {
+  const next = new Set(picked.value);
+  if (next.has(name)) next.delete(name);
+  else next.add(name);
+  picked.value = next; // immutable replace so dependent computeds re-evaluate
+}
+
+const canSubmit = computed(() => !!providerId.value && effectiveNames.value.length > 0 && selectedSlots.value.length > 0 && !submitting.value);
 
 /** Enable every pasted model on every format the chosen provider speaks — one
  *  POST per (name, slot). If "new source" is selected, create it first, then
@@ -133,7 +180,7 @@ async function submit() {
     let slots: string[] = [];
     let createdSource = false;
     if (isNew.value) {
-      const r = await req<{ provider: ProviderPublic }>("POST", "/admin/providers", {
+      const r = await req<{ provider: ProviderPublic; discovered: string[] }>("POST", "/admin/providers", {
         name: newName.value.trim(),
         baseUrlOpenai: newBaseUrlOpenai.value,
         baseUrlAnthropic: newBaseUrlAnthropic.value,
@@ -145,6 +192,9 @@ async function submit() {
       // Pin the select to the just-created source: a retry (some models failed)
       // then re-enables instead of creating a duplicate source.
       providerId.value = pid;
+      // Carry the create response's discovery so the picker can offer the
+      // just-created source's models before the parent list reloads.
+      createdDiscovered.value = r.discovered ?? r.provider.discoveredModels ?? [];
       slots = slotsFor(r.provider);
       createdSource = true;
       toast(t("sources.added"), "success");
@@ -157,7 +207,7 @@ async function submit() {
       slots = p ? slotsFor(p) : [];
     }
     const tasks: { name: string; slot: string }[] = [];
-    for (const name of names.value) for (const slot of slots) tasks.push({ name, slot });
+    for (const name of effectiveNames.value) for (const slot of slots) tasks.push({ name, slot });
     const results = await Promise.allSettled(
       tasks.map((task) => req("POST", "/admin/models", { name: task.name, format: task.slot, providers: isNone.value ? [] : [pid] })),
     );
@@ -267,6 +317,32 @@ async function submit() {
           <p v-if="isNew && formErr" class="text-sm text-destructive">{{ formErr }}</p>
         </div>
 
+        <!-- Existing source (or one just created inline): offer its discovered
+             models as click-to-add chips, so adding more of a source's models
+             is one click each instead of typing or re-creating the source. -->
+        <div v-if="!isNew && !isNone" class="space-y-1.5">
+          <div class="flex items-center justify-between gap-2">
+            <label class="text-xs font-medium text-muted-foreground">{{ t("models.addModelsDiscoveredLabel") }}</label>
+            <span v-if="discoveredForSelected.length" class="text-xs text-muted-foreground">{{ t("models.addModelsDiscoveredHint") }}</span>
+          </div>
+          <p v-if="!discoveredForSelected.length" class="text-xs text-muted-foreground">{{ t("models.addModelsDiscoveredEmpty") }}</p>
+          <div v-else class="flex max-h-40 flex-wrap gap-1 overflow-y-auto rounded-md border bg-background/50 p-2">
+            <button
+              v-for="name in discoveredForSelected"
+              :key="name"
+              type="button"
+              :aria-pressed="picked.has(name)"
+              class="inline-flex items-center rounded-md border px-2 py-0.5 font-mono text-xs transition-colors"
+              :class="picked.has(name)
+                ? 'border-transparent bg-primary text-primary-foreground shadow-sm'
+                : 'border-input text-muted-foreground hover:bg-accent hover:text-accent-foreground'"
+              @click="toggleDiscovered(name)"
+            >
+              {{ name }}
+            </button>
+          </div>
+        </div>
+
         <div class="space-y-1.5">
           <label class="text-xs font-medium text-muted-foreground">{{ t("models.namesLabel") }}</label>
           <textarea
@@ -276,8 +352,8 @@ async function submit() {
             spellcheck="false"
             class="flex w-full resize-y rounded-md border border-input bg-transparent px-3 py-2 font-mono text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50"
           />
-          <p v-if="names.length" class="text-xs text-muted-foreground">
-            {{ t("models.addModelsCount", { n: names.length }) }}
+          <p v-if="effectiveNames.length" class="text-xs text-muted-foreground">
+            {{ t("models.addModelsCount", { n: effectiveNames.length }) }}
           </p>
         </div>
 
