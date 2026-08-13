@@ -54,8 +54,17 @@ function parseResetFromBody(text: string): number | undefined {
   return ms > 0 ? ms : undefined;
 }
 
-/** Resolve the ordered, compatible provider list for a model on a routing slot. */
-function candidates(store: Store, model: string, key: RouteKey): Provider[] {
+/** One resolved routing slot: the provider to forward to plus THIS slot's
+ *  optional upstream model name (absent = send the public model name). The
+ *  same provider may occupy several slots in a chain — each is an independent
+ *  failover slot carrying its own upstream model. */
+interface CandidateSlot {
+  provider: Provider;
+  model?: string;
+}
+
+/** Resolve the ordered, compatible provider slots for a model on a routing slot. */
+function candidates(store: Store, model: string, key: RouteKey): CandidateSlot[] {
   const d = store.get();
   const entry = d.models[model];
   const fe = entry?.[key];
@@ -65,10 +74,13 @@ function candidates(store: Store, model: string, key: RouteKey): Provider[] {
   // requires supportsResponses. (Admin keeps chains pure, but a provider's
   // formats/flag can be edited afterwards.)
   return fe.providers
-    .map((id) => byId.get(id))
-    .filter((p): p is Provider => {
-      if (!p) return false;
-      return key === "responses" ? !!p.supportsResponses : p.formats.includes(key);
+    .map((s): CandidateSlot | null => {
+      const p = byId.get(s.id);
+      return p ? { provider: p, model: s.model } : null;
+    })
+    .filter((slot): slot is CandidateSlot => {
+      if (!slot) return false;
+      return key === "responses" ? !!slot.provider.supportsResponses : slot.provider.formats.includes(key);
     });
 }
 
@@ -295,15 +307,21 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
     // answered back to the test handler (x-myapikey-provider), without leaking
     // that header to real agent clients.
     const isProbe = c.req.header("x-myapikey-probe") === "1";
-    // The per-source "test this source" variant pins dispatch to ONE provider:
-    // the candidate chain is reduced to just it, and on failure we stop
-    // immediately (no failover) WITHOUT recording a circuit failure — a manual
-    // probe must not trip the breaker. Failure surfaces the real upstream status
+    // The per-source "test this source" variant pins dispatch to ONE slot (by
+    // chain index, since a provider may occupy several slots): the candidate
+    // chain is reduced to just that slot, and on failure we stop immediately
+    // (no failover) WITHOUT recording a circuit failure — a manual probe must
+    // not trip the breaker. Failure surfaces the real upstream status
     // (429/500/…), not a collapsed 502, so the badge shows what really happened.
-    const pinId = c.req.header("x-myapikey-probe-provider") || "";
+    const pinIndexRaw = c.req.header("x-myapikey-probe-slot");
+    const pinIndex = pinIndexRaw !== "" && Number.isInteger(Number(pinIndexRaw)) ? Number(pinIndexRaw) : null;
     // candidates() already restricts the responses chain to supportsResponses sources.
     let list = candidates(store, model, key);
-    if (pinId) list = list.filter((p) => p.id === pinId);
+    if (pinIndex != null) {
+      // An out-of-range index → empty list → 404, so a bad probe is reported as
+      // unreachable rather than accidentally hitting a different slot.
+      list = list[pinIndex] != null ? [list[pinIndex]] : [];
+    }
     if (!list.length) {
       if (key === "responses") {
         return c.json(
@@ -330,20 +348,22 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
     // (a skipped provider that now succeeds also resets its state). A pinned
     // (per-source) probe ignores both — the user is testing THIS source now,
     // whatever its breaker/pacing state.
-    const skipped = (p: Provider) => store.isCooling(p.id) || (!!p.rpm && store.rpmUsed(p.id) >= p.rpm);
-    const live = pinId ? list : list.filter((p) => !skipped(p));
+    const skipped = (slot: CandidateSlot) => {
+      const p = slot.provider;
+      return store.isCooling(p.id) || (!!p.rpm && store.rpmUsed(p.id) >= p.rpm);
+    };
+    const live = pinIndex != null ? list : list.filter((slot) => !skipped(slot));
     const order = live.length ? live : list;
 
-    for (const provider of order) {
-      // Model mapping (per model×source): rewrite the passthrough body's model
-      // to this provider's configured upstream name. Recomputed from the ORIGINAL
-      // `model` each iteration, so failover to the next provider never carries the
-      // previous provider's upstream name. Absent map/key → send the public name.
-      const mapped = store.get().models[model]?.[key]?.modelMap?.[provider.id];
-      body.model = mapped ?? model;
+    for (const slot of order) {
+      const provider = slot.provider;
+      // Per-slot upstream model name (absent = send the public name). Read from
+      // the slot each iteration, so failover never carries the previous slot's
+      // upstream name.
+      body.model = slot.model ?? model;
       // Count this attempt toward the source's RPM window — but not for a pinned
       // probe, which (like circuit state) takes no routing side-effects.
-      if (!pinId) store.recordDispatch(provider.id);
+      if (pinIndex == null) store.recordDispatch(provider.id);
       let upstream: Response;
       try {
         upstream = await fetch(upstreamTarget(provider, key).url, {
@@ -355,7 +375,7 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
         // Network error / DNS / timeout → try next provider.
         lastStatus = 502;
         lastErr = "network error";
-        if (pinId) break; // per-source probe: fail fast, no circuit impact.
+        if (pinIndex != null) break; // per-source probe: fail fast, no circuit impact.
         const r = store.recordCircuitFailure(provider.id, lastStatus, lastErr);
         if (r.entered) {
           store.pushLog({ ts: Date.now(), model, provider: provider.name, providerId: provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: lastErr });
@@ -387,7 +407,7 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
             } else {
               // A pinned per-source probe takes no circuit side-effects (a manual
               // test must not trip the breaker) — mirrors the retryable branch.
-              if (!pinId) store.recordCircuitFailure(provider.id, info.status, info.error || "stream failed");
+              if (pinIndex == null) store.recordCircuitFailure(provider.id, info.status, info.error || "stream failed");
               store.pushLog({ ts: Date.now(), model, provider: provider.name, providerId: provider.id, format: wire, status: info.status, ms: ttfb, stream, error: info.error });
             }
           },
@@ -400,7 +420,7 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
         // reason for the log (this branch never streams back to the client).
         const txt = await upstream.text().catch(() => "");
         lastErr = shortError(txt) || `HTTP ${upstream.status}`;
-        if (pinId) break; // per-source probe: fail fast, no circuit impact.
+        if (pinIndex != null) break; // per-source probe: fail fast, no circuit impact.
         // A 429/overloaded upstream usually carries Retry-After; honoring it
         // cools for exactly as long as asked (clamped) instead of the escalating
         // guess. Absent (5xx often, OR a quota error that buried the reset time
@@ -422,13 +442,13 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
     }
 
     const last = order[order.length - 1];
-    store.pushLog({ ts: Date.now(), model, provider: last.name, providerId: last.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, error: lastErr || `all providers failed (last status ${lastStatus})` });
+    store.pushLog({ ts: Date.now(), model, provider: last.provider.name, providerId: last.provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, error: lastErr || `all providers failed (last status ${lastStatus})` });
     // A pinned (per-source) probe failed: surface the REAL upstream status the
-    // one provider returned (429/500/…), not a collapsed 502, and tag it with
+    // one slot returned (429/500/…), not a collapsed 502, and tag it with
     // x-myapikey-provider so the source-row badge names the tested source.
-    if (pinId) {
+    if (pinIndex != null) {
       const h = new Headers({ "content-type": "application/json" });
-      if (isProbe) h.set("x-myapikey-provider", last.name);
+      if (isProbe) h.set("x-myapikey-provider", last.provider.name);
       return new Response(
         JSON.stringify({ error: { message: lastErr || `provider failed (status ${lastStatus})`, type: "upstream_error" } }),
         { status: lastStatus, headers: h },
@@ -458,7 +478,7 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
         id,
         object: "model",
         created: 0,
-        owned_by: byId.get(e.openai.providers[0] ?? "")?.name || "MyAPIKey",
+        owned_by: byId.get(e.openai.providers[0]?.id ?? "")?.name || "MyAPIKey",
       }));
     return c.json({ object: "list", data });
   });

@@ -1,4 +1,4 @@
-import type { FormatEntry, GateConfig, LogEntry, ModelEntry, Provider } from "../../src/shared/types";
+import type { ChainSlot, FormatEntry, GateConfig, LogEntry, ModelEntry, Provider } from "../../src/shared/types";
 import type { Store } from "../../src/server/store";
 
 let seq = 0;
@@ -21,11 +21,13 @@ export function makeProvider(over: Partial<Provider> = {}): Provider {
 }
 
 /** A routing slot: enabled iff the chain is non-empty (matches the admin
- *  invariant — an enabled-but-empty slot would 404). */
-export function fe(providers: string[], over: Partial<FormatEntry> = {}): FormatEntry {
-  const e: FormatEntry = { enabled: over.enabled ?? providers.length > 0, providers };
-  if (over.modelMap && Object.keys(over.modelMap).length) e.modelMap = over.modelMap;
-  return e;
+ *  invariant — an enabled-but-empty slot would 404). `slots` accepts bare ids
+ *  (`fe(["a","b"])`) or per-slot pairs carrying an upstream model
+ *  (`fe([{id:"a",model:"up-a"},{"id":"b"}])`); a duplicate id is legal
+ *  (`fe(["a","a"])` — two failover slots under one source). */
+export function fe(slots: (string | ChainSlot)[], over: { enabled?: boolean } = {}): FormatEntry {
+  const providers: ChainSlot[] = slots.map((s) => (typeof s === "string" ? { id: s } : s));
+  return { enabled: over.enabled ?? providers.length > 0, providers };
 }
 
 /** A model entry; defaults to all slots disabled/empty. */
@@ -55,7 +57,7 @@ export function makeLog(over: Partial<LogEntry> = {}): LogEntry {
 /** A complete GateConfig with sensible empty defaults. */
 export function buildConfig(over: Partial<GateConfig> = {}): GateConfig {
   return {
-    version: 4,
+    version: 5,
     account: { username: "admin", password: "password123" },
     apiKey: "sk-myapikey-test",
     providers: [],

@@ -265,11 +265,11 @@ describe("server/admin", () => {
       expect(store.get().providers.find((p) => p.id === id)!.rpm).toBeUndefined();
     });
 
-    it("DELETE /admin/providers/:id removes it AND purges it from model chains + modelMaps", async () => {
+    it("DELETE /admin/providers/:id removes it AND purges it from every model chain", async () => {
       const app = createApp(store);
       await seedStore(store, {
         providers: [makeProvider({ id: "prv_X", name: "src", formats: ["openai"], baseUrlOpenai: "https://up.test/v1", apiKey: "sk-x" })],
-        models: { "gpt-4o": makeModel({ openai: fe(["prv_X"], { modelMap: { prv_X: "up-name" } }) }) },
+        models: { "gpt-4o": makeModel({ openai: fe([{ id: "prv_X", model: "up-name" }]) }) },
       });
       const del = await app.request("/admin/providers/prv_X", { method: "DELETE", headers: H_GET });
       expect(del.status).toBe(200);
@@ -278,8 +278,8 @@ describe("server/admin", () => {
         (x) => x.name === "gpt-4o",
       )!;
       expect(m.openai.providers).toEqual([]);
-      // modelMap entry for prv_X is gone (purgeProvider deletes it, then drops the empty map).
-      expect(store.get().models["gpt-4o"].openai.modelMap).toBeUndefined();
+      // Source of truth: the slot (and its upstream model) is gone from the store.
+      expect(store.get().models["gpt-4o"].openai.providers).toEqual([]);
     });
 
     it("DELETE /admin/providers/:id → 404 for unknown id", async () => {
@@ -327,7 +327,7 @@ describe("server/admin", () => {
     it("GET /admin/models flattens slots {enabled, providers:[{id,name,model?}]}", async () => {
       await seedStore(store, {
         providers: [makeProvider({ id: "prv_A", name: "alpha", formats: ["openai"] })],
-        models: { "gpt-4o": makeModel({ openai: fe(["prv_A"], { modelMap: { prv_A: "gpt-4o-2024" } }) }) },
+        models: { "gpt-4o": makeModel({ openai: fe([{ id: "prv_A", model: "gpt-4o-2024" }]) }) },
       });
       const res = await createApp(store).request("/admin/models", { headers: H_GET });
       expect(res.status).toBe(200);
@@ -419,26 +419,52 @@ describe("server/admin", () => {
       expect((await json<{ error: { message: string } }>(bad)).error.message).toContain("does not serve");
     });
 
+    it("POST /admin/models/:name/providers appends a DUPLICATE source (second slot, own upstream)", async () => {
+      // The whole point of the v5 chain: the same provider may occupy two slots,
+      // each mapping a different upstream model — failover across models on ONE
+      // backend (coding → Ark:doubao-pro primary, Ark:doubao-lite fallback).
+      const ark = makeProvider({ name: "ark", formats: ["openai"] });
+      await seedStore(store, { providers: [ark] });
+      const app = createApp(store);
+      await app.request("/admin/models", {
+        method: "POST", headers: H, body: JSON.stringify({ name: "coding", format: "openai", providers: [ark.id] }),
+      });
+      // Second slot: the SAME source again, this time mapped to a different upstream.
+      const second = await app.request("/admin/models/coding/providers", {
+        method: "POST", headers: H, body: JSON.stringify({ format: "openai", providerId: ark.id, model: "doubao-lite" }),
+      });
+      expect(second.status).toBe(200);
+      // Map the FIRST slot's upstream too (index-addressed).
+      const map = await app.request("/admin/models/coding/map", {
+        method: "PUT", headers: H, body: JSON.stringify({ format: "openai", index: 0, model: "doubao-pro" }),
+      });
+      expect(map.status).toBe(200);
+      const m = find(await modelsOf(app), "coding")!;
+      // Two slots, same source id, distinct upstream models.
+      expect(m.openai.providers.map((p: { id: string }) => p.id)).toEqual([ark.id, ark.id]);
+      expect(m.openai.providers[0].model).toBe("doubao-pro");
+      expect(m.openai.providers[1].model).toBe("doubao-lite");
+    });
+
     it("DELETE /admin/models/:name/providers/:pid requires ?format=", async () => {
       const res = await createApp(store).request("/admin/models/gpt-4o/providers/prv_X", { method: "DELETE", headers: H_GET });
       expect(res.status).toBe(400);
     });
 
-    it("DELETE /admin/models/:name/providers/:pid?format= removes from chain + its modelMap entry", async () => {
+    it("DELETE /admin/models/:name/providers/:pid?format= removes every slot for that source (id-based)", async () => {
       const a = makeProvider({ formats: ["openai"] });
       const b = makeProvider({ formats: ["openai"] });
       await seedStore(store, {
         providers: [a, b],
-        models: { "gpt-4o": makeModel({ openai: fe([a.id, b.id], { modelMap: { [a.id]: "up-a", [b.id]: "up-b" } }) }) },
+        models: { "gpt-4o": makeModel({ openai: fe([{ id: a.id, model: "up-a" }, { id: b.id, model: "up-b" }]) }) },
       });
       const app = createApp(store);
       const res = await app.request(`/admin/models/gpt-4o/providers/${a.id}?format=openai`, { method: "DELETE", headers: H_GET });
       expect(res.status).toBe(200);
       const m = find(await modelsOf(app), "gpt-4o")!;
+      // a's slot removed; b's slot (and its upstream model) intact.
       expect(m.openai.providers.map((p: { id: string }) => p.id)).toEqual([b.id]);
       expect(m.openai.providers[0].model).toBe("up-b");
-      // a's modelMap entry purged, b's intact.
-      expect(store.get().models["gpt-4o"].openai.modelMap).toEqual({ [b.id]: "up-b" });
     });
 
     it("PUT /admin/models/:name/priority reorders the chain", async () => {
@@ -447,8 +473,9 @@ describe("server/admin", () => {
       const c = makeProvider({ formats: ["openai"] });
       await seedStore(store, { providers: [a, b, c], models: { "gpt-4o": makeModel({ openai: fe([a.id, b.id, c.id]) }) } });
       const app = createApp(store);
+      // Chain is [a@0, b@1, c@2]; reorder to [c, a, b] = indices [2, 0, 1].
       const res = await app.request("/admin/models/gpt-4o/priority", {
-        method: "PUT", headers: H, body: JSON.stringify({ format: "openai", providers: [c.id, a.id, b.id] }),
+        method: "PUT", headers: H, body: JSON.stringify({ format: "openai", order: [2, 0, 1] }),
       });
       expect(res.status).toBe(200);
       const m = find(await modelsOf(app), "gpt-4o")!;
@@ -460,20 +487,21 @@ describe("server/admin", () => {
       const b = makeProvider({ formats: ["openai"] });
       await seedStore(store, { providers: [a, b], models: { "gpt-4o": makeModel({ openai: fe([a.id, b.id]) }) } });
       const app = createApp(store);
+      // Chain has 2 slots (n=2). Drop: only one index. Add: an out-of-range index.
       const drop = await app.request("/admin/models/gpt-4o/priority", {
-        method: "PUT", headers: H, body: JSON.stringify({ format: "openai", providers: [a.id] }),
+        method: "PUT", headers: H, body: JSON.stringify({ format: "openai", order: [0] }),
       });
       expect(drop.status).toBe(400);
       expect((await json<{ error: { message: string } }>(drop)).error.message).toContain("must be a reordering");
       const add = await app.request("/admin/models/gpt-4o/priority", {
-        method: "PUT", headers: H, body: JSON.stringify({ format: "openai", providers: [a.id, b.id, "prv_fake"] }),
+        method: "PUT", headers: H, body: JSON.stringify({ format: "openai", order: [0, 1, 2] }),
       });
       expect(add.status).toBe(400);
     });
 
     it("PUT /admin/models/:name/priority → 404 if model missing", async () => {
       const res = await createApp(store).request("/admin/models/nope/priority", {
-        method: "PUT", headers: H, body: JSON.stringify({ format: "openai", providers: [] }),
+        method: "PUT", headers: H, body: JSON.stringify({ format: "openai", order: [] }),
       });
       expect(res.status).toBe(404);
     });
@@ -483,7 +511,7 @@ describe("server/admin", () => {
       await seedStore(store, { providers: [a], models: { "gpt-4o": makeModel({ openai: fe([a.id]) }) } });
       const app = createApp(store);
       const res = await app.request("/admin/models/gpt-4o/map", {
-        method: "PUT", headers: H, body: JSON.stringify({ format: "openai", providerId: a.id, model: "gpt-4o-2024-08-06" }),
+        method: "PUT", headers: H, body: JSON.stringify({ format: "openai", index: 0, model: "gpt-4o-2024-08-06" }),
       });
       expect(res.status).toBe(200);
       const m = find(await modelsOf(app), "gpt-4o")!;
@@ -494,17 +522,17 @@ describe("server/admin", () => {
       const a = makeProvider({ formats: ["openai"] });
       await seedStore(store, { providers: [a] });
       const res = await createApp(store).request("/admin/models/nope/map", {
-        method: "PUT", headers: H, body: JSON.stringify({ format: "openai", providerId: a.id, model: "x" }),
+        method: "PUT", headers: H, body: JSON.stringify({ format: "openai", index: 0, model: "x" }),
       });
       expect(res.status).toBe(404);
     });
 
-    it("PUT /admin/models/:name/map → 400 if provider not in chain", async () => {
+    it("PUT /admin/models/:name/map → 400 if index out of range", async () => {
       const a = makeProvider({ formats: ["openai"] });
-      const b = makeProvider({ formats: ["openai"] });
-      await seedStore(store, { providers: [a, b], models: { "gpt-4o": makeModel({ openai: fe([a.id]) }) } });
+      await seedStore(store, { providers: [a], models: { "gpt-4o": makeModel({ openai: fe([a.id]) }) } });
+      // Chain has one slot (index 0); index 1 is out of range.
       const res = await createApp(store).request("/admin/models/gpt-4o/map", {
-        method: "PUT", headers: H, body: JSON.stringify({ format: "openai", providerId: b.id, model: "x" }),
+        method: "PUT", headers: H, body: JSON.stringify({ format: "openai", index: 1, model: "x" }),
       });
       expect(res.status).toBe(400);
     });
@@ -513,11 +541,11 @@ describe("server/admin", () => {
       const a = makeProvider({ formats: ["openai"] });
       await seedStore(store, {
         providers: [a],
-        models: { "gpt-4o": makeModel({ openai: fe([a.id], { modelMap: { [a.id]: "up-old" } }) }) },
+        models: { "gpt-4o": makeModel({ openai: fe([{ id: a.id, model: "up-old" }]) }) },
       });
       const app = createApp(store);
       const res = await app.request("/admin/models/gpt-4o/map", {
-        method: "PUT", headers: H, body: JSON.stringify({ format: "openai", providerId: a.id, model: "" }),
+        method: "PUT", headers: H, body: JSON.stringify({ format: "openai", index: 0, model: "" }),
       });
       expect(res.status).toBe(200);
       const m = find(await modelsOf(app), "gpt-4o")!;
@@ -571,7 +599,7 @@ describe("server/admin", () => {
       expect(find(await modelsOf(app), "gpt-4o")).toBeUndefined();
     });
 
-    it("POST /admin/models/:name/providers/:pid/test pins to ONE source (no failover)", async () => {
+    it("POST /admin/models/:name/providers/test pins to ONE slot (no failover)", async () => {
       const a = makeProvider({ name: "alpha", formats: ["openai"], baseUrlOpenai: "https://a.up.test/v1", apiKey: "sk-a" });
       const b = makeProvider({ name: "bravo", formats: ["openai"], baseUrlOpenai: "https://b.up.test/v1", apiKey: "sk-b" });
       await seedStore(store, { providers: [a, b], apiKey: "sk-test", models: { "gpt-4o": makeModel({ openai: fe([a.id, b.id]) }) } });
@@ -580,7 +608,8 @@ describe("server/admin", () => {
         { match: "b.up.test", response: { status: 200, body: { choices: [{ message: { content: "B" } }] } } },
       ]);
       try {
-        const res = await createApp(store).request(`/admin/models/gpt-4o/providers/${b.id}/test?format=openai`, { method: "POST", headers: H_GET });
+        // Chain is [a@0, b@1]; pin to b = index 1.
+        const res = await createApp(store).request(`/admin/models/gpt-4o/providers/test?format=openai&index=1`, { method: "POST", headers: H_GET });
         expect(res.status).toBe(200);
         const result = (await json<{ result: { ok: boolean; status: number; provider?: string; format: string } }>(res)).result;
         expect(result.ok).toBe(true);
@@ -593,7 +622,7 @@ describe("server/admin", () => {
       }
     });
 
-    it("POST .../providers/:pid/test fails fast on 429 with NO circuit impact", async () => {
+    it("POST .../providers/test fails fast on 429 with NO circuit impact", async () => {
       const a = makeProvider({ name: "alpha", formats: ["openai"], baseUrlOpenai: "https://a.up.test/v1", apiKey: "sk-a" });
       const b = makeProvider({ name: "bravo", formats: ["openai"], baseUrlOpenai: "https://b.up.test/v1", apiKey: "sk-b" });
       await seedStore(store, { providers: [a, b], apiKey: "sk-test", models: { "gpt-4o": makeModel({ openai: fe([a.id, b.id]) }) } });
@@ -602,7 +631,8 @@ describe("server/admin", () => {
         { match: "b.up.test", response: { status: 429, body: { error: { message: "slow down" } } } },
       ]);
       try {
-        const res = await createApp(store).request(`/admin/models/gpt-4o/providers/${b.id}/test?format=openai`, { method: "POST", headers: H_GET });
+        // Pin to b (index 1); it 429s.
+        const res = await createApp(store).request(`/admin/models/gpt-4o/providers/test?format=openai&index=1`, { method: "POST", headers: H_GET });
         expect(res.status).toBe(200);
         const result = (await json<{ result: { ok: boolean; status: number; provider?: string; error?: string } }>(res)).result;
         expect(result.ok).toBe(false);
@@ -620,23 +650,25 @@ describe("server/admin", () => {
       }
     });
 
-    it("POST .../providers/:pid/test → ok:false when the source is not on that route", async () => {
+    it("POST .../providers/test → ok:false when the index is out of range (no such slot)", async () => {
       const a = makeProvider({ name: "alpha", formats: ["openai"] });
       const b = makeProvider({ name: "bravo", formats: ["openai"] });
+      // Only a is on the chain (one slot, index 0); asking for index 1 misses.
       await seedStore(store, { providers: [a, b], apiKey: "sk-test", models: { "gpt-4o": makeModel({ openai: fe([a.id]) }) } });
-      const res = await createApp(store).request(`/admin/models/gpt-4o/providers/${b.id}/test?format=openai`, { method: "POST", headers: H_GET });
+      const res = await createApp(store).request(`/admin/models/gpt-4o/providers/test?format=openai&index=1`, { method: "POST", headers: H_GET });
       expect(res.status).toBe(200);
       const result = (await json<{ result: { ok: boolean; error?: string } }>(res)).result;
       expect(result.ok).toBe(false);
       expect(result.error).toBeTruthy();
     });
 
-    it("POST .../providers/:pid/test with no ?format picks the first enabled slot", async () => {
+    it("POST .../providers/test with no ?format picks the first enabled slot", async () => {
       const a = makeProvider({ name: "alpha", formats: ["openai"], baseUrlOpenai: "https://a.up.test/v1", apiKey: "sk-a" });
       await seedStore(store, { providers: [a], apiKey: "sk-test", models: { "gpt-4o": makeModel({ openai: fe([a.id]) }) } });
       const m = mockFetch([{ match: "/chat/completions", response: { status: 200, body: { ok: true } } }]);
       try {
-        const res = await createApp(store).request(`/admin/models/gpt-4o/providers/${a.id}/test`, { method: "POST", headers: H_GET });
+        // index=0 (the only slot), format omitted → defaults to the first enabled route.
+        const res = await createApp(store).request(`/admin/models/gpt-4o/providers/test?index=0`, { method: "POST", headers: H_GET });
         expect(res.status).toBe(200);
         const result = (await json<{ result: { ok: boolean; format: string } }>(res)).result;
         expect(result.ok).toBe(true);

@@ -248,11 +248,17 @@ export class Store {
       raw.apiKey = newApiKey();
       this.persist(raw);
     }
-    // Migration: model entries were { enabled, providers[] } (v1), then
-    // { openai, anthropic } (v2). Split into three routing slots
-    // { openai, anthropic, responses } so /responses routes independently.
-    // Idempotent; persisted immediately so the upgrade is stable across restarts.
-    if (migrateModels(raw) || migrateProviders(raw) || !raw.version || raw.version < CONFIG_VERSION) {
+    // Run every migrator unconditionally. Each is idempotent and returns
+    // whether it rewrote anything. We deliberately do NOT chain them with ||
+    // (which short-circuits): a v1 config makes migrateModels return true, which
+    // would skip migrateFormatEntries, yet the version still bumps to
+    // CONFIG_VERSION below — leaving v5-versioned data with unconverted string[]
+    // chains that crash candidates() on the very same boot. Calling all three
+    // every boot is cheap (they no-op once migrated) and closes that window.
+    const m1 = migrateModels(raw);
+    const m2 = migrateProviders(raw);
+    const m3 = migrateFormatEntries(raw);
+    if (m1 || m2 || m3 || !raw.version || raw.version < CONFIG_VERSION) {
       raw.version = CONFIG_VERSION;
       this.persist(raw);
     } else if (raw.version > CONFIG_VERSION) {
@@ -731,6 +737,41 @@ function migrateProviders(raw: GateConfig): boolean {
     p.baseUrlAnthropic = stripped || old;
     delete p.baseUrl;
     changed = true;
+  }
+  return changed;
+}
+
+/**
+ * FormatEntry migration to inline (provider, model) slots (v4 → v5).
+ *  - v4 stored each route's chain as `providers: string[]` (unique provider ids)
+ *    plus an optional side-channel `modelMap: { providerId → upstream model }`.
+ *  - v5 collapses both into `providers: { id, model? }[]`, so a provider id may
+ *    now REPEAT — each occurrence carries its own upstream model — enabling
+ *    failover across several models on one backend.
+ * Idempotent: slots already in the {id,model?} shape (no string elements and no
+ * modelMap) are skipped. Returns true if any entry was rewritten.
+ */
+function migrateFormatEntries(raw: GateConfig): boolean {
+  const models = raw.models as Record<string, unknown>;
+  if (!models || typeof models !== "object") return false;
+  let changed = false;
+  for (const entry of Object.values(models)) {
+    if (!entry || typeof entry !== "object") continue;
+    for (const f of ["openai", "anthropic", "responses"] as const) {
+      const fe = (entry as Record<string, unknown>)[f] as
+        | { providers?: unknown[]; modelMap?: Record<string, string> }
+        | undefined;
+      if (!fe || !Array.isArray(fe.providers)) continue;
+      const hasStrings = fe.providers.some((x) => typeof x === "string");
+      const hasMap = !!fe.modelMap && Object.keys(fe.modelMap).length > 0;
+      if (!hasStrings && !hasMap) continue; // already v5
+      const map = fe.modelMap ?? {};
+      fe.providers = (fe.providers as unknown[]).map((x) =>
+        typeof x === "string" ? (map[x] ? { id: x, model: map[x] } : { id: x }) : x,
+      );
+      delete fe.modelMap;
+      changed = true;
+    }
   }
   return changed;
 }

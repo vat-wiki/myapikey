@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { GateConfig } from "./types";
 
-export const CONFIG_VERSION = 4;
+export const CONFIG_VERSION = 5;
 export const DEFAULT_PORT = 7800;
 /** Default on-disk home for the gateway's data: data.json + logs.jsonl live here. */
 export const DEFAULT_DATA_DIR = join(homedir(), ".myapikey");

@@ -44,15 +44,11 @@ function providerSpeaks(p: Provider, key: RouteKey): boolean {
   return key === "responses" ? !!p.supportsResponses : p.formats.includes(key);
 }
 
-/** Drop a provider id from a routing slot: remove it from the chain AND from any
- *  modelMap (so a stale upstream-name override doesn't linger after the provider
- *  is gone or removed from this model's chain). */
+/** Drop every slot for a provider id from a routing slot — used when a provider
+ *  is deleted outright or removed from this model's chain. A provider may occupy
+ *  more than one slot (each mapped to a different upstream model); all go. */
 function purgeProvider(fe: FormatEntry, pid: string): void {
-  fe.providers = fe.providers.filter((x) => x !== pid);
-  if (fe.modelMap && pid in fe.modelMap) {
-    delete fe.modelMap[pid];
-    if (!Object.keys(fe.modelMap).length) delete fe.modelMap;
-  }
+  fe.providers = fe.providers.filter((s) => s.id !== pid);
 }
 
 /** Project provider for API responses: hide the full key. */
@@ -296,12 +292,13 @@ export function adminApi(store: Store, auth: MiddlewareHandler, v1: Hono): Hono 
     const byId = new Map(d.providers.map((p) => [p.id, p]));
     const proj = (fe: FormatEntry) => ({
       enabled: fe.enabled,
-      providers: fe.providers.map((pid) => ({
-        id: pid,
-        name: byId.get(pid)?.name ?? "?",
-        // Upstream model name this source is mapped to (undefined = send the
-        // public name verbatim). Flattened out of modelMap for the client.
-        model: fe.modelMap?.[pid],
+      providers: fe.providers.map((s) => ({
+        id: s.id,
+        name: byId.get(s.id)?.name ?? "?",
+        // Upstream model name this slot rewrites the request to (undefined =
+        // send the public model name verbatim). Carried inline on each slot so
+        // a provider can appear more than once with different upstream names.
+        model: s.model,
       })),
     });
     const models = Object.entries(d.models).map(([name, e]) => ({
@@ -337,7 +334,10 @@ export function adminApi(store: Store, auth: MiddlewareHandler, v1: Hono): Hono 
         responses: { enabled: false, providers: [] },
       });
       const fe = entry[key];
-      for (const pid of requested) if (!fe.providers.includes(pid)) fe.providers.push(pid);
+      // Enable/seed dedupes by provider id: re-enabling must not pile up
+      // duplicate slots. (Use POST /:name/providers to intentionally add a
+      // second occurrence of a provider for per-model failover.)
+      for (const pid of requested) if (!fe.providers.some((s) => s.id === pid)) fe.providers.push({ id: pid });
       fe.enabled = true;
     });
     return c.json({ ok: true }, 201);
@@ -345,7 +345,7 @@ export function adminApi(store: Store, auth: MiddlewareHandler, v1: Hono): Hono 
 
   app.post("/models/:name/providers", async (c) => {
     const name = c.req.param("name");
-    const body = await readJson<{ format?: RouteKey; providerId?: string }>(c.req.raw);
+    const body = await readJson<{ format?: RouteKey; providerId?: string; model?: string }>(c.req.raw);
     if (!body?.format) return c.json({ error: { message: "format is required" } }, 400);
     if (!body?.providerId) return c.json({ error: { message: "providerId is required" } }, 400);
     const cfg = store.get();
@@ -353,6 +353,11 @@ export function adminApi(store: Store, auth: MiddlewareHandler, v1: Hono): Hono 
     if (!p) return c.json({ error: { message: "provider not found" } }, 400);
     if (!providerSpeaks(p, body.format))
       return c.json({ error: { message: `provider ${p.name} does not serve ${body.format}` } }, 400);
+    // No dedupe guard: appending a SECOND occurrence of a provider is the whole
+    // point (failover across its models). An optional `model` sets the new
+    // slot's upstream name at attach time (add + map in one call).
+    const upstream = body.model?.trim();
+    const slot = upstream ? { id: body.providerId!, model: upstream } : { id: body.providerId! };
     let errStatus = 0;
     await store.update((d) => {
       const entry = d.models[name];
@@ -360,9 +365,36 @@ export function adminApi(store: Store, auth: MiddlewareHandler, v1: Hono): Hono 
         errStatus = 404;
         return;
       }
-      if (!entry[body.format!].providers.includes(body.providerId!)) entry[body.format!].providers.push(body.providerId!);
+      entry[body.format!].providers.push(slot);
     });
     if (errStatus === 404) return c.json({ error: { message: "model not found; enable it first" } }, 404);
+    return c.json({ ok: true });
+  });
+
+  // Remove a SINGLE chain slot at `index` (the web's per-row remove). Distinct
+  // from the id-based delete below, which removes every slot for a provider.
+  app.delete("/models/:name/providers", async (c) => {
+    const name = c.req.param("name");
+    const format = c.req.query("format") as RouteKey | undefined;
+    const index = Number(c.req.query("index"));
+    if (!format) return c.json({ error: { message: "?format=openai|anthropic|responses is required" } }, 400);
+    if (!Number.isInteger(index) || index < 0)
+      return c.json({ error: { message: "?index= (non-negative integer) is required" } }, 400);
+    let errStatus = 0;
+    await store.update((d) => {
+      const fe = d.models[name]?.[format];
+      if (!fe) {
+        errStatus = 404;
+        return;
+      }
+      if (index >= fe.providers.length) {
+        errStatus = 400;
+        return;
+      }
+      fe.providers.splice(index, 1);
+    });
+    if (errStatus === 404) return c.json({ error: { message: "model not found" } }, 404);
+    if (errStatus === 400) return c.json({ error: { message: "index out of range" } }, 400);
     return c.json({ ok: true });
   });
 
@@ -380,9 +412,10 @@ export function adminApi(store: Store, auth: MiddlewareHandler, v1: Hono): Hono 
 
   app.put("/models/:name/priority", async (c) => {
     const name = c.req.param("name");
-    const body = await readJson<{ format?: RouteKey; providers?: string[] }>(c.req.raw);
+    const body = await readJson<{ format?: RouteKey; order?: number[] }>(c.req.raw);
     if (!body?.format) return c.json({ error: { message: "format is required" } }, 400);
-    if (!Array.isArray(body?.providers)) return c.json({ error: { message: "providers[] required" } }, 400);
+    if (!Array.isArray(body?.order) || !body.order.every((n) => Number.isInteger(n)))
+      return c.json({ error: { message: "order[] (integers) required" } }, 400);
     const format = body.format;
     let errStatus = 0;
     let errMsg = "";
@@ -393,32 +426,38 @@ export function adminApi(store: Store, auth: MiddlewareHandler, v1: Hono): Hono 
         return;
       }
       const fe = entry[format];
-      // Reorder only: the submitted list must be a permutation of the current
-      // chain (use add-provider / remove-provider to change membership).
-      const cur = new Set(fe.providers);
-      if (body.providers!.length !== cur.size || body.providers!.some((pid) => !cur.has(pid))) {
+      const n = fe.providers.length;
+      // Reorder only: `order` must be a permutation of [0..n-1] (the current
+      // slot positions). Indices — not provider ids — because a provider may now
+      // occupy several slots. Use add-provider / remove-provider to change membership.
+      if (
+        body.order!.length !== n ||
+        new Set(body.order).size !== n ||
+        !body.order!.every((i) => i >= 0 && i < n)
+      ) {
         errStatus = 400;
-        errMsg = "providers must be a reordering of the current chain (no add/drop)";
+        errMsg = "order must be a reordering of the current chain (no add/drop)";
         return;
       }
-      fe.providers = body.providers!;
+      fe.providers = body.order!.map((i) => fe.providers[i]);
     });
     if (errStatus === 404) return c.json({ error: { message: "model not found" } }, 404);
     if (errStatus === 400) return c.json({ error: { message: errMsg } }, 400);
     return c.json({ ok: true });
   });
 
-  // Set (or clear) a model×source upstream-model mapping. `model` is the name
-  // sent upstream when forwarding this public model to this provider; an empty
-  // string clears it (back to identity — send the public name). The provider
-  // must already be in this slot's chain: you map a source already attached.
+  // Set (or clear) the upstream-model mapping for ONE chain slot (addressed by
+  // `index`). An empty `model` clears it (back to identity — send the public
+  // name). Index-addressed because a provider may occupy several slots, each
+  // with its own upstream model.
   app.put("/models/:name/map", async (c) => {
     const name = c.req.param("name");
-    const body = await readJson<{ format?: RouteKey; providerId?: string; model?: string }>(c.req.raw);
+    const body = await readJson<{ format?: RouteKey; index?: number; model?: string }>(c.req.raw);
     if (!body?.format) return c.json({ error: { message: "format is required" } }, 400);
-    if (!body?.providerId) return c.json({ error: { message: "providerId is required" } }, 400);
+    if (!Number.isInteger(body?.index) || (body?.index ?? -1) < 0)
+      return c.json({ error: { message: "index (non-negative integer) is required" } }, 400);
     const format = body.format;
-    const pid = body.providerId;
+    const index = body.index!;
     const upstream = (body.model ?? "").trim();
     let errStatus = 0;
     let errMsg = "";
@@ -430,17 +469,13 @@ export function adminApi(store: Store, auth: MiddlewareHandler, v1: Hono): Hono 
         return;
       }
       const fe = entry[format];
-      if (!fe.providers.includes(pid)) {
+      if (index >= fe.providers.length) {
         errStatus = 400;
-        errMsg = "provider is not in this model's chain for the given format";
+        errMsg = "index out of range for this model's chain";
         return;
       }
-      if (upstream) {
-        (fe.modelMap ??= {})[pid] = upstream;
-      } else if (fe.modelMap && pid in fe.modelMap) {
-        delete fe.modelMap[pid];
-        if (!Object.keys(fe.modelMap).length) delete fe.modelMap;
-      }
+      if (upstream) fe.providers[index].model = upstream;
+      else delete fe.providers[index].model;
     });
     if (errStatus === 404) return c.json({ error: { message: errMsg } }, 404);
     if (errStatus === 400) return c.json({ error: { message: errMsg } }, 400);
@@ -500,19 +535,20 @@ export function adminApi(store: Store, auth: MiddlewareHandler, v1: Hono): Hono 
     return c.json({ result: { ok: false, status: res.status, provider, format, error: shortError(txt) || `HTTP ${res.status}` } });
   });
 
-  // Probe a SINGLE source for a model+format: the same end-to-end loopback as the
-  // whole-model /test above, but dispatch is pinned to this one provider (via the
-  // x-myapikey-probe-provider header), so there is no failover and no
-  // circuit-breaker impact — a manual "is THIS source up?" check that reports the
-  // provider's real upstream status. Validation misses (source not on this route,
-  // wrong wire format) come back as a ProbeResult body, not an HTTP error, so the
-  // caller reads `result` uniformly.
-  app.post("/models/:name/providers/:providerId/test", async (c) => {
+  // Probe a SINGLE chain slot for a model+format: the same end-to-end loopback as
+  // the whole-model /test above, but dispatch is pinned to this one slot (via the
+  // x-myapikey-probe-slot header carrying the slot index), so there is no failover
+  // and no circuit-breaker impact — a manual "is THIS source up?" check that
+  // reports the slot's real upstream status (the slot's own mapped model name).
+  // Slot-indexed (not provider-id) because a provider may occupy several slots,
+  // each mapped to a different upstream model. Validation misses come back as a
+  // ProbeResult body, not an HTTP error, so the caller reads `result` uniformly.
+  app.post("/models/:name/providers/test", async (c) => {
     const name = c.req.param("name");
-    const pid = c.req.param("providerId");
     const cfg = store.get();
     const entry = cfg.models[name];
     if (!entry) return c.json({ error: { message: "model not found" } }, 404);
+    const index = Number(c.req.query("index"));
     let format = c.req.query("format") as RouteKey | undefined;
     if (!format) {
       // No slot requested: pick the first one the model is enabled on.
@@ -521,9 +557,10 @@ export function adminApi(store: Store, auth: MiddlewareHandler, v1: Hono): Hono 
     if (!format || !entry[format]?.enabled) {
       return c.json({ result: { ok: false, status: 0, format: format ?? "openai", error: "model not enabled on that routing slot" } });
     }
-    if (!entry[format].providers.includes(pid)) {
-      return c.json({ result: { ok: false, status: 0, format, error: "source is not on this route" } });
+    if (!Number.isInteger(index) || index < 0 || index >= entry[format].providers.length) {
+      return c.json({ result: { ok: false, status: 0, format, error: "slot index out of range for this route" } });
     }
+    const pid = entry[format].providers[index].id;
     const provider = cfg.providers.find((p) => p.id === pid);
     if (!provider || !providerSpeaks(provider, format)) {
       return c.json({ result: { ok: false, status: 0, format, error: "source does not speak this format" } });
@@ -538,7 +575,7 @@ export function adminApi(store: Store, auth: MiddlewareHandler, v1: Hono): Hono 
     try {
       res = await v1.request(path, {
         method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${cfg.apiKey}`, "x-myapikey-probe": "1", "x-myapikey-probe-provider": pid },
+        headers: { "content-type": "application/json", authorization: `Bearer ${cfg.apiKey}`, "x-myapikey-probe": "1", "x-myapikey-probe-slot": String(index) },
         body: JSON.stringify(body),
       });
     } catch (e) {

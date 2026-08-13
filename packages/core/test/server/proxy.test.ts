@@ -3,7 +3,7 @@ import { createApp } from "../../src/server/app";
 import { shortError, anthropicAuthHeaders } from "../../src/server/proxy";
 import type { Store } from "../../src/server/store";
 import { tmpStore } from "../helpers/store";
-import { mockFetch, sseBody, chunkedBody, type FetchMock } from "../helpers/mock";
+import { mockFetch, sseBody, chunkedBody, sequence, type FetchMock } from "../helpers/mock";
 import { json } from "../helpers/json";
 import { makeProvider, fe, makeModel, seedStore } from "../helpers/fixtures";
 
@@ -293,7 +293,7 @@ describe("proxy", () => {
       mock = mockFetch([
         { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "ok" } }] } } },
       ]);
-      const res = await post("/v1/chat/completions", { model: "m", messages: [] }, { "x-myapikey-probe-provider": "prv_A" });
+      const res = await post("/v1/chat/completions", { model: "m", messages: [] }, { "x-myapikey-probe-slot": "0" });
       expect(res.status).toBe(200);
       expect(mock.calls.filter((c) => c.url.includes("/a/")).length).toBe(1);
       // A pinned probe takes no pacing side-effects: the window is unchanged.
@@ -306,7 +306,7 @@ describe("proxy", () => {
       // Reseed m so only B has an upstream name mapped.
       await seedStore(store, {
         models: {
-          m: makeModel({ openai: fe(["prv_A", "prv_B"], { modelMap: { prv_B: "gpt-4o-2024" } }) }),
+          m: makeModel({ openai: fe([{ id: "prv_A" }, { id: "prv_B", model: "gpt-4o-2024" }]) }),
           onlyA: makeModel({ openai: fe(["prv_A"]) }),
         },
       });
@@ -322,6 +322,47 @@ describe("proxy", () => {
       expect(JSON.parse(aCall!.body).model).toBe("m");
       // B's entry rewrites the model to its configured upstream name.
       expect(JSON.parse(bCall!.body).model).toBe("gpt-4o-2024");
+    });
+  });
+
+  describe("dispatch duplicate slots (one source, several upstream models)", () => {
+    it("fails over to a second slot under the SAME source, each sending its own upstream model", async () => {
+      // coding → Ark:doubao-pro (slot 0) primary, Ark:doubao-lite (slot 1) fallback.
+      // Same provider id twice; circuit + rpm state are shared by id, but failover
+      // still proceeds to slot 1 — the skipped-list is computed once, before the loop.
+      await seedStore(store, {
+        models: {
+          m: makeModel({
+            openai: fe([
+              { id: "prv_A", model: "doubao-pro" },
+              { id: "prv_A", model: "doubao-lite" },
+            ]),
+          }),
+        },
+      });
+      mock = mockFetch([
+        {
+          match: "/a/v1/chat/completions",
+          response: sequence([
+            { status: 503, body: { error: { message: "down" } } }, // slot 0 (doubao-pro)
+            { status: 200, body: { choices: [{ message: { content: "ok" } }] } }, // slot 1 (doubao-lite)
+          ]),
+        },
+      ]);
+      const res = await post("/v1/chat/completions", { model: "m", messages: [] });
+      // Drain the body: recordCircuitSuccess only fires from observedBody's
+      // onSettle, which runs once the streamed response is fully consumed.
+      await res.text();
+      expect(res.status).toBe(200);
+      // Both attempts went to A's upstream — it's the only backend in the chain.
+      const aCalls = mock.calls.filter((c) => c.url.includes("/a/"));
+      expect(aCalls.length).toBe(2);
+      // Slot 0 sent its mapped upstream name; slot 1 sent ITS (different) mapped name.
+      expect(JSON.parse(aCalls[0].body).model).toBe("doubao-pro");
+      expect(JSON.parse(aCalls[1].body).model).toBe("doubao-lite");
+      // The shared-by-id circuit recorded A's failure, but the call still succeeded
+      // via slot 1 — and that success (same id) reset the breaker for A.
+      expect(store.isCooling("prv_A")).toBe(false);
     });
   });
 
@@ -525,7 +566,7 @@ describe("proxy", () => {
 
     it("a pinned per-source probe with a truncated stream logs 502 but does NOT trip the circuit", async () => {
       mock = mockFetch([{ match: "/a/v1/messages", response: { status: 200, bodyStream: anthropicTrunc(), headers: sseHeaders } }]);
-      const res = await post("/v1/messages", { model: "m", messages: [], stream: true }, { "x-myapikey-probe-provider": "prv_A" });
+      const res = await post("/v1/messages", { model: "m", messages: [], stream: true }, { "x-myapikey-probe-slot": "0" });
       await res.text();
       const call = store.getLogs().find((e) => e.model === "m" && !e.kind);
       expect(call?.status).toBe(502);
@@ -719,7 +760,7 @@ describe("proxy", () => {
       ]);
       const res = await post("/v1/chat/completions", { model: "m", messages: [] }, {
         "x-myapikey-probe": "1",
-        "x-myapikey-probe-provider": "prv_B",
+        "x-myapikey-probe-slot": "1",
       });
       expect(res.status).toBe(200);
       expect(res.headers.get("x-myapikey-provider")).toBe("B");
@@ -734,7 +775,7 @@ describe("proxy", () => {
       ]);
       const res = await post("/v1/chat/completions", { model: "m", messages: [] }, {
         "x-myapikey-probe": "1",
-        "x-myapikey-probe-provider": "prv_B",
+        "x-myapikey-probe-slot": "1",
       });
       // The real upstream status (429), not a collapsed 502.
       expect(res.status).toBe(429);
@@ -749,10 +790,11 @@ describe("proxy", () => {
       mock = mockFetch([
         { match: "/a/v1/chat/completions", response: { status: 200, body: {} } },
       ]);
-      // onlyA routes solely to A; pinning B yields model_not_found with no fetch.
+      // onlyA routes solely to A (one slot, index 0); pinning index 1 is out of
+      // range → empty list → 404 model_not_found with no fetch.
       const res = await post("/v1/chat/completions", { model: "onlyA", messages: [] }, {
         "x-myapikey-probe": "1",
-        "x-myapikey-probe-provider": "prv_B",
+        "x-myapikey-probe-slot": "1",
       });
       expect(res.status).toBe(404);
       expect(mock.calls.length).toBe(0);

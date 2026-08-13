@@ -179,7 +179,7 @@ model.command("list").action(async () => {
     console.log(m.name);
     for (const f of fmts) {
       const fe = m[f];
-      const chain = fe.providers.map((p: any) => p.name).join(" → ") || "(none)";
+      const chain = fe.providers.map((p: any) => (p.model ? `${p.name}→${p.model}` : p.name)).join(" → ") || "(none)";
       console.log(`  ${f.padEnd(9)} ${fe.enabled ? "✓" : "·"} ${chain}`);
     }
   }
@@ -226,12 +226,29 @@ model
 
 model
   .command("prioritize <name> <refs...>")
-  .description("set provider priority order (left = primary)")
+  .description("reorder sources on a route (left = primary); list every source on the route, in order")
   .addOption(fmtOption())
   .action(async (name: string, refs: string[], opts: { format: "openai" | "anthropic" }) => {
-    const ids: string[] = [];
-    for (const ref of refs) ids.push(await resolveProviderId(ref));
-    await api(ctx(), "PUT", `/admin/models/${encodeURIComponent(name)}/priority`, { format: opts.format, providers: ids });
+    // The server reorders EXISTING slots (a duplicate id can occupy several), so
+    // each ref maps onto the chain left-to-right — a second ref with the same id
+    // consumes the next slot for that id. The refs must cover the whole route
+    // (the resulting indices are a permutation of [0..n-1]).
+    const wanted: string[] = [];
+    for (const ref of refs) wanted.push(await resolveProviderId(ref));
+    const r = (await api(ctx(), "GET", "/admin/models")) as { models: any[] };
+    const entry = (r.models as any[]).find((m) => m.name === name);
+    if (!entry) throw new Error(`No model '${name}'.`);
+    const chain: { id: string }[] = entry[opts.format]?.providers ?? [];
+    const used = new Set<number>();
+    const order: number[] = [];
+    for (const id of wanted) {
+      const idx = chain.findIndex((s, i) => s.id === id && !used.has(i));
+      if (idx === -1)
+        throw new Error(`'${name}' [${opts.format}] has no remaining slot for that source — list every source on the route exactly once.`);
+      used.add(idx);
+      order.push(idx);
+    }
+    await api(ctx(), "PUT", `/admin/models/${encodeURIComponent(name)}/priority`, { format: opts.format, order });
     console.log(`Priority for ${name} [${opts.format}]: ${refs.join(" → ")}`);
   });
 

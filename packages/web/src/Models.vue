@@ -229,11 +229,13 @@ function toggleSource(id: string, count: number): void {
   sourceOpenOverride.value = { ...sourceOpenOverride.value, [id]: !isSourceOpen(id, count) };
 }
 
-/** Every source that can still attach to ≥1 enabled route of this model —
- *  candidates for the model-level "add source" dialog. */
+/** Every source that can attach to ≥1 enabled route of this model — candidates
+ *  for the model-level "add source" dialog. A source already attached is STILL a
+ *  candidate: adding it again creates a second slot (to map a different upstream
+ *  model), which is the whole point of per-route failover across one backend. */
 function addableFor(r: Row): ProviderPublic[] {
   const enabled = enabledFormats(r);
-  return providers.value.filter((p) => enabled.some((f) => supportsFmt(p, f) && !r[f].chain.some((c) => c.id === p.id)));
+  return providers.value.filter((p) => enabled.some((f) => supportsFmt(p, f)));
 }
 /** Snapshot of each routing slot's current chain (provider ids), passed to the
  *  add-source dialog so it can compute which routes a candidate would join. */
@@ -428,15 +430,16 @@ async function testRow(r: Row) {
   await Promise.all(fmts.map((f) => testModel(r, f)));
 }
 
-/** Test ONE source on a route — pinned probe, no failover, no circuit impact.
- *  Independent state from testModel so the source-row badge never clobbers the
- *  chain-level badge. */
-async function testSource(r: Row, f: Fmt, p: ChainSrc) {
-  const key = `${r.name}:${f}:${p.id}`;
+/** Test ONE slot on a route — pinned probe, no failover, no circuit impact.
+ *  Independent state from testModel so the slot badge never clobbers the
+ *  chain-level badge. Slot-indexed (not id) because a source may occupy several
+ *  slots; the badge tracks the exact slot tested. */
+async function testSource(r: Row, f: Fmt, i: number) {
+  const key = `${r.name}:${f}:${i}`;
   if (srcTesting.value[key]) return;
   srcTesting.value[key] = true;
   try {
-    const res = await req<{ result: ProbeResult }>("POST", `/admin/models/${enc(r.name)}/providers/${enc(p.id)}/test?format=${f}`);
+    const res = await req<{ result: ProbeResult }>("POST", `/admin/models/${enc(r.name)}/providers/test?format=${f}&index=${i}`);
     srcProbe.value[key] = res.result;
   } catch (e) {
     srcProbe.value[key] = { ok: false, status: 0, format: f, error: (e as Error).message };
@@ -461,13 +464,16 @@ async function doRemoveModel() {
   }
 }
 
-async function setPriority(r: Row, ids: string[], fmt: Fmt) {
+/** Reorder the slots on a route. `order` is a permutation of the current chain
+ *  indices (0..n-1); the server validates it. Optimistically applies the same
+ *  permutation to the local chain and reverts on error. */
+async function setPriority(r: Row, order: number[], fmt: Fmt) {
   const m = models.value.find((x) => x.name === r.name);
   if (!m) return;
   const prev = m[fmt].providers.slice();
-  m[fmt].providers = ids.map((id) => prev.find((p) => p.id === id)!).filter(Boolean);
+  m[fmt].providers = order.map((i) => prev[i]);
   try {
-    await req("PUT", `/admin/models/${enc(r.name)}/priority`, { format: fmt, providers: ids });
+    await req("PUT", `/admin/models/${enc(r.name)}/priority`, { format: fmt, order });
   } catch (e) {
     m[fmt].providers = prev;
     toast((e as Error).message, "error");
@@ -475,15 +481,15 @@ async function setPriority(r: Row, ids: string[], fmt: Fmt) {
 }
 function moveUp(r: Row, i: number, fmt: Fmt) {
   if (i === 0) return;
-  const ids = r[fmt].chain.map((p) => p.id);
-  [ids[i - 1], ids[i]] = [ids[i], ids[i - 1]];
-  setPriority(r, ids, fmt);
+  const order = r[fmt].chain.map((_, k) => k);
+  [order[i - 1], order[i]] = [order[i], order[i - 1]];
+  setPriority(r, order, fmt);
 }
 function moveDown(r: Row, i: number, fmt: Fmt) {
-  const ids = r[fmt].chain.map((p) => p.id);
-  if (i >= ids.length - 1) return;
-  [ids[i + 1], ids[i]] = [ids[i], ids[i + 1]];
-  setPriority(r, ids, fmt);
+  if (i >= r[fmt].chain.length - 1) return;
+  const order = r[fmt].chain.map((_, k) => k);
+  [order[i + 1], order[i]] = [order[i], order[i + 1]];
+  setPriority(r, order, fmt);
 }
 
 /** Open the model-level "add source" dialog for this row. */
@@ -492,44 +498,47 @@ function openAddSource(r: Row) {
   addSourceOpen.value = true;
 }
 
-// --- per-source upstream-model editing (on-demand, one row at a time) ---
+// --- per-slot upstream-model editing (on-demand, one slot at a time) ---
+// Identity is the SLOT INDEX (not the provider id): a source may occupy several
+// slots, each with its own upstream name, so editing/testing/mapping must target
+// the exact slot. The ChainSrc's id is still used for display + source-global
+// lookups (color, RPM, discovery) — just not for slot identity.
 
-function draftKey(r: Row, f: Fmt, p: ChainSrc): string {
-  return `${r.name}:${f}:${p.id}`;
+function draftKey(r: Row, f: Fmt, i: number): string {
+  return `${r.name}:${f}:${i}`;
 }
 /** The single chain row whose upstream field is an <input> right now (entered via
  *  the ⋯ "edit" action or by clicking the mapped label; exited on blur). */
-function isEditing(r: Row, f: Fmt, p: ChainSrc): boolean {
-  return mapEditingKey.value === draftKey(r, f, p);
+function isEditing(r: Row, f: Fmt, i: number): boolean {
+  return mapEditingKey.value === draftKey(r, f, i);
 }
-function enterEdit(r: Row, f: Fmt, p: ChainSrc): void {
-  const k = draftKey(r, f, p);
+function enterEdit(r: Row, f: Fmt, p: ChainSrc, i: number): void {
+  const k = draftKey(r, f, i);
   mapDraft.value[k] = p.model ?? "";
   mapEditingKey.value = k;
 }
 /** Draft value bound to the input while editing. */
-function mapVal(r: Row, f: Fmt, p: ChainSrc): string {
-  return mapDraft.value[draftKey(r, f, p)] ?? "";
+function mapVal(r: Row, f: Fmt, i: number): string {
+  return mapDraft.value[draftKey(r, f, i)] ?? "";
 }
-function onMapInput(r: Row, f: Fmt, p: ChainSrc, v: string): void {
-  mapDraft.value[draftKey(r, f, p)] = v;
+function onMapInput(r: Row, f: Fmt, i: number, v: string): void {
+  mapDraft.value[draftKey(r, f, i)] = v;
 }
 /** Commit the upstream field on blur/Enter. Idempotent: a no-op when the draft
- *  matches the committed value, so Enter→blur and Esc→blur don't double-write. */
-async function commitMap(r: Row, f: Fmt, p: ChainSrc): Promise<void> {
-  const k = draftKey(r, f, p);
+ *  matches the committed value, so Enter→blur and Esc→blur don't double-write.
+ *  Writes to the exact slot index (NOT a find-by-id, which would hit the first
+ *  duplicate and mis-map a second slot under the same source). */
+async function commitMap(r: Row, f: Fmt, p: ChainSrc, i: number): Promise<void> {
+  const k = draftKey(r, f, i);
   mapEditingKey.value = "";
   const draft = (mapDraft.value[k] ?? "").trim();
   const cur = (p.model ?? "").trim();
   if (draft === cur) return;
   const m = models.value.find((x) => x.name === r.name);
-  if (m) {
-    const idx = m[f].providers.findIndex((x) => x.id === p.id);
-    if (idx >= 0) m[f].providers[idx].model = draft || undefined;
-  }
+  if (m) m[f].providers[i].model = draft || undefined;
   mapDraft.value[k] = draft; // keep in sync so a follow-up blur is a no-op
   try {
-    await req("PUT", `/admin/models/${enc(r.name)}/map`, { format: f, providerId: p.id, model: draft });
+    await req("PUT", `/admin/models/${enc(r.name)}/map`, { format: f, index: i, model: draft });
     toast(t("models.mapSaved"), "success");
   } catch (e) {
     await load();
@@ -537,8 +546,8 @@ async function commitMap(r: Row, f: Fmt, p: ChainSrc): Promise<void> {
   }
 }
 /** Esc: reset the draft to the committed value, then blur (→ commit is a no-op). */
-function revertMap(r: Row, f: Fmt, p: ChainSrc, el: HTMLInputElement): void {
-  mapDraft.value[draftKey(r, f, p)] = p.model ?? "";
+function revertMap(r: Row, f: Fmt, p: ChainSrc, i: number, el: HTMLInputElement): void {
+  mapDraft.value[draftKey(r, f, i)] = p.model ?? "";
   el.blur();
 }
 
@@ -604,14 +613,16 @@ function revertRpm(p: ChainSrc, el: HTMLInputElement): void {
   el.blur();
 }
 
-async function removeSource(r: Row, pid: string, fmt: Fmt) {
-  const key = `${r.name}:${pid}:${fmt}`;
+/** Remove a single slot by index (NOT all slots for the source — a source may
+ *  occupy several slots, and the per-row trash button removes just the one). */
+async function removeSource(r: Row, fmt: Fmt, i: number) {
+  const key = `${r.name}:${fmt}:${i}`;
   if (removingSrc.value[key]) return;
   removingSrc.value[key] = true;
   const m = models.value.find((x) => x.name === r.name);
-  if (m) m[fmt].providers = m[fmt].providers.filter((p) => p.id !== pid);
+  if (m) m[fmt].providers.splice(i, 1);
   try {
-    await req("DELETE", `/admin/models/${enc(r.name)}/providers/${pid}?format=${fmt}`);
+    await req("DELETE", `/admin/models/${enc(r.name)}/providers?format=${fmt}&index=${i}`);
     toast(t("models.sourceRemoved"), "success");
   } catch (e) {
     await load();
@@ -815,7 +826,7 @@ onMounted(load);
                       </div>
                       <div
                         v-for="(p, i) in r[f].chain"
-                        :key="p.id"
+                        :key="i"
                         class="group flex items-center gap-2 rounded px-1 py-1 hover:bg-muted/40"
                       >
                         <span class="w-4 shrink-0 text-right text-xs text-muted-foreground">{{ i + 1 }}.</span>
@@ -856,28 +867,28 @@ onMounted(load);
                           <Gauge class="h-3 w-3" />
                           {{ t("sources.rpmBadge", { n: srcRpm(p.id) }) }}
                         </button>
-                        <!-- per-source probe result (only for sources that have been tested) -->
-                        <Badge v-if="srcTesting[`${r.name}:${f}:${p.id}`]" variant="muted" class="gap-1"><Loader2 class="h-3 w-3 animate-spin" />{{ t("models.probeTesting") }}</Badge>
-                        <Badge v-else-if="srcProbe[`${r.name}:${f}:${p.id}`]?.ok" variant="success" :title="t('models.probeOkHint', { name: p.name })">{{ t("models.probeOk") }}</Badge>
-                        <Badge v-else-if="srcProbe[`${r.name}:${f}:${p.id}`]" variant="destructive" :title="srcProbe[`${r.name}:${f}:${p.id}`]?.error || t('models.probeFailHint')">{{ t("models.probeFail") }} · {{ srcProbe[`${r.name}:${f}:${p.id}`]?.status || '?' }}</Badge>
+                        <!-- per-slot probe result (only for slots that have been tested) -->
+                        <Badge v-if="srcTesting[`${r.name}:${f}:${i}`]" variant="muted" class="gap-1"><Loader2 class="h-3 w-3 animate-spin" />{{ t("models.probeTesting") }}</Badge>
+                        <Badge v-else-if="srcProbe[`${r.name}:${f}:${i}`]?.ok" variant="success" :title="t('models.probeOkHint', { name: p.name })">{{ t("models.probeOk") }}</Badge>
+                        <Badge v-else-if="srcProbe[`${r.name}:${f}:${i}`]" variant="destructive" :title="srcProbe[`${r.name}:${f}:${i}`]?.error || t('models.probeFailHint')">{{ t("models.probeFail") }} · {{ srcProbe[`${r.name}:${f}:${i}`]?.status || '?' }}</Badge>
 
-                        <!-- upstream model sent to THIS source: an always-visible label
+                        <!-- upstream model sent to THIS slot: an always-visible label
                              when set (it's state), turned into an input only while editing. -->
-                        <div v-if="isEditing(r, f, p)" class="flex items-center gap-1">
+                        <div v-if="isEditing(r, f, i)" class="flex items-center gap-1">
                           <span class="text-xs text-muted-foreground">→</span>
                           <input
                             v-focus
                             type="text"
-                            :value="mapVal(r, f, p)"
+                            :value="mapVal(r, f, i)"
                             :placeholder="t('models.upstreamPh')"
                             :aria-label="t('models.upstreamLabel')"
                             :title="t('models.upstreamHint')"
                             spellcheck="false"
                             class="h-6 w-40 rounded-md border border-input bg-background px-2 font-mono text-xs shadow-sm transition-colors placeholder:font-sans placeholder:text-muted-foreground/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
-                            @input="onMapInput(r, f, p, ($event.target as HTMLInputElement).value)"
+                            @input="onMapInput(r, f, i, ($event.target as HTMLInputElement).value)"
                             @keyup.enter="($event.target as HTMLInputElement).blur()"
-                            @keyup.esc="revertMap(r, f, p, $event.target as HTMLInputElement)"
-                            @blur="commitMap(r, f, p)"
+                            @keyup.esc="revertMap(r, f, p, i, $event.target as HTMLInputElement)"
+                            @blur="commitMap(r, f, p, i)"
                           />
                         </div>
                         <button
@@ -885,7 +896,7 @@ onMounted(load);
                           type="button"
                           :title="t('models.upstreamHint')"
                           class="inline-flex items-center gap-1 rounded border border-transparent px-1.5 py-0.5 font-mono text-xs text-muted-foreground transition-colors hover:border-border hover:bg-background hover:text-foreground"
-                          @click="enterEdit(r, f, p)"
+                          @click="enterEdit(r, f, p, i)"
                         >
                           <span>→</span>{{ p.model }}
                         </button>
@@ -905,12 +916,12 @@ onMounted(load);
                               </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end">
-                              <DropdownMenuItem :disabled="srcTesting[`${r.name}:${f}:${p.id}`]" @select="testSource(r, f, p)">
-                                <Loader2 v-if="srcTesting[`${r.name}:${f}:${p.id}`]" class="animate-spin" />
+                              <DropdownMenuItem :disabled="srcTesting[`${r.name}:${f}:${i}`]" @select="testSource(r, f, i)">
+                                <Loader2 v-if="srcTesting[`${r.name}:${f}:${i}`]" class="animate-spin" />
                                 <Zap v-else />
                                 {{ t("models.testSource") }}
                               </DropdownMenuItem>
-                              <DropdownMenuItem @select="enterEdit(r, f, p)">
+                              <DropdownMenuItem @select="enterEdit(r, f, p, i)">
                                 <Pencil class="h-4 w-4" />
                                 {{ t("models.editUpstream") }}
                               </DropdownMenuItem>
@@ -919,7 +930,7 @@ onMounted(load);
                                 {{ t("sources.rpmLabel") }}
                               </DropdownMenuItem>
                               <DropdownMenuSeparator />
-                              <DropdownMenuItem class="text-destructive focus:bg-destructive/10 focus:text-destructive" @select="removeSource(r, p.id, f)">
+                              <DropdownMenuItem class="text-destructive focus:bg-destructive/10 focus:text-destructive" @select="removeSource(r, f, i)">
                                 <Trash2 class="h-4 w-4" />
                                 {{ t("models.removeSource") }}
                               </DropdownMenuItem>

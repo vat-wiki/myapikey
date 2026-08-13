@@ -15,7 +15,9 @@ const props = defineProps<{
   providers: ProviderPublic[];
   /** Routing slots this model is enabled on (the routes a source could join). */
   enabledFormats: string[];
-  /** Current chain provider ids per routing slot, so we skip routes already served. */
+  /** Current chain provider ids per routing slot — read-only here, used only to
+   *  hint when the selected source is already attached (re-adding is intentional,
+   *  not an accident: it adds a second slot for a different upstream model). */
   chainByFormat: Record<string, string[]>;
 }>();
 const open = defineModel<boolean>("open", { default: false });
@@ -31,17 +33,27 @@ function supportsFmt(o: { formats: string[]; supportsResponses?: boolean }, f: s
   return f === "responses" ? !!o.supportsResponses : o.formats.includes(f);
 }
 
-/** Routes the selected source would actually be added to (enabled, speaks, not in chain). */
+/** Routes the selected source would be added to: every ENABLED route it speaks.
+ *  No exclusion for routes it's already on — re-adding the same source is the
+ *  whole point (a second slot mapping a different upstream model). */
 function addTargets(pid: string): string[] {
   const p = props.providers.find((x) => x.id === pid);
   if (!p) return [];
-  return props.enabledFormats.filter((f) => supportsFmt(p, f) && !(props.chainByFormat[f] ?? []).includes(pid));
+  return props.enabledFormats.filter((f) => supportsFmt(p, f));
 }
 
-/** Sources that can still attach to ≥1 enabled route of this model. */
+/** Enabled routes the selected source is ALREADY on (for the "already attached"
+ *  hint only — does not block re-adding). */
+function alreadyAttachedFormats(pid: string): string[] {
+  return props.enabledFormats.filter((f) => (props.chainByFormat[f] ?? []).includes(pid));
+}
+
+/** Sources that can attach to ≥1 enabled route of this model. Every source that
+ *  speaks an enabled route is a candidate — including ones already attached
+ *  (attach again = a second slot for a different upstream model). */
 const candidates = computed(() =>
   props.providers
-    .filter((p) => props.enabledFormats.some((f) => supportsFmt(p, f) && !(props.chainByFormat[f] ?? []).includes(p.id)))
+    .filter((p) => props.enabledFormats.some((f) => supportsFmt(p, f)))
     .sort((a, b) => a.name.localeCompare(b.name)),
 );
 
@@ -52,6 +64,8 @@ const SHORT: Record<string, string> = {
 };
 /** Human labels for the routes the selected source will join, shown under the select. */
 const targetsPreview = computed(() => (selectedId.value ? addTargets(selectedId.value).map((f) => t(SHORT[f] ?? f)) : []));
+/** The selected source already occupies a slot on ≥1 route → show the re-add hint. */
+const showDupHint = computed(() => !!selectedId.value && alreadyAttachedFormats(selectedId.value).length > 0);
 
 const canSubmit = computed(() => !!selectedId.value && !submitting.value);
 
@@ -61,28 +75,22 @@ watch(open, (o) => {
   upstream.value = "";
 });
 
-/** Attach the source to every route it speaks but isn't on yet (one POST each);
- *  if an upstream name was given, set that mapping on every enabled route it speaks. */
+/** Attach the source to every enabled route it speaks — one POST per route,
+ *  carrying the optional upstream model so add + map happen in a single call.
+ *  Re-adding a route the source is already on appends a second slot (the
+ *  per-route failover-across-models case). */
 async function submit() {
   if (!canSubmit.value) return;
   const pid = selectedId.value;
-  const p = props.providers.find((x) => x.id === pid);
-  if (!pid || !p) return;
+  if (!pid) return;
   const addTgts = addTargets(pid);
   const up = upstream.value.trim();
   submitting.value = true;
   try {
-    const addResults = await Promise.allSettled(
-      addTgts.map((f) => req("POST", `/admin/models/${enc(props.modelName)}/providers`, { format: f, providerId: pid })),
+    const results = await Promise.allSettled(
+      addTgts.map((f) => req("POST", `/admin/models/${enc(props.modelName)}/providers`, { format: f, providerId: pid, model: up || undefined })),
     );
-    let fail = addResults.filter((r) => r.status === "rejected").length;
-    if (up) {
-      const mapTgts = props.enabledFormats.filter((f) => supportsFmt(p, f));
-      const mapResults = await Promise.allSettled(
-        mapTgts.map((f) => req("PUT", `/admin/models/${enc(props.modelName)}/map`, { format: f, providerId: pid, model: up })),
-      );
-      fail += mapResults.filter((r) => r.status === "rejected").length;
-    }
+    const fail = results.filter((r) => r.status === "rejected").length;
     if (!fail) toast(t("models.sourceAdded"), "success");
     else toast(t("models.addSourcePartial"), "error");
     emit("added");
@@ -126,6 +134,7 @@ async function submit() {
             <p v-if="targetsPreview.length" class="text-xs text-muted-foreground">
               {{ t("models.addSourceTargetsHint") }} <span class="font-medium text-foreground">{{ targetsPreview.join(" / ") }}</span>
             </p>
+            <p v-if="showDupHint" class="text-xs text-amber-600 dark:text-amber-500">{{ t("models.addSourceDupHint") }}</p>
           </div>
 
           <div class="space-y-1.5">

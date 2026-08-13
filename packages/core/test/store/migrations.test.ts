@@ -64,18 +64,19 @@ describe("Store migration (constructor load())", () => {
         },
       });
       const m = ts.store.get().models["gpt-4o"] as unknown as {
-        openai: { enabled: boolean; providers: string[] };
-        anthropic: { enabled: boolean; providers: string[] };
-        responses: { enabled: boolean; providers: string[] };
+        openai: { enabled: boolean; providers: { id: string; model?: string }[] };
+        anthropic: { enabled: boolean; providers: { id: string; model?: string }[] };
+        responses: { enabled: boolean; providers: { id: string; model?: string }[] };
       };
       // prv_r is openai+supportsResponses, so it stays in openai AND splits into responses.
-      expect(m.openai).toEqual({ enabled: true, providers: ["prv_o", "prv_r"] });
-      expect(m.anthropic).toEqual({ enabled: true, providers: ["prv_a"] });
-      expect(m.responses).toEqual({ enabled: true, providers: ["prv_r"] });
+      // (v5 migration folds the legacy string[] chains into {id} pairs on the same boot.)
+      expect(m.openai).toEqual({ enabled: true, providers: [{ id: "prv_o" }, { id: "prv_r" }] });
+      expect(m.anthropic).toEqual({ enabled: true, providers: [{ id: "prv_a" }] });
+      expect(m.responses).toEqual({ enabled: true, providers: [{ id: "prv_r" }] });
       // Dangling id dropped from every chain.
-      const all = [...m.openai.providers, ...m.anthropic.providers, ...m.responses.providers];
+      const all = [...m.openai.providers, ...m.anthropic.providers, ...m.responses.providers].map((s) => s.id);
       expect(all).not.toContain("prv_dangling");
-      // Persisted to disk in the v3 shape.
+      // Persisted to disk in the (v5) pair shape.
       expect((readDisk(ts).models as Record<string, unknown>)["gpt-4o"]).toEqual(m);
     });
 
@@ -88,17 +89,17 @@ describe("Store migration (constructor load())", () => {
         models: { "gpt-4o": { enabled: false, providers: ["prv_o", "prv_a", "prv_r"] } },
       });
       const m = ts.store.get().models["gpt-4o"] as unknown as {
-        openai: { enabled: boolean; providers: string[] };
-        anthropic: { enabled: boolean; providers: string[] };
-        responses: { enabled: boolean; providers: string[] };
+        openai: { enabled: boolean; providers: { id: string; model?: string }[] };
+        anthropic: { enabled: boolean; providers: { id: string; model?: string }[] };
+        responses: { enabled: boolean; providers: { id: string; model?: string }[] };
       };
       expect(m.openai.enabled).toBe(false);
       expect(m.anthropic.enabled).toBe(false);
       expect(m.responses.enabled).toBe(false);
       // Chains still populated from the legacy list (enabled flags the only difference).
-      expect(m.openai.providers).toEqual(["prv_o", "prv_r"]);
-      expect(m.anthropic.providers).toEqual(["prv_a"]);
-      expect(m.responses.providers).toEqual(["prv_r"]);
+      expect(m.openai.providers).toEqual([{ id: "prv_o" }, { id: "prv_r" }]);
+      expect(m.anthropic.providers).toEqual([{ id: "prv_a" }]);
+      expect(m.responses.providers).toEqual([{ id: "prv_r" }]);
     });
   });
 
@@ -117,22 +118,22 @@ describe("Store migration (constructor load())", () => {
         },
       });
       const m = ts.store.get().models["gpt-4o"] as unknown as {
-        openai: { enabled: boolean; providers: string[] };
-        anthropic: { enabled: boolean; providers: string[] };
-        responses: { enabled: boolean; providers: string[] };
+        openai: { enabled: boolean; providers: { id: string; model?: string }[] };
+        anthropic: { enabled: boolean; providers: { id: string; model?: string }[] };
+        responses: { enabled: boolean; providers: { id: string; model?: string }[] };
       };
       // Openai chain unchanged: prv_r stays (split, not moved), enabled stays true.
-      expect(m.openai).toEqual({ enabled: true, providers: ["prv_o", "prv_r"] });
+      expect(m.openai).toEqual({ enabled: true, providers: [{ id: "prv_o" }, { id: "prv_r" }] });
       expect(m.anthropic).toEqual({ enabled: false, providers: [] });
       // Responses slot added from the openai chain's supportsResponses sources.
-      expect(m.responses).toEqual({ enabled: true, providers: ["prv_r"] });
+      expect(m.responses).toEqual({ enabled: true, providers: [{ id: "prv_r" }] });
     });
   });
 
-  describe("already-v3 entries (idempotent)", () => {
-    it("leaves a model that already has a responses slot unchanged", () => {
+  describe("already-current entries (idempotent)", () => {
+    it("leaves a model already in the {id,model?} pair shape unchanged", () => {
       const before = {
-        openai: { enabled: true, providers: ["prv_o", "prv_r"] },
+        openai: { enabled: true, providers: [{ id: "prv_o" }, { id: "prv_r" }] },
         anthropic: { enabled: false, providers: [] },
         responses: { enabled: false, providers: [] },
       };
@@ -222,6 +223,53 @@ describe("Store migration (constructor load())", () => {
     });
   });
 
+  describe("FormatEntry v4 → v5 (inline upstream model)", () => {
+    it("folds a string[] chain + modelMap into {id,model?} pairs", () => {
+      ts = tmpStoreFromRaw({
+        version: 4,
+        account: { username: "admin", password: "p" },
+        apiKey: "sk-myapikey-x",
+        providers: [PRV_O, PRV_A],
+        models: {
+          "gpt-4o": {
+            openai: { enabled: true, providers: ["prv_o", "prv_a"], modelMap: { prv_a: "up-a" } },
+            anthropic: { enabled: false, providers: [] },
+            responses: { enabled: false, providers: [] },
+          },
+        },
+      });
+      const m = ts.store.get().models["gpt-4o"] as unknown as {
+        openai: { enabled: boolean; providers: { id: string; model?: string }[]; modelMap?: unknown };
+      };
+      // prv_o had no map entry → bare {id}; prv_a carried "up-a" → {id, model}.
+      expect(m.openai).toEqual({ enabled: true, providers: [{ id: "prv_o" }, { id: "prv_a", model: "up-a" }] });
+      // modelMap is gone entirely.
+      expect(m.openai.modelMap).toBeUndefined();
+      expect(ts.store.get().version).toBe(CONFIG_VERSION);
+      // Persisted to disk in the pair shape with no modelMap.
+      const disk = (readDisk(ts).models as Record<string, unknown>)["gpt-4o"] as Record<string, unknown>;
+      expect(disk.openai).toEqual({ enabled: true, providers: [{ id: "prv_o" }, { id: "prv_a", model: "up-a" }] });
+    });
+
+    it("leaves already-pair chains untouched (idempotent)", () => {
+      const before = {
+        openai: { enabled: true, providers: [{ id: "prv_o" }, { id: "prv_a", model: "up-a" }] },
+        anthropic: { enabled: false, providers: [] },
+        responses: { enabled: false, providers: [] },
+      };
+      ts = tmpStoreFromRaw({
+        version: 4,
+        account: { username: "admin", password: "p" },
+        apiKey: "sk-myapikey-x",
+        providers: [PRV_O, PRV_A],
+        models: { "gpt-4o": before },
+      });
+      const m = ts.store.get().models["gpt-4o"] as unknown as typeof before;
+      expect(m).toEqual(before);
+      expect(readDisk(ts).version).toBe(CONFIG_VERSION);
+    });
+  });
+
   describe("apiKey migration", () => {
     it("generates and persists an sk-myapikey- key when missing", () => {
       ts = tmpStoreFromRaw({
@@ -263,7 +311,7 @@ describe("Store migration (constructor load())", () => {
   });
 
   describe("version bump", () => {
-    it("bumps version to CONFIG_VERSION (4) and persists after a migration", () => {
+    it("bumps version to CONFIG_VERSION (5) and persists after a migration", () => {
       ts = tmpStoreFromRaw({
         version: 1,
         account: { username: "admin", password: "p" },

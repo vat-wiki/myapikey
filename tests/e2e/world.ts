@@ -94,7 +94,7 @@ function seedConfig(): GateConfig {
     baseUrlAnthropic: `${MOCK_URL}/${host}`,
   });
   return {
-    version: 4,
+    version: 5,
     account: ACCOUNT,
     apiKey: API_KEY,
     providers: [
@@ -103,12 +103,12 @@ function seedConfig(): GateConfig {
     ],
     models: {
       ping: {
-        openai: { enabled: true, providers: ["prv_primary"] },
-        anthropic: { enabled: true, providers: ["prv_primary"] },
-        responses: { enabled: true, providers: ["prv_primary"] },
+        openai: { enabled: true, providers: [{ id: "prv_primary" }] },
+        anthropic: { enabled: true, providers: [{ id: "prv_primary" }] },
+        responses: { enabled: true, providers: [{ id: "prv_primary" }] },
       },
       ha: {
-        openai: { enabled: true, providers: ["prv_primary", "prv_fallback"] },
+        openai: { enabled: true, providers: [{ id: "prv_primary" }, { id: "prv_fallback" }] },
         anthropic: { enabled: false, providers: [] },
         responses: { enabled: false, providers: [] },
       },

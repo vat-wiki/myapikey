@@ -36,26 +36,38 @@ export interface Provider {
   createdAt: number;
 }
 
-/** One routing slot: an independent enable flag + a priority-ordered provider
- *  chain. Invariant (enforced by admin mutations, defended by proxy candidates()):
- *  every id in `providers` exists in `GateConfig.providers` and is compatible
- *  with the slot — openai/anthropic ids must carry that wire format; responses
- *  ids must additionally be supportsResponses sources (still OpenAI-format).
+/** One routing slot: an independent enable flag + a priority-ordered chain of
+ *  (provider, optional upstream model) pairs. Invariant (enforced by admin
+ *  mutations, defended by proxy candidates()): every id in `providers` exists in
+ *  `GateConfig.providers` and is compatible with the slot — openai/anthropic ids
+ *  must carry that wire format; responses ids must additionally be
+ *  supportsResponses sources (still OpenAI-format).
  *
- *  `modelMap` (optional): per-provider UPSTREAM model name. When forwarding to
- *  provider P, if `modelMap[P.id]` is set, the gateway rewrites the request's
- *  `model` field to that value before the passthrough POST; otherwise the
- *  public model name (the key in GateConfig.models) is sent verbatim. So this is
- *  a pure name rewrite on the passthrough body — still no OpenAI↔Anthropic
- *  translation. Lets you alias (claude-sonnet-4 → claude-sonnet-4-20250514) or
- *  swap the actual model (gpt-4 → gpt-4o) per source. Absent/empty = identity. */
+ *  A provider id may appear MORE THAN ONCE — each occurrence is an independent
+ *  failover slot that can carry its own upstream model name. When forwarding to
+ *  a slot, if its `model` is set the gateway rewrites the request's `model`
+ *  field to that value before the passthrough POST; otherwise the public model
+ *  name (the key in GateConfig.models) is sent verbatim. That is a pure name
+ *  rewrite on the passthrough body — still no OpenAI↔Anthropic translation. It
+ *  lets you alias (claude-sonnet-4 → claude-sonnet-4-20250514), swap the actual
+ *  model (gpt-4 → gpt-4o) per source, or fail over across several models on ONE
+ *  backend (Ark → doubao-pro primary, Ark → doubao-lite fallback). Absent model
+ *  = identity (send the public name). */
 export interface FormatEntry {
   enabled: boolean;
-  /** Provider ids in priority order. First = primary, rest = fallback. */
-  providers: string[];
-  /** providerId → upstream model name to send to that provider. Optional;
-   *  absent key (or absent map) = send the public model name unchanged. */
-  modelMap?: Record<string, string>;
+  /** Ordered chain of routing slots: first = primary, rest = fallback. The same
+   *  provider id may repeat — each occurrence can map a different upstream model. */
+  providers: ChainSlot[];
+}
+
+/** One slot in a format's provider chain: which provider to forward to, and the
+ *  optional upstream model name to rewrite the request's `model` field to.
+ *  Duplicates of `id` are legal (distinct failover slots). */
+export interface ChainSlot {
+  id: string;
+  /** Upstream model name to send to this provider. Absent = forward the public
+   *  model name (the key in GateConfig.models) unchanged. */
+  model?: string;
 }
 
 /** A model's routing dimensions — one per forwarding endpoint. /chat/completions
