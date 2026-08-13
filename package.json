@@ -54,7 +54,8 @@
   "scripts": {
     "dev": "tsx watch packages/core/src/cli/index.ts serve",
     "dev:web": "npm run dev -w @myapikey/web",
-    "start": "tsx packages/core/src/cli/index.ts serve",
+    "start": "npm run build:web && npm run serve",
+    "serve": "tsx packages/core/src/cli/index.ts serve",
     "typecheck": "tsc -p packages/core/tsconfig.json --noEmit && tsc -p packages/core/tsconfig.test.json --noEmit && vue-tsc --noEmit -p packages/web/tsconfig.json",
     "build:web": "npm run build -w @myapikey/web",
     "test": "vitest run",
