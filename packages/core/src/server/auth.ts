@@ -1,5 +1,6 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { timingSafeEqual } from "node:crypto";
+import type { Logger } from "./logger";
 
 /** Constant-time string compare. */
 function safeEqual(a: string, b: string): boolean {
@@ -35,7 +36,7 @@ export function extractSecret(c: Context): { password: string; username?: string
 }
 
 /** Hono middleware: require the single account/password. */
-export function authMiddleware(getUser: () => string, getPass: () => string): MiddlewareHandler {
+export function authMiddleware(getUser: () => string, getPass: () => string, logger?: Logger): MiddlewareHandler {
   return async (c, next) => {
     const cred = extractSecret(c);
     const ok =
@@ -43,6 +44,7 @@ export function authMiddleware(getUser: () => string, getPass: () => string): Mi
       (cred.username === undefined || safeEqual(cred.username, getUser())) &&
       safeEqual(cred.password, getPass());
     if (!ok) {
+      logger?.warn(`auth failed: admin ${c.req.method} ${c.req.path} (invalid or missing credentials)`);
       return c.json(
         { error: { message: "invalid or missing credentials", type: "authentication_error" } },
         401,
@@ -58,12 +60,13 @@ export function authMiddleware(getUser: () => string, getPass: () => string): Mi
  * secret. extractSecret sets `username` only for Basic, so rejecting when it's
  * present keeps the account password off /v1.
  */
-export function apiKeyMiddleware(getKey: () => string): MiddlewareHandler {
+export function apiKeyMiddleware(getKey: () => string, logger?: Logger): MiddlewareHandler {
   return async (c, next) => {
     const cred = extractSecret(c);
     const ok =
       !!cred && cred.username === undefined && !!cred.password && safeEqual(cred.password, getKey());
     if (!ok) {
+      logger?.warn(`auth failed: agent ${c.req.method} ${c.req.path} (invalid or missing api key)`);
       return c.json(
         { error: { message: "invalid or missing api key", type: "authentication_error" } },
         401,

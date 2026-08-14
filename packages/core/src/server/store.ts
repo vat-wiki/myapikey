@@ -2,6 +2,7 @@ import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSyn
 import { join } from "node:path";
 import { defaultConfig, newApiKey, CONFIG_VERSION } from "../shared/config";
 import type { GateConfig, LogEntry, Provider } from "../shared/types";
+import { createLogger, type Logger } from "./logger";
 
 /** Call-log retention: the log is bounded two ways — never older than this, and
  *  never more than LOG_MAX_LINES entries. Whichever binds first. 90 days covers
@@ -165,6 +166,10 @@ export class Store {
   private readonly dataPath: string;
   private readonly logsPath: string;
   private readonly credentialsPath: string;
+  private readonly serverLogPath: string;
+  /** Process-level runtime log (server.log — errors + notable events). Owned
+   *  by the Store like every other dataDir file; injectable for quiet tests. */
+  private readonly logger: Logger;
   private chain: Promise<unknown> = Promise.resolve();
   /** Line count of the on-disk log (drives periodic trimming). The entries
    *  themselves are persisted to logs.jsonl, never held in memory. */
@@ -179,11 +184,13 @@ export class Store {
    *  NOT persisted (resets on restart). Pruned as `rpmUsed` reads. */
   private rpm = new Map<string, number[]>();
 
-  constructor(dataDir: string) {
+  constructor(dataDir: string, opts: { logger?: Logger } = {}) {
     this.dataDir = dataDir;
     this.dataPath = join(dataDir, "data.json");
     this.logsPath = join(dataDir, "logs.jsonl");
     this.credentialsPath = join(dataDir, "credentials.txt");
+    this.serverLogPath = join(dataDir, "server.log");
+    this.logger = opts.logger ?? createLogger({ file: this.serverLogPath });
     this.data = this.load();
     this.logCount = this.countLogs();
     // Don't trim on the very first post-startup call: let normal hysteresis do
@@ -193,13 +200,20 @@ export class Store {
   }
 
   /** Resolved on-disk locations (for read-only display in Settings). */
-  getPaths(): { dataDir: string; dataFile: string; logsFile: string; credentialsFile: string } {
+  getPaths(): { dataDir: string; dataFile: string; logsFile: string; credentialsFile: string; serverLogFile: string } {
     return {
       dataDir: this.dataDir,
       dataFile: this.dataPath,
       logsFile: this.logsPath,
       credentialsFile: this.credentialsPath,
+      serverLogFile: this.serverLogPath,
     };
+  }
+
+  /** Runtime log (console + server.log). Errors and notable events only —
+   *  per-call history is pushLog/logs.jsonl, a separate surface. */
+  getLogger(): Logger {
+    return this.logger;
   }
 
   /**
