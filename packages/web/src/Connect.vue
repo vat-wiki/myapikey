@@ -17,6 +17,7 @@ const SNIPPET_FMT: Record<string, Fmt | null> = {
   anthropic: "anthropic",
   responses: "responses",
   curl: null,
+  "curl-anthropic": "anthropic",
 };
 function snippetAccent(key: string) {
   const f = SNIPPET_FMT[key];
@@ -77,6 +78,11 @@ const snippets = computed(() => [
     key: "curl",
     title: t("connect.curlTitle"),
     text: `curl ${baseUrlOpenai.value}/chat/completions \\\n  -H "Authorization: Bearer ${apiKey.value ?? ""}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"<model>","messages":[{"role":"user","content":"hi"}]}'`,
+  },
+  {
+    key: "curl-anthropic",
+    title: t("connect.curlAnthropicTitle"),
+    text: `curl ${baseUrlAnthropic.value}/v1/messages \\\n  -H "Authorization: Bearer ${apiKey.value ?? ""}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"<model>","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'`,
   },
   {
     key: "responses",

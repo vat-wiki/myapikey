@@ -158,6 +158,22 @@ export ANTHROPIC_API_KEY=<网关 API Key>
 myapikey call gpt-4o-mini "用一句话打个招呼。"
 ```
 
+**为什么有两个 Base URL?** 网关暴露了两个互相独立的 agent 面——`/openai/v1` 和 `/anthropic/v1`,各自带自己的 `GET /models`(OpenAI 客户端只发现 openai 槽位启用的模型,Anthropic 客户端只发现 anthropic 槽位启用的模型)。两套生态的 SDK 各自拼接自己的路径:OpenAI SDK 指向 `…/openai/v1`(它自己补 `/chat/completions`、`/responses`、`/models`),Anthropic SDK / Claude Code 指向 `…/anthropic`(它自己补 `/v1/messages`、`/v1/models`)。
+
+**直接用 HTTP**(不走 SDK)——带上网关 API Key(`Bearer`)直接打这两个面之一:
+
+```bash
+# OpenAI 系
+curl http://localhost:7800/openai/v1/chat/completions \
+  -H "Authorization: Bearer <网关 API Key>" -H "Content-Type: application/json" \
+  -d '{"model":"<模型名>","messages":[{"role":"user","content":"hi"}]}'
+
+# Anthropic 系
+curl http://localhost:7800/anthropic/v1/messages \
+  -H "Authorization: Bearer <网关 API Key>" -H "Content-Type: application/json" \
+  -d '{"model":"<模型名>","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'
+```
+
 不管你把工具指向哪个端点,网关都按那个格式转发、绝不翻译——所以确保你调用的每个模型,在对应的槽位上至少有一个来源在服务它([见下文](#路由是怎么工作的))。
 
 ---

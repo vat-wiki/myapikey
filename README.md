@@ -158,6 +158,22 @@ Quick smoke test without any tool:
 myapikey call gpt-4o-mini "Say hello in one sentence."
 ```
 
+**Why two base URLs?** The gateway exposes two separate agent surfaces — `/openai/v1` and `/anthropic/v1` — each with its own `GET /models` (an OpenAI client discovers only openai-enabled models, an Anthropic client only anthropic-enabled ones). Each ecosystem's SDK appends its own paths, so the OpenAI SDK points at `…/openai/v1` (it appends `/chat/completions`, `/responses`, `/models`) and the Anthropic SDK / Claude Code points at `…/anthropic` (it appends `/v1/messages`, `/v1/models`).
+
+**Raw HTTP** (no SDK) — hit either surface directly with the gateway API key as a `Bearer` token:
+
+```bash
+# OpenAI family
+curl http://localhost:7800/openai/v1/chat/completions \
+  -H "Authorization: Bearer <gateway api key>" -H "Content-Type: application/json" \
+  -d '{"model":"<model>","messages":[{"role":"user","content":"hi"}]}'
+
+# Anthropic family
+curl http://localhost:7800/anthropic/v1/messages \
+  -H "Authorization: Bearer <gateway api key>" -H "Content-Type: application/json" \
+  -d '{"model":"<model>","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'
+```
+
 Whichever endpoint you point a tool at, the gateway forwards in that format and never translates — so make sure each model you call is backed by at least one source on the matching slot ([see below](#how-routing-works)).
 
 ---
