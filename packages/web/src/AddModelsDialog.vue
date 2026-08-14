@@ -189,7 +189,7 @@ async function submit() {
         </div>
       </div>
 
-      <div class="min-h-0 flex-1 space-y-3 overflow-y-auto">
+      <div class="min-h-0 flex-1 space-y-3 overflow-y-auto px-1 py-1.5">
         <div class="space-y-1.5">
           <label class="text-xs font-medium text-muted-foreground">{{ t("models.providerLabel") }}</label>
           <Select v-model="providerId">

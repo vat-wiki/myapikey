@@ -228,7 +228,7 @@ function discTitle(p: ProviderPublic): string {
         </div>
       </div>
 
-      <div class="min-h-0 flex-1 space-y-4 overflow-y-auto">
+      <div class="min-h-0 flex-1 space-y-4 overflow-y-auto px-1 py-1.5">
       <p v-if="loading" class="py-4 text-center text-sm text-muted-foreground">{{ t("common.loading") }}</p>
       <p v-else-if="err" class="py-4 text-center text-sm text-destructive">{{ err }}</p>
 
