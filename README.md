@@ -257,7 +257,7 @@ It's the same admin API the CLI uses — configure either way.
 - `POST /openai/v1/responses` — OpenAI Responses API (only sources marked `supportsResponses`)
 - `GET /openai/v1/models` — models enabled on the **openai** slot, OpenAI list shape (public — no key needed)
 - `POST /anthropic/v1/messages` — Anthropic-format proxy
-- `GET /anthropic/v1/models` — models enabled on the **anthropic** slot, OpenAI list shape (public — no key needed)
+- `GET /anthropic/v1/models` — models enabled on the **anthropic** slot, Anthropic list shape (public — no key needed)
 - `GET /health` — public liveness check
 
 **Admin (`/admin`, account password — HTTP Basic):**

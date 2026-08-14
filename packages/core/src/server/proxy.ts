@@ -293,21 +293,27 @@ function observedBody(
   });
 }
 
-/** OpenAI-style model list of the models enabled on ONE routing family's slot.
- *  Each agent surface gets its own `/models` so a client listing models never
- *  picks an id that 404s on that surface's call endpoint: `/openai/v1/models`
- *  advertises the openai slot, `/anthropic/v1/models` the anthropic slot. */
+/** Model list of the models enabled on ONE routing family's slot. Each agent
+ *  surface gets its own `/models` so a client listing models never picks an id
+ *  that 404s on that surface's call endpoint — and each answers in its own
+ *  ecosystem's list shape: openai `{object:"list", data:[{id, owned_by}]}` vs
+ *  anthropic `{data:[{id, display_name}], first_id, last_id, has_more}`. We
+ *  can't know real created_at / capabilities, so the anthropic shape carries
+ *  only the honest minimal fields rather than fabricating them. */
 function modelsList(c: Context, store: Store, fmt: "openai" | "anthropic") {
   const d = store.get();
   const byId = new Map(d.providers.map((p) => [p.id, p]));
-  const data = Object.entries(d.models)
-    .filter(([, e]) => e[fmt].enabled)
-    .map(([id, e]) => ({
-      id,
-      object: "model",
-      created: 0,
-      owned_by: byId.get(e[fmt].providers[0]?.id ?? "")?.name || "MyAPIKey",
-    }));
+  const enabled = Object.entries(d.models).filter(([, e]) => e[fmt].enabled);
+  if (fmt === "anthropic") {
+    const data = enabled.map(([id]) => ({ id, display_name: id, created_at: "1970-01-01T00:00:00Z", type: "model" }));
+    return c.json({ data, first_id: data[0]?.id ?? null, last_id: data.at(-1)?.id ?? null, has_more: false });
+  }
+  const data = enabled.map(([id, e]) => ({
+    id,
+    object: "model",
+    created: 0,
+    owned_by: byId.get(e.openai.providers[0]?.id ?? "")?.name || "MyAPIKey",
+  }));
   return c.json({ object: "list", data });
 }
 

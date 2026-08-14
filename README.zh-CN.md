@@ -257,7 +257,7 @@ curl http://localhost:7800/anthropic/v1/messages \
 - `POST /openai/v1/responses` — OpenAI Responses API(仅限标记了 `supportsResponses` 的来源)
 - `GET /openai/v1/models` — 启用在 **openai** 槽位的模型,OpenAI 列表格式(公开——无需 Key)
 - `POST /anthropic/v1/messages` — Anthropic 格式代理
-- `GET /anthropic/v1/models` — 启用在 **anthropic** 槽位的模型,OpenAI 列表格式(公开——无需 Key)
+- `GET /anthropic/v1/models` — 启用在 **anthropic** 槽位的模型,Anthropic 列表格式(公开——无需 Key)
 - `GET /health` — 公开存活检查
 
 **管理(`/admin`,账号密码 —— HTTP Basic):**

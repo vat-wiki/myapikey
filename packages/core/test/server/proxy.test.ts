@@ -746,17 +746,20 @@ describe("proxy", () => {
   describe("GET /anthropic/v1/models", () => {
     // The whole point of the dual surface: an Anthropic client discovers its
     // own models, which the old shared /v1/models couldn't list. onlyA has no
-    // anthropic slot, so it's absent here.
-    it("lists only anthropic-enabled models", async () => {
+    // anthropic slot, so it's absent here. And the list answers in ANTHROPIC's
+    // own shape (data[].{id,display_name,type} + first_id/last_id/has_more),
+    // not OpenAI's {object:"list"}.
+    it("lists only anthropic-enabled models, in the anthropic list shape", async () => {
       const res = await createApp(store).request("/anthropic/v1/models", {
         headers: { authorization: "Bearer " + store.get().apiKey },
       });
       expect(res.status).toBe(200);
-      const j = await json<{ object: string; data: { id: string; owned_by: string }[] }>(res);
-      expect(j.object).toBe("list");
-      const ids = j.data.map((d: { id: string }) => d.id).sort();
-      expect(ids).toEqual(["m"]);
-      for (const d of j.data) expect(d.owned_by).toBe("A");
+      const j = await json<{ data: { id: string; display_name: string; type: string }[]; first_id: string | null; last_id: string | null; has_more: boolean }>(res);
+      expect(j.data.map((d: { id: string }) => d.id)).toEqual(["m"]);
+      expect(j.data[0]).toMatchObject({ id: "m", display_name: "m", type: "model" });
+      expect(j.first_id).toBe("m");
+      expect(j.last_id).toBe("m");
+      expect(j.has_more).toBe(false);
     });
 
     it("is public — no api key required", async () => {
