@@ -293,9 +293,35 @@ function observedBody(
   });
 }
 
-export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
-  const app = new Hono();
-  app.use("*", auth);
+/** OpenAI-style model list of the models enabled on ONE routing family's slot.
+ *  Each agent surface gets its own `/models` so a client listing models never
+ *  picks an id that 404s on that surface's call endpoint: `/openai/v1/models`
+ *  advertises the openai slot, `/anthropic/v1/models` the anthropic slot. */
+function modelsList(c: Context, store: Store, fmt: "openai" | "anthropic") {
+  const d = store.get();
+  const byId = new Map(d.providers.map((p) => [p.id, p]));
+  const data = Object.entries(d.models)
+    .filter(([, e]) => e[fmt].enabled)
+    .map(([id, e]) => ({
+      id,
+      object: "model",
+      created: 0,
+      owned_by: byId.get(e[fmt].providers[0]?.id ?? "")?.name || "MyAPIKey",
+    }));
+  return c.json({ object: "list", data });
+}
+
+/** The two agent surfaces as separate sub-apps, so each carries its own
+ *  `/models` (openai list vs anthropic list) under its own prefix. `dispatch`
+ *  is shared — it's keyed by RouteKey, surface-agnostic. */
+export function proxyApi(
+  store: Store,
+  auth: MiddlewareHandler,
+): { openai: Hono; anthropic: Hono } {
+  const openai = new Hono();
+  const anthropic = new Hono();
+  openai.use("*", auth);
+  anthropic.use("*", auth);
 
   /** Shared dispatch with failover. `key` selects the routing slot (and thus the
    *  candidate chain); `wire`/`path` derive from it for the upstream call. */
@@ -473,28 +499,18 @@ export function proxyApi(store: Store, auth: MiddlewareHandler): Hono {
     );
   };
 
-  app.post("/chat/completions", (c) => dispatch(c, "openai"));
-  app.post("/messages", (c) => dispatch(c, "anthropic"));
+  // OpenAI surface: chat/completions + responses, plus its own (openai-slot)
+  // model list.
+  openai.post("/chat/completions", (c) => dispatch(c, "openai"));
   // OpenAI Responses API — its own routing slot (sources must be supportsResponses).
-  app.post("/responses", (c) => dispatch(c, "responses"));
+  openai.post("/responses", (c) => dispatch(c, "responses"));
+  openai.get("/models", (c) => modelsList(c, store, "openai"));
 
-  // OpenAI-style model list of everything routable on the OpenAI path. This is
-  // the OpenAI list endpoint — advertise only models whose openai slot is
-  // enabled, so an agent that picks an id here can actually call it on
-  // /chat/completions. Anthropic-only models are intentionally omitted.
-  app.get("/models", (c) => {
-    const d = store.get();
-    const byId = new Map(d.providers.map((p) => [p.id, p]));
-    const data = Object.entries(d.models)
-      .filter(([, e]) => e.openai.enabled)
-      .map(([id, e]) => ({
-        id,
-        object: "model",
-        created: 0,
-        owned_by: byId.get(e.openai.providers[0]?.id ?? "")?.name || "MyAPIKey",
-      }));
-    return c.json({ object: "list", data });
-  });
+  // Anthropic surface: messages, plus its own (anthropic-slot) model list — so
+  // an Anthropic client can discover models enabled only on the anthropic slot,
+  // which the shared-/v1 design couldn't surface.
+  anthropic.post("/messages", (c) => dispatch(c, "anthropic"));
+  anthropic.get("/models", (c) => modelsList(c, store, "anthropic"));
 
-  return app;
+  return { openai, anthropic };
 }

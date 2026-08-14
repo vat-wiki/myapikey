@@ -109,19 +109,19 @@ describe("proxy", () => {
 
   describe("dispatch routing", () => {
     it("400 invalid_request_error when body has no model", async () => {
-      const res = await post("/v1/chat/completions", { messages: [] });
+      const res = await post("/openai/v1/chat/completions", { messages: [] });
       expect(res.status).toBe(400);
       expect((await json<{ error: { type: string } }>(res)).error.type).toBe("invalid_request_error");
     });
 
     it("400 on non-JSON body", async () => {
-      const res = await post("/v1/chat/completions", "not json{");
+      const res = await post("/openai/v1/chat/completions", "not json{");
       expect(res.status).toBe(400);
       expect((await json<{ error: { type: string } }>(res)).error.type).toBe("invalid_request_error");
     });
 
     it("404 model_not_found for an unknown model", async () => {
-      const res = await post("/v1/chat/completions", { model: "nope", messages: [] });
+      const res = await post("/openai/v1/chat/completions", { model: "nope", messages: [] });
       expect(res.status).toBe(404);
       expect((await json<{ error: { code: string } }>(res)).error.code).toBe("model_not_found");
     });
@@ -130,7 +130,7 @@ describe("proxy", () => {
       mock = mockFetch([
         { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "hi" } }] } } },
       ]);
-      const res = await post("/v1/chat/completions", { model: "m", messages: [{ role: "user", content: "hi" }] });
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [{ role: "user", content: "hi" }] });
       expect(res.status).toBe(200);
       expect((await json<ChatBody>(res)).choices[0].message.content).toBe("hi");
       // No provider leak to a normal client.
@@ -143,25 +143,25 @@ describe("proxy", () => {
 
     it("maps the openai chat URL onto the OpenAI base", async () => {
       mock = mockFetch([{ match: "/a/v1/chat/completions", response: { body: { ok: true } } }]);
-      await post("/v1/chat/completions", { model: "m", messages: [] });
+      await post("/openai/v1/chat/completions", { model: "m", messages: [] });
       expect(mock.calls[0].url).toBe("https://up.test/a/v1/chat/completions");
     });
 
     it("maps the responses URL onto the OpenAI base", async () => {
       mock = mockFetch([{ match: "/a/v1/responses", response: { body: { ok: true } } }]);
-      await post("/v1/responses", { model: "m", input: "x" });
+      await post("/openai/v1/responses", { model: "m", input: "x" });
       expect(mock.calls[0].url).toBe("https://up.test/a/v1/responses");
     });
 
     it("maps the anthropic messages URL with the /v1 segment appended", async () => {
       mock = mockFetch([{ match: "/a/v1/messages", response: { body: { content: [] } } }]);
-      await post("/v1/messages", { model: "m", messages: [] });
+      await post("/anthropic/v1/messages", { model: "m", messages: [] });
       expect(mock.calls[0].url).toBe("https://up.test/a/v1/messages");
     });
 
     it("sends x-api-key + Bearer + forwarded anthropic-version on /v1/messages", async () => {
       mock = mockFetch([{ match: "/a/v1/messages", response: { body: { content: [] } } }]);
-      await post("/v1/messages", { model: "m", messages: [] }, { "anthropic-version": "2023-08-01" });
+      await post("/anthropic/v1/messages", { model: "m", messages: [] }, { "anthropic-version": "2023-08-01" });
       const h = mock.calls[0].headers;
       expect(h["x-api-key"]).toBe(A.apiKey);
       expect(h["authorization"]).toBe("Bearer " + A.apiKey);
@@ -175,7 +175,7 @@ describe("proxy", () => {
         { match: "/a/v1/chat/completions", response: { status: 503, body: { error: { message: "down" } } } },
         { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "from-B" } }] } } },
       ]);
-      const res = await post("/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
       expect(res.status).toBe(200);
       expect((await json<ChatBody>(res)).choices[0].message.content).toBe("from-B");
       expect(mock.calls.filter((c) => c.url.includes("/a/")).length).toBe(1);
@@ -187,7 +187,7 @@ describe("proxy", () => {
         { match: "/a/v1/chat/completions", response: { status: 429, body: { error: { message: "slow down" } } } },
         { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "B" } }] } } },
       ]);
-      const res = await post("/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
       expect(res.status).toBe(200);
       expect(mock.calls.filter((c) => c.url.includes("/a/")).length).toBe(1);
       expect(mock.calls.filter((c) => c.url.includes("/b/")).length).toBe(1);
@@ -198,7 +198,7 @@ describe("proxy", () => {
         { match: "/a/v1/chat/completions", response: () => { throw new Error("net"); } },
         { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "B" } }] } } },
       ]);
-      const res = await post("/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
       expect(res.status).toBe(200);
       expect((await json<ChatBody>(res)).choices[0].message.content).toBe("B");
       expect(mock.calls.filter((c) => c.url.includes("/b/")).length).toBe(1);
@@ -210,7 +210,7 @@ describe("proxy", () => {
         { match: "/a/v1/chat/completions", response: { status: 400, body: { error: { message: "bad" } } } },
         { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "B" } }] } } },
       ]);
-      const res = await post("/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
       expect(res.status).toBe(400);
       expect((await json<{ error: { message: string } }>(res)).error.message).toBe("bad");
       expect(mock.calls.filter((c) => c.url.includes("/b/")).length).toBe(0);
@@ -221,7 +221,7 @@ describe("proxy", () => {
         { match: "/a/v1/chat/completions", response: { status: 500, body: { error: { message: "boom" } } } },
         { match: "/b/v1/chat/completions", response: { status: 500, body: { error: { message: "boom" } } } },
       ]);
-      const res = await post("/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
       expect(res.status).toBe(502);
       const msg = (await json<{ error: { message: string } }>(res)).error.message;
       expect(msg).toContain("all providers");
@@ -245,7 +245,7 @@ describe("proxy", () => {
       mock = mockFetch([
         { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "from-B" } }] } } },
       ]);
-      const res = await post("/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
       expect(res.status).toBe(200);
       expect((await json<ChatBody>(res)).choices[0].message.content).toBe("from-B");
       // A was skipped entirely — the upstream was never hit.
@@ -262,7 +262,7 @@ describe("proxy", () => {
       mock = mockFetch([
         { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "from-A" } }] } } },
       ]);
-      const res = await post("/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
       expect(res.status).toBe(200);
       expect(mock.calls.filter((c) => c.url.includes("/a/")).length).toBe(1);
     });
@@ -279,7 +279,7 @@ describe("proxy", () => {
       mock = mockFetch([
         { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "from-A" } }] } } },
       ]);
-      const res = await post("/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
       expect(res.status).toBe(200);
       expect(mock.calls.filter((c) => c.url.includes("/a/")).length).toBe(1);
     });
@@ -293,7 +293,7 @@ describe("proxy", () => {
       mock = mockFetch([
         { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "ok" } }] } } },
       ]);
-      const res = await post("/v1/chat/completions", { model: "m", messages: [] }, { "x-myapikey-probe-slot": "0" });
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] }, { "x-myapikey-probe-slot": "0" });
       expect(res.status).toBe(200);
       expect(mock.calls.filter((c) => c.url.includes("/a/")).length).toBe(1);
       // A pinned probe takes no pacing side-effects: the window is unchanged.
@@ -314,7 +314,7 @@ describe("proxy", () => {
         { match: "/a/v1/chat/completions", response: { status: 503, body: { error: { message: "down" } } } },
         { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "ok" } }] } } },
       ]);
-      const res = await post("/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
       expect(res.status).toBe(200);
       const aCall = mock.calls.find((c) => c.url.includes("/a/"));
       const bCall = mock.calls.find((c) => c.url.includes("/b/"));
@@ -354,7 +354,7 @@ describe("proxy", () => {
           ]),
         },
       ]);
-      const res = await post("/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
       // Drain the body: recordCircuitSuccess only fires from observedBody's
       // onSettle, which runs once the streamed response is fully consumed.
       await res.text();
@@ -380,7 +380,7 @@ describe("proxy", () => {
         { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "A" } }] } } },
         { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "B" } }] } } },
       ]);
-      const res = await post("/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
       expect(res.status).toBe(200);
       expect((await json<ChatBody>(res)).choices[0].message.content).toBe("B");
       // A was skipped entirely; B answered once.
@@ -393,7 +393,7 @@ describe("proxy", () => {
         { match: "/a/v1/chat/completions", response: { status: 429, body: { error: { message: "slow" } }, headers: { "retry-after": "5" } } },
         { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "B" } }] } } },
       ]);
-      const res = await post("/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
       expect(res.status).toBe(200); // failed over to B
       expect(store.isCooling("prv_A")).toBe(true);
       const cd = store.getLogs().find((e) => e.providerId === "prv_A" && e.kind === "cooldown");
@@ -406,7 +406,7 @@ describe("proxy", () => {
         { match: "/a/v1/chat/completions", response: { status: 429, body: { error: { message: "slow" } } } },
         { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "B" } }] } } },
       ]);
-      const res = await post("/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
       expect(res.status).toBe(200);
       expect(store.isCooling("prv_A")).toBe(true);
       const cd = store.getLogs().find((e) => e.providerId === "prv_A" && e.kind === "cooldown");
@@ -425,7 +425,7 @@ describe("proxy", () => {
         { match: "/a/v1/chat/completions", response: { status: 429, body: { error: { code: "1308", message: `[1308][已达到 5 小时的使用上限。您的限额将在 ${ts} 重置。][2026081118012623401256bc9b4019]` } } } },
         { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "B" } }] } } },
       ]);
-      const res = await post("/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
       expect(res.status).toBe(200); // failed over to B
       expect(store.isCooling("prv_A")).toBe(true);
       const cd = store.getLogs().find((e) => e.providerId === "prv_A" && e.kind === "cooldown");
@@ -445,7 +445,7 @@ describe("proxy", () => {
         { match: "/a/v1/chat/completions", response: { status: 429, body: { error: { message: `限额将在 ${ts} 重置` } } } },
         { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "B" } }] } } },
       ]);
-      const res = await post("/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
       expect(res.status).toBe(200);
       const cd = store.getLogs().find((e) => e.providerId === "prv_A" && e.kind === "cooldown");
       expect(cd?.cooldownMs).toBe(30_000); // escalating first rung, not a parsed hint
@@ -471,7 +471,7 @@ describe("proxy", () => {
 
     it("logs a healthy anthropic stream as 200 and forwards the body intact", async () => {
       mock = mockFetch([{ match: "/a/v1/messages", response: { status: 200, bodyStream: anthropicOk(), headers: sseHeaders } }]);
-      const res = await post("/v1/messages", { model: "m", messages: [], stream: true });
+      const res = await post("/anthropic/v1/messages", { model: "m", messages: [], stream: true });
       expect(res.status).toBe(200);
       const text = await res.text();
       expect(text).toContain("message_stop");
@@ -483,7 +483,7 @@ describe("proxy", () => {
 
     it("detects a truncated anthropic stream: logs 502, trips the circuit, injects an SSE error", async () => {
       mock = mockFetch([{ match: "/a/v1/messages", response: { status: 200, bodyStream: anthropicTrunc(), headers: sseHeaders } }]);
-      const res = await post("/v1/messages", { model: "m", messages: [], stream: true });
+      const res = await post("/anthropic/v1/messages", { model: "m", messages: [], stream: true });
       expect(res.status).toBe(200); // HTTP status was already committed at the headers
       const text = await res.text();
       expect(text).toContain("text_delta"); // partial bytes still forwarded verbatim
@@ -498,7 +498,7 @@ describe("proxy", () => {
     it("detects an upstream stream that errors mid-flight (reader rejects)", async () => {
       const sse = sseBody(["event: message_start", 'data: {"type":"message_start"}', ""], "error", new TypeError("terminated"));
       mock = mockFetch([{ match: "/a/v1/messages", response: { status: 200, bodyStream: sse, headers: sseHeaders } }]);
-      const res = await post("/v1/messages", { model: "m", messages: [], stream: true });
+      const res = await post("/anthropic/v1/messages", { model: "m", messages: [], stream: true });
       const text = await res.text();
       expect(text).toContain("event: error");
       const call = store.getLogs().find((e) => e.model === "m" && !e.kind);
@@ -510,7 +510,7 @@ describe("proxy", () => {
     it("logs a healthy openai stream ([DONE]) as 200", async () => {
       const sse = sseBody(['data: {"choices":[{"delta":{"content":"hi"}}]}', "", "data: [DONE]", ""]);
       mock = mockFetch([{ match: "/a/v1/chat/completions", response: { status: 200, bodyStream: sse, headers: sseHeaders } }]);
-      const res = await post("/v1/chat/completions", { model: "m", messages: [], stream: true });
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [], stream: true });
       await res.text();
       const call = store.getLogs().find((e) => e.model === "m" && !e.kind);
       expect(call?.status).toBe(200);
@@ -519,7 +519,7 @@ describe("proxy", () => {
     it("truncated openai /chat/completions stream: logs 502 + trips circuit, injects a data:{error} frame", async () => {
       const sse = sseBody(['data: {"choices":[{"delta":{"content":"hi"}}]}', ""]); // no [DONE]
       mock = mockFetch([{ match: "/a/v1/chat/completions", response: { status: 200, bodyStream: sse, headers: sseHeaders } }]);
-      const res = await post("/v1/chat/completions", { model: "m", messages: [], stream: true });
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [], stream: true });
       const text = await res.text();
       expect(text).toContain('"error"'); // de-facto data:{error} shape; no event: line on this wire
       expect(text).toContain("server_error");
@@ -536,7 +536,7 @@ describe("proxy", () => {
         // no response.completed — truncated
       ]);
       mock = mockFetch([{ match: "/a/v1/responses", response: { status: 200, bodyStream: sse, headers: sseHeaders } }]);
-      const res = await post("/v1/responses", { model: "m", input: "x", stream: true });
+      const res = await post("/openai/v1/responses", { model: "m", input: "x", stream: true });
       const text = await res.text();
       expect(text).toContain("event: error");
       expect(text).toContain('"type":"error"');
@@ -551,7 +551,7 @@ describe("proxy", () => {
         "event: response.completed", 'data: {"type":"response.completed"}', "",
       ]);
       mock = mockFetch([{ match: "/a/v1/responses", response: { status: 200, bodyStream: sse, headers: sseHeaders } }]);
-      await (await post("/v1/responses", { model: "m", input: "x", stream: true })).text();
+      await (await post("/openai/v1/responses", { model: "m", input: "x", stream: true })).text();
       const call = store.getLogs().find((e) => e.model === "m" && !e.kind);
       expect(call?.status).toBe(200);
     });
@@ -562,7 +562,7 @@ describe("proxy", () => {
         "event: response.failed", 'data: {"type":"response.failed","response":{"status":"failed","error":{"message":"boom"}}}', "",
       ]);
       mock = mockFetch([{ match: "/a/v1/responses", response: { status: 200, bodyStream: sse, headers: sseHeaders } }]);
-      const text = await (await post("/v1/responses", { model: "m", input: "x", stream: true })).text();
+      const text = await (await post("/openai/v1/responses", { model: "m", input: "x", stream: true })).text();
       expect(text).not.toContain("event: error"); // upstream's own failure event passed through; no synthetic inject
       const call = store.getLogs().find((e) => e.model === "m" && !e.kind);
       expect(call?.status).toBe(200); // clean terminal → not truncated → don't cool
@@ -571,7 +571,7 @@ describe("proxy", () => {
 
     it("a pinned per-source probe with a truncated stream logs 502 but does NOT trip the circuit", async () => {
       mock = mockFetch([{ match: "/a/v1/messages", response: { status: 200, bodyStream: anthropicTrunc(), headers: sseHeaders } }]);
-      const res = await post("/v1/messages", { model: "m", messages: [], stream: true }, { "x-myapikey-probe-slot": "0" });
+      const res = await post("/anthropic/v1/messages", { model: "m", messages: [], stream: true }, { "x-myapikey-probe-slot": "0" });
       await res.text();
       const call = store.getLogs().find((e) => e.model === "m" && !e.kind);
       expect(call?.status).toBe(502);
@@ -590,10 +590,10 @@ describe("proxy", () => {
         { match: "/b/v1/messages", response: { status: 200, bodyStream: anthropicOk(), headers: sseHeaders } },
       ]);
       // 1st call: A truncates → settles 502, A enters cooling.
-      await (await post("/v1/messages", { model: "m", messages: [], stream: true })).text();
+      await (await post("/anthropic/v1/messages", { model: "m", messages: [], stream: true })).text();
       expect(store.isCooling("prv_A")).toBe(true);
       // 2nd call: A is cooling → skipped, B streams cleanly to completion.
-      const r2 = await post("/v1/messages", { model: "m", messages: [], stream: true });
+      const r2 = await post("/anthropic/v1/messages", { model: "m", messages: [], stream: true });
       expect((await r2.text()).includes("message_stop")).toBe(true);
       expect(mock.calls.filter((c) => c.url.includes("/a/")).length).toBe(1);
       expect(mock.calls.filter((c) => c.url.includes("/b/")).length).toBe(1);
@@ -607,7 +607,7 @@ describe("proxy", () => {
         enc.encode('p\ndata: {"type":"message_stop"}\n\n'),
       ]);
       mock = mockFetch([{ match: "/a/v1/messages", response: { status: 200, bodyStream: split, headers: sseHeaders } }]);
-      await (await post("/v1/messages", { model: "m", messages: [], stream: true })).text();
+      await (await post("/anthropic/v1/messages", { model: "m", messages: [], stream: true })).text();
       const call = store.getLogs().find((e) => e.model === "m" && !e.kind);
       expect(call?.status).toBe(200); // marker seen despite the split → healthy
     });
@@ -633,7 +633,7 @@ describe("proxy", () => {
         "",
       ]);
       mock = mockFetch([{ match: "/a/v1/messages", response: { status: 200, bodyStream: sse, headers: sseH } }]);
-      await (await post("/v1/messages", { model: "m", messages: [], stream: true })).text();
+      await (await post("/anthropic/v1/messages", { model: "m", messages: [], stream: true })).text();
       expect(find()?.usage).toEqual({ input: 42, output: 7, cacheRead: 10, cacheCreation: 2 });
     });
 
@@ -646,7 +646,7 @@ describe("proxy", () => {
       ]);
       mock = mockFetch([{ match: "/a/v1/chat/completions", response: { status: 200, bodyStream: sse, headers: sseH } }]);
       await (
-        await post("/v1/chat/completions", { model: "m", messages: [{ role: "user", content: "hi there" }], stream: true })
+        await post("/openai/v1/chat/completions", { model: "m", messages: [{ role: "user", content: "hi there" }], stream: true })
       ).text();
       const u = find()?.usage;
       expect(u?.estimated).toBe(true);
@@ -664,7 +664,7 @@ describe("proxy", () => {
         "",
       ]);
       mock = mockFetch([{ match: "/a/v1/chat/completions", response: { status: 200, bodyStream: sse, headers: sseH } }]);
-      await (await post("/v1/chat/completions", { model: "m", messages: [], stream: true })).text();
+      await (await post("/openai/v1/chat/completions", { model: "m", messages: [], stream: true })).text();
       const u = find()?.usage;
       expect(u?.estimated).toBeUndefined();
       expect(u).toEqual({ input: 5, output: 3 });
@@ -677,7 +677,7 @@ describe("proxy", () => {
           response: { status: 200, body: { choices: [{ message: { content: "hi" } }], usage: { prompt_tokens: 11, completion_tokens: 9 } } },
         },
       ]);
-      await (await post("/v1/chat/completions", { model: "m", messages: [] })).text();
+      await (await post("/openai/v1/chat/completions", { model: "m", messages: [] })).text();
       expect(find()?.usage).toEqual({ input: 11, output: 9 });
     });
 
@@ -691,7 +691,7 @@ describe("proxy", () => {
           },
         },
       ]);
-      await (await post("/v1/messages", { model: "m", messages: [] })).text();
+      await (await post("/anthropic/v1/messages", { model: "m", messages: [] })).text();
       expect(find()?.usage).toEqual({ input: 6, output: 2, cacheRead: 1 });
     });
 
@@ -705,7 +705,7 @@ describe("proxy", () => {
         "",
       ]);
       mock = mockFetch([{ match: "/a/v1/responses", response: { status: 200, bodyStream: sse, headers: sseH } }]);
-      await (await post("/v1/responses", { model: "m", input: "x", stream: true })).text();
+      await (await post("/openai/v1/responses", { model: "m", input: "x", stream: true })).text();
       expect(find()?.usage).toEqual({ input: 8, output: 4 });
     });
 
@@ -719,14 +719,14 @@ describe("proxy", () => {
         "",
       ]);
       mock = mockFetch([{ match: "/a/v1/messages", response: { status: 200, bodyStream: sse, headers: sseH } }]);
-      await (await post("/v1/messages", { model: "m", messages: [], stream: true })).text();
+      await (await post("/anthropic/v1/messages", { model: "m", messages: [], stream: true })).text();
       expect(find()?.usage).toBeUndefined();
     });
   });
 
-  describe("GET /v1/models", () => {
+  describe("GET /openai/v1/models", () => {
     it("lists only openai-enabled models, owned by each model's first provider", async () => {
-      const res = await createApp(store).request("/v1/models", {
+      const res = await createApp(store).request("/openai/v1/models", {
         headers: { authorization: "Bearer " + store.get().apiKey },
       });
       expect(res.status).toBe(200);
@@ -738,12 +738,29 @@ describe("proxy", () => {
     });
   });
 
+  describe("GET /anthropic/v1/models", () => {
+    // The whole point of the dual surface: an Anthropic client discovers its
+    // own models, which the old shared /v1/models couldn't list. onlyA has no
+    // anthropic slot, so it's absent here.
+    it("lists only anthropic-enabled models", async () => {
+      const res = await createApp(store).request("/anthropic/v1/models", {
+        headers: { authorization: "Bearer " + store.get().apiKey },
+      });
+      expect(res.status).toBe(200);
+      const j = await json<{ object: string; data: { id: string; owned_by: string }[] }>(res);
+      expect(j.object).toBe("list");
+      const ids = j.data.map((d: { id: string }) => d.id).sort();
+      expect(ids).toEqual(["m"]);
+      for (const d of j.data) expect(d.owned_by).toBe("A");
+    });
+  });
+
   describe("probe header", () => {
     it("tags the response with x-myapikey-provider when probe=1", async () => {
       mock = mockFetch([
         { match: "/a/v1/chat/completions", response: { body: { choices: [{ message: { content: "hi" } }] } } },
       ]);
-      const res = await post("/v1/chat/completions", { model: "m", messages: [] }, { "x-myapikey-probe": "1" });
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] }, { "x-myapikey-probe": "1" });
       expect(res.headers.get("x-myapikey-provider")).toBe("A");
     });
 
@@ -751,7 +768,7 @@ describe("proxy", () => {
       mock = mockFetch([
         { match: "/a/v1/chat/completions", response: { body: { choices: [{ message: { content: "hi" } }] } } },
       ]);
-      const res = await post("/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
       expect(res.headers.get("x-myapikey-provider")).toBeNull();
     });
   });
@@ -763,7 +780,7 @@ describe("proxy", () => {
         { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "A" } }] } } },
         { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "B" } }] } } },
       ]);
-      const res = await post("/v1/chat/completions", { model: "m", messages: [] }, {
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] }, {
         "x-myapikey-probe": "1",
         "x-myapikey-probe-slot": "1",
       });
@@ -778,7 +795,7 @@ describe("proxy", () => {
         { match: "/a/v1/chat/completions", response: { status: 200, body: {} } },
         { match: "/b/v1/chat/completions", response: { status: 429, body: { error: { message: "slow" } } } },
       ]);
-      const res = await post("/v1/chat/completions", { model: "m", messages: [] }, {
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] }, {
         "x-myapikey-probe": "1",
         "x-myapikey-probe-slot": "1",
       });
@@ -797,7 +814,7 @@ describe("proxy", () => {
       ]);
       // onlyA routes solely to A (one slot, index 0); pinning index 1 is out of
       // range → empty list → 404 model_not_found with no fetch.
-      const res = await post("/v1/chat/completions", { model: "onlyA", messages: [] }, {
+      const res = await post("/openai/v1/chat/completions", { model: "onlyA", messages: [] }, {
         "x-myapikey-probe": "1",
         "x-myapikey-probe-slot": "1",
       });

@@ -39,7 +39,11 @@ const baseUrl = computed(() => {
   }
   return window.location.origin;
 });
-const baseUrlV1 = computed(() => `${baseUrl.value}/v1`);
+// Each tool family points at its own surface: OpenAI tools at /openai/v1
+// (their SDK appends /chat/completions, /responses, /models); Anthropic tools
+// at /anthropic (their SDK appends /v1/messages, /v1/models).
+const baseUrlOpenai = computed(() => `${baseUrl.value}/openai/v1`);
+const baseUrlAnthropic = computed(() => `${baseUrl.value}/anthropic`);
 
 async function load() {
   apiKey.value = (await req<{ apiKey: string }>("GET", "/admin/api-key")).apiKey;
@@ -62,22 +66,22 @@ const snippets = computed(() => [
   {
     key: "openai",
     title: t("connect.openaiTitle"),
-    text: `export OPENAI_BASE_URL=${baseUrlV1.value}\nexport OPENAI_API_KEY=${apiKey.value ?? ""}`,
+    text: `export OPENAI_BASE_URL=${baseUrlOpenai.value}\nexport OPENAI_API_KEY=${apiKey.value ?? ""}`,
   },
   {
     key: "anthropic",
     title: t("connect.anthropicTitle"),
-    text: `export ANTHROPIC_BASE_URL=${baseUrl.value}\nexport ANTHROPIC_API_KEY=${apiKey.value ?? ""}`,
+    text: `export ANTHROPIC_BASE_URL=${baseUrlAnthropic.value}\nexport ANTHROPIC_API_KEY=${apiKey.value ?? ""}`,
   },
   {
     key: "curl",
     title: t("connect.curlTitle"),
-    text: `curl ${baseUrlV1.value}/chat/completions \\\n  -H "Authorization: Bearer ${apiKey.value ?? ""}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"<model>","messages":[{"role":"user","content":"hi"}]}'`,
+    text: `curl ${baseUrlOpenai.value}/chat/completions \\\n  -H "Authorization: Bearer ${apiKey.value ?? ""}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"<model>","messages":[{"role":"user","content":"hi"}]}'`,
   },
   {
     key: "responses",
     title: t("connect.responsesTitle"),
-    text: `curl ${baseUrlV1.value}/responses \\\n  -H "Authorization: Bearer ${apiKey.value ?? ""}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"<model>","input":"hi"}'`,
+    text: `curl ${baseUrlOpenai.value}/responses \\\n  -H "Authorization: Bearer ${apiKey.value ?? ""}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"<model>","input":"hi"}'`,
   },
 ]);
 
@@ -95,7 +99,7 @@ onMounted(load);
         <CardDescription>{{ t("connect.desc") }}</CardDescription>
       </CardHeader>
       <CardContent class="space-y-3">
-        <!-- Base URL: one address per tool family (OpenAI tools need /v1; Claude/Anthropic don't) -->
+        <!-- Base URL: one address per tool family (OpenAI tools at /openai/v1; Claude/Anthropic at /anthropic) -->
         <div class="space-y-2">
           <div class="flex items-center justify-between gap-3 rounded-lg border p-3" :class="[FMT_ACCENT.openai.border, FMT_ACCENT.openai.soft]">
             <div class="min-w-0">
@@ -103,9 +107,9 @@ onMounted(load);
                 <span class="h-1.5 w-1.5 rounded-full" :class="FMT_ACCENT.openai.solid" />
                 {{ t("connect.baseUrlOpenai") }}
               </div>
-              <div class="mt-0.5 truncate font-mono text-sm">{{ baseUrlV1 }}</div>
+              <div class="mt-0.5 truncate font-mono text-sm">{{ baseUrlOpenai }}</div>
             </div>
-            <Button variant="outline" size="sm" @click="copy('url-openai', baseUrlV1)">
+            <Button variant="outline" size="sm" @click="copy('url-openai', baseUrlOpenai)">
               <Check v-if="copied === 'url-openai'" class="h-4 w-4" />
               <Copy v-else class="h-4 w-4" />
               {{ copied === "url-openai" ? t("connect.copied") : t("connect.copy") }}
@@ -117,9 +121,9 @@ onMounted(load);
                 <span class="h-1.5 w-1.5 rounded-full" :class="FMT_ACCENT.anthropic.solid" />
                 {{ t("connect.baseUrlAnthropic") }}
               </div>
-              <div class="mt-0.5 truncate font-mono text-sm">{{ baseUrl }}</div>
+              <div class="mt-0.5 truncate font-mono text-sm">{{ baseUrlAnthropic }}</div>
             </div>
-            <Button variant="outline" size="sm" @click="copy('url-anthropic', baseUrl)">
+            <Button variant="outline" size="sm" @click="copy('url-anthropic', baseUrlAnthropic)">
               <Check v-if="copied === 'url-anthropic'" class="h-4 w-4" />
               <Copy v-else class="h-4 w-4" />
               {{ copied === "url-anthropic" ? t("connect.copied") : t("connect.copy") }}

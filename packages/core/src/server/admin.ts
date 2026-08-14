@@ -141,7 +141,7 @@ async function refreshDiscovery(store: Store, id: string): Promise<string[]> {
   return failed ? (store.get().providers.find((x) => x.id === id)?.discoveredModels ?? []) : models;
 }
 
-export function adminApi(store: Store, auth: MiddlewareHandler, v1: Hono): Hono {
+export function adminApi(store: Store, auth: MiddlewareHandler, openai: Hono, anthropic: Hono): Hono {
   const app = new Hono();
   app.use("*", auth);
 
@@ -526,6 +526,10 @@ export function adminApi(store: Store, auth: MiddlewareHandler, v1: Hono): Hono 
     if (!format) {
       return c.json({ result: { ok: false, status: 0, format: "openai", error: "model not enabled on any routing slot" } });
     }
+    // Route the loopback to the matching surface: anthropic → the anthropic
+    // sub-app (/messages); openai/responses → the openai sub-app (the openai
+    // family lives there, including /responses).
+    const sub = format === "anthropic" ? anthropic : openai;
     const path = format === "anthropic" ? "/messages" : format === "responses" ? "/responses" : "/chat/completions";
     // /responses is the OpenAI Responses API — it takes `input`, not `messages`.
     const body =
@@ -534,7 +538,7 @@ export function adminApi(store: Store, auth: MiddlewareHandler, v1: Hono): Hono 
         : { model: name, messages: [{ role: "user", content: "ping" }], max_tokens: 1, stream: false };
     let res: Response;
     try {
-      res = await v1.request(path, {
+      res = await sub.request(path, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${cfg.apiKey}`, "x-myapikey-probe": "1" },
         body: JSON.stringify(body),
@@ -584,6 +588,7 @@ export function adminApi(store: Store, auth: MiddlewareHandler, v1: Hono): Hono 
     if (!provider || !providerSpeaks(provider, format)) {
       return c.json({ result: { ok: false, status: 0, format, error: "source does not speak this format" } });
     }
+    const sub = format === "anthropic" ? anthropic : openai;
     const path = format === "anthropic" ? "/messages" : format === "responses" ? "/responses" : "/chat/completions";
     // /responses is the OpenAI Responses API — it takes `input`, not `messages`.
     const body =
@@ -592,7 +597,7 @@ export function adminApi(store: Store, auth: MiddlewareHandler, v1: Hono): Hono 
         : { model: name, messages: [{ role: "user", content: "ping" }], max_tokens: 1, stream: false };
     let res: Response;
     try {
-      res = await v1.request(path, {
+      res = await sub.request(path, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${cfg.apiKey}`, "x-myapikey-probe": "1", "x-myapikey-probe-slot": String(index) },
         body: JSON.stringify(body),

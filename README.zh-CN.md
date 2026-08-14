@@ -124,7 +124,7 @@ myapikey model prioritize gpt-4o-mini openai-direct backup --format openai   # �
 myapikey model list        # 查看路由表
 ```
 
-> `--format` 选择路由**槽位**:`openai`(对应 `/v1/chat/completions`)、`anthropic`(对应 `/v1/messages`)、或 `responses`(对应 `/v1/responses`)。`responses` 槽位只接受你标记了 **supportsResponses** 的后端——在网页界面里勾选那个开关(CLI 暂未暴露它)。
+> `--format` 选择路由**槽位**:`openai`(对应 `/openai/v1/chat/completions`)、`anthropic`(对应 `/anthropic/v1/messages`)、或 `responses`(对应 `/openai/v1/responses`)。`responses` 槽位只接受你标记了 **supportsResponses** 的后端——在网页界面里勾选那个开关(CLI 暂未暴露它)。
 
 ---
 
@@ -139,14 +139,14 @@ myapikey whoami      # 打印 base url + api key + 可直接粘贴的环境变�
 **兼容 OpenAI** 的工具(覆盖 `/chat/completions` *和* `/responses`):
 
 ```bash
-export OPENAI_BASE_URL=http://localhost:7800/v1
+export OPENAI_BASE_URL=http://localhost:7800/openai/v1
 export OPENAI_API_KEY=<网关 API Key>
 ```
 
 **Anthropic / Claude Code**:
 
 ```bash
-export ANTHROPIC_BASE_URL=http://localhost:7800
+export ANTHROPIC_BASE_URL=http://localhost:7800/anthropic
 export ANTHROPIC_API_KEY=<网关 API Key>
 ```
 
@@ -166,7 +166,7 @@ myapikey call gpt-4o-mini "用一句话打个招呼。"
 
 网关是一个**定向转发器,而非翻译器**。四条规则解释一切:
 
-1. **端点决定槽位。** `/v1/chat/completions` → **openai** 槽位;`/v1/responses` → **responses** 槽位;`/v1/messages` → **anthropic** 槽位。每种都是独立的线材格式,请求体原样转发,不做任何转换。
+1. **端点决定槽位。** `/openai/v1/chat/completions` → **openai** 槽位;`/openai/v1/responses` → **responses** 槽位;`/anthropic/v1/messages` → **anthropic** 槽位。每种都是独立的线材格式,请求体原样转发,不做任何转换。
 
 2. **每个模型有三个互相独立的槽位。** 对同一个模型,你可以分别启用 `openai`、`responses`、`anthropic`,每个槽位都有自己的、按优先级排序的来源链。只在它的后端真正支持的槽位上启用即可。
 
@@ -235,12 +235,13 @@ myapikey call gpt-4o-mini "用一句话打个招呼。"
 
 ## 接口一览
 
-**面向 agent(`/v1`,API Key —— `Authorization: Bearer` 或 `x-api-key`):**
+**面向 agent(两个面,共用一把 API Key —— `Authorization: Bearer` 或 `x-api-key`):**
 
-- `POST /v1/chat/completions` — OpenAI 格式代理
-- `POST /v1/responses` — OpenAI Responses API(仅限标记了 `supportsResponses` 的来源)
-- `POST /v1/messages` — Anthropic 格式代理
-- `GET /v1/models` — 启用在 **openai** 槽位的模型,OpenAI 列表格式(纯 Anthropic 模型不会出现在这里——请通过 `/v1/messages` 调用)
+- `POST /openai/v1/chat/completions` — OpenAI 格式代理
+- `POST /openai/v1/responses` — OpenAI Responses API(仅限标记了 `supportsResponses` 的来源)
+- `GET /openai/v1/models` — 启用在 **openai** 槽位的模型,OpenAI 列表格式
+- `POST /anthropic/v1/messages` — Anthropic 格式代理
+- `GET /anthropic/v1/models` — 启用在 **anthropic** 槽位的模型,OpenAI 列表格式
 - `GET /health` — 公开存活检查
 
 **管理(`/admin`,账号密码 —— HTTP Basic):**
@@ -279,7 +280,7 @@ npm install
 npm run build:web      # 把 Vue 界面构建到 packages/web/dist(首次,以及每次改完界面后)
 npm start              # tsx ... serve(网关在 :7800)
 npm run dev            # 网关,带 watch 热重载
-npm run dev:web        # vite 开发服务器(把 /v1 和 /admin 代理到 :7800)
+npm run dev:web        # vite 开发服务器(把 /openai、/anthropic、/admin 代理到 :7800)
 npm run typecheck      # tsc(core)+ vue-tsc(web)
 ```
 

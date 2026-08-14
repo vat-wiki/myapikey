@@ -35,16 +35,16 @@ describe("server/app", () => {
     });
   });
 
-  describe("/v1 isolation (api-key only)", () => {
+  describe("proxy surface isolation (api-key only)", () => {
     it("rejects the account Basic creds", async () => {
-      const res = await createApp(store).request("/v1/models", {
+      const res = await createApp(store).request("/openai/v1/models", {
         headers: { authorization: basic },
       });
       expect(res.status).toBe(401);
     });
 
     it("accepts the api key as Bearer", async () => {
-      const res = await createApp(store).request("/v1/models", {
+      const res = await createApp(store).request("/openai/v1/models", {
         headers: { authorization: bearer },
       });
       expect(res.status).toBe(200);

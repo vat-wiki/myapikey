@@ -26,10 +26,13 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono {
   const apiKeyAuth = apiKeyMiddleware(() => store.get().apiKey);
 
   // Both sub-apps require auth, applied inside each sub-app (before routes).
-  const v1 = proxyApi(store, apiKeyAuth);
-  const admin = adminApi(store, accountAuth, v1);
+  // Two agent surfaces, each with its own /models: /openai/v1 (openai family)
+  // and /anthropic/v1 (anthropic family). Both gate on the same API key.
+  const { openai, anthropic } = proxyApi(store, apiKeyAuth);
+  const admin = adminApi(store, accountAuth, openai, anthropic);
 
-  app.route("/v1", v1);
+  app.route("/openai/v1", openai);
+  app.route("/anthropic/v1", anthropic);
   app.route("/admin", admin);
 
   // Web UI: serve built SPA when available.
@@ -45,7 +48,7 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono {
   } else {
     app.get("*", (c) =>
       c.text(
-        "MyAPIKey is running. Web UI not built — run `npm run build:web`. API at /v1 (proxy) and /admin (config).",
+        "MyAPIKey is running. Web UI not built — run `npm run build:web`. API at /openai/v1 + /anthropic/v1 (proxy) and /admin (config).",
         404,
       ),
     );

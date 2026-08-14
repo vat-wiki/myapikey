@@ -11,7 +11,8 @@ export default defineConfig({
   server: {
     // Dev: vite serves the SPA, proxies API to the gateway running on :7800.
     proxy: {
-      "/v1": "http://localhost:7800",
+      "/openai": "http://localhost:7800",
+      "/anthropic": "http://localhost:7800",
       "/admin": "http://localhost:7800",
     },
   },

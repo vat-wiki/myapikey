@@ -124,7 +124,7 @@ myapikey model prioritize gpt-4o-mini openai-direct backup --format openai   # l
 myapikey model list        # see the routing table
 ```
 
-> `--format` selects the routing **slot**: `openai` (for `/v1/chat/completions`), `anthropic` (for `/v1/messages`), or `responses` (for `/v1/responses`). The `responses` slot only accepts backends you've marked **supportsResponses** — set that toggle in the web UI (the CLI doesn't expose it yet).
+> `--format` selects the routing **slot**: `openai` (for `/openai/v1/chat/completions`), `anthropic` (for `/anthropic/v1/messages`), or `responses` (for `/openai/v1/responses`). The `responses` slot only accepts backends you've marked **supportsResponses** — set that toggle in the web UI (the CLI doesn't expose it yet).
 
 ---
 
@@ -139,14 +139,14 @@ myapikey whoami      # prints base url + api key + ready-to-paste env lines
 For an **OpenAI-compatible** tool (covers `/chat/completions` *and* `/responses`):
 
 ```bash
-export OPENAI_BASE_URL=http://localhost:7800/v1
+export OPENAI_BASE_URL=http://localhost:7800/openai/v1
 export OPENAI_API_KEY=<gateway api key>
 ```
 
 For **Anthropic / Claude Code**:
 
 ```bash
-export ANTHROPIC_BASE_URL=http://localhost:7800
+export ANTHROPIC_BASE_URL=http://localhost:7800/anthropic
 export ANTHROPIC_API_KEY=<gateway api key>
 ```
 
@@ -166,7 +166,7 @@ Whichever endpoint you point a tool at, the gateway forwards in that format and 
 
 The gateway is a **directional forwarder, not a translator**. Four rules explain everything:
 
-1. **The endpoint picks the slot.** `/v1/chat/completions` → the **openai** slot. `/v1/responses` → the **responses** slot. `/v1/messages` → the **anthropic** slot. Each is a distinct wire format, and the body is forwarded verbatim — nothing is converted.
+1. **The endpoint picks the slot.** `/openai/v1/chat/completions` → the **openai** slot. `/openai/v1/responses` → the **responses** slot. `/anthropic/v1/messages` → the **anthropic** slot. Each is a distinct wire format, and the body is forwarded verbatim — nothing is converted.
 
 2. **Each model has three independent slots.** For one model you can enable `openai`, `responses`, and `anthropic` separately, and each has its own ordered source chain. Enable a model only on the slots its backends actually speak.
 
@@ -235,12 +235,13 @@ It's the same admin API the CLI uses — configure either way.
 
 ## API surface
 
-**Agent-facing (`/v1`, API key — `Authorization: Bearer` or `x-api-key`):**
+**Agent-facing (two surfaces, one API key — `Authorization: Bearer` or `x-api-key`):**
 
-- `POST /v1/chat/completions` — OpenAI-format proxy
-- `POST /v1/responses` — OpenAI Responses API (only sources marked `supportsResponses`)
-- `POST /v1/messages` — Anthropic-format proxy
-- `GET /v1/models` — models enabled on the **openai** slot, OpenAI list shape (Anthropic-only models aren't listed here — call them via `/v1/messages`)
+- `POST /openai/v1/chat/completions` — OpenAI-format proxy
+- `POST /openai/v1/responses` — OpenAI Responses API (only sources marked `supportsResponses`)
+- `GET /openai/v1/models` — models enabled on the **openai** slot, OpenAI list shape
+- `POST /anthropic/v1/messages` — Anthropic-format proxy
+- `GET /anthropic/v1/models` — models enabled on the **anthropic** slot, OpenAI list shape
 - `GET /health` — public liveness check
 
 **Admin (`/admin`, account password — HTTP Basic):**
@@ -279,7 +280,7 @@ npm install
 npm run build:web      # build the Vue UI into packages/web/dist (one time, and after UI changes)
 npm start              # tsx ... serve  (gateway on :7800)
 npm run dev            # gateway, with watch reload
-npm run dev:web        # vite dev server (proxies /v1 and /admin to :7800)
+npm run dev:web        # vite dev server (proxies /openai, /anthropic, and /admin to :7800)
 npm run typecheck      # tsc (core) + vue-tsc (web)
 ```
 

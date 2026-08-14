@@ -28,26 +28,26 @@ test.describe("gateway end-to-end", () => {
     expect((await json(r)).username).toBe("admin");
   });
 
-  test("the /v1 api key is REJECTED on /admin (cross-secret isolation)", async ({ request }) => {
+  test("the agent api key is REJECTED on /admin (cross-secret isolation)", async ({ request }) => {
     const r = await request.get(`${world.gatewayUrl}/admin/account`, { headers: { authorization: bearer(world) } });
     expect(r.status()).toBe(401);
   });
 
-  test("account Basic is REJECTED on /v1 (Basic carries account creds, not the api key)", async ({ request }) => {
-    const r = await request.post(`${world.gatewayUrl}/v1/chat/completions`, {
+  test("account Basic is REJECTED on /openai/v1 (Basic carries account creds, not the api key)", async ({ request }) => {
+    const r = await request.post(`${world.gatewayUrl}/openai/v1/chat/completions`, {
       headers: { authorization: basic(world) },
       data: { model: "ping", messages: [] },
     });
     expect(r.status()).toBe(401);
   });
 
-  test("/v1/chat/completions forwards to the upstream and returns its body", async ({ request }) => {
+  test("/openai/v1/chat/completions forwards to the upstream and returns its body", async ({ request }) => {
     world.mock.reset();
     world.mock.set("/primary/v1/chat/completions", {
       status: 200,
       body: { id: "chatcmpl-1", object: "chat.completion", choices: [{ message: { role: "assistant", content: "pong" } }] },
     });
-    const r = await request.post(`${world.gatewayUrl}/v1/chat/completions`, {
+    const r = await request.post(`${world.gatewayUrl}/openai/v1/chat/completions`, {
       headers: { authorization: bearer(world) },
       data: { model: "ping", messages: [{ role: "user", content: "hi" }] },
     });
@@ -64,7 +64,7 @@ test.describe("gateway end-to-end", () => {
       status: 200,
       body: { choices: [{ message: { role: "assistant", content: "from-fallback" } }] },
     });
-    const r = await request.post(`${world.gatewayUrl}/v1/chat/completions`, {
+    const r = await request.post(`${world.gatewayUrl}/openai/v1/chat/completions`, {
       headers: { authorization: bearer(world) },
       data: { model: "ha", messages: [{ role: "user", content: "hi" }] },
     });
@@ -76,9 +76,9 @@ test.describe("gateway end-to-end", () => {
     expect(world.mock.requests.filter((m) => m.url.includes("/fallback/"))).toHaveLength(1);
   });
 
-  test("/v1/models advertises only openai-enabled models", async ({ request }) => {
+  test("/openai/v1/models advertises only openai-enabled models", async ({ request }) => {
     world.mock.reset();
-    const r = await request.get(`${world.gatewayUrl}/v1/models`, { headers: { authorization: bearer(world) } });
+    const r = await request.get(`${world.gatewayUrl}/openai/v1/models`, { headers: { authorization: bearer(world) } });
     expect(r.status()).toBe(200);
     const ids = ((await json(r)).data as Array<{ id: string }>).map((m) => m.id).sort();
     // ping + ha are openai-enabled; both upstream hits are mocked-no-op for GET.

@@ -219,7 +219,7 @@ export class Store {
       `  username: ${account.username}`,
       `  password: ${account.password}`,
       "",
-      "API key (for agents calling /v1):",
+      "API key (for agents calling /openai/v1 + /anthropic/v1):",
       `  ${apiKey}`,
       "",
       "Regenerated on each startup. If you change the password in Settings, this",

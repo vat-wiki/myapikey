@@ -564,7 +564,7 @@ describe("server/admin", () => {
       expect(m.openai.enabled).toBe(false);
     });
 
-    it("POST /admin/models/:name/test loops through /v1 and reports the answering provider", async () => {
+    it("POST /admin/models/:name/test loops through the proxy surface and reports the answering provider", async () => {
       const a = makeProvider({ name: "alpha", formats: ["openai"], baseUrlOpenai: "https://up.test/v1", apiKey: "sk-up" });
       await seedStore(store, { providers: [a], apiKey: "sk-test", models: { "gpt-4o": makeModel({ openai: fe([a.id]) }) } });
       // Add a route for the upstream chat path (the default mock only covers /models).

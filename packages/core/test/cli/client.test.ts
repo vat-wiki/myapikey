@@ -130,19 +130,19 @@ describe("cli/client", () => {
     });
   });
 
-  describe("api — /v1 (Bearer api key)", () => {
+  describe("api — proxy surface (Bearer api key)", () => {
     it("sends Bearer <apiKey> and serializes the JSON body", async () => {
       const ctx = client.makeCtx({ url: "http://g:7800", apiKey: "sk-v1" });
       fetchMock = mockFetch([
-        { match: "/v1/chat/completions", response: { status: 200, body: { id: "chatcmpl-1" } } },
+        { match: "/openai/v1/chat/completions", response: { status: 200, body: { id: "chatcmpl-1" } } },
       ]);
       const body = { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] };
-      const out = await client.api(ctx, "POST", "/v1/chat/completions", body);
+      const out = await client.api(ctx, "POST", "/openai/v1/chat/completions", body);
       expect(out).toEqual({ id: "chatcmpl-1" });
 
       expect(fetchMock.calls).toHaveLength(1);
       const c = fetchMock.calls[0];
-      expect(c.url).toBe("http://g:7800/v1/chat/completions");
+      expect(c.url).toBe("http://g:7800/openai/v1/chat/completions");
       expect(c.method).toBe("POST");
       expect(c.headers.authorization).toBe("Bearer sk-v1");
       expect(c.headers["content-type"]).toBe("application/json");
@@ -152,8 +152,8 @@ describe("cli/client", () => {
     it("throws synchronously (before fetch) when ctx.apiKey is missing", async () => {
       const ctx = client.makeCtx({ url: "http://g:7800", user: "u", pass: "p" }); // no apiKey
       expect(ctx.apiKey).toBeUndefined();
-      await expect(client.api(ctx, "POST", "/v1/chat/completions", { x: 1 })).rejects.toThrow(
-        "No API key for /v1",
+      await expect(client.api(ctx, "POST", "/openai/v1/chat/completions", { x: 1 })).rejects.toThrow(
+        "No API key for /openai/v1 or /anthropic/v1",
       );
     });
   });
