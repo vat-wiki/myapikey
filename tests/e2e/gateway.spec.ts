@@ -84,4 +84,21 @@ test.describe("gateway end-to-end", () => {
     // ping + ha are openai-enabled; both upstream hits are mocked-no-op for GET.
     expect(ids).toEqual(["ha", "ping"]);
   });
+
+  test("/openai/v1/models is public (no auth header needed)", async ({ request }) => {
+    const r = await request.get(`${world.gatewayUrl}/openai/v1/models`);
+    expect(r.status()).toBe(200);
+  });
+
+  test("/anthropic/v1/models is public too", async ({ request }) => {
+    const r = await request.get(`${world.gatewayUrl}/anthropic/v1/models`);
+    expect(r.status()).toBe(200);
+  });
+
+  test("but the call endpoints still require the api key", async ({ request }) => {
+    const r = await request.post(`${world.gatewayUrl}/openai/v1/chat/completions`, {
+      data: { model: "ping", messages: [] },
+    });
+    expect(r.status()).toBe(401);
+  });
 });

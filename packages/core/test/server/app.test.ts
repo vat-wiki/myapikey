@@ -36,18 +36,30 @@ describe("server/app", () => {
   });
 
   describe("proxy surface isolation (api-key only)", () => {
-    it("rejects the account Basic creds", async () => {
-      const res = await createApp(store).request("/openai/v1/models", {
+    // GET /models is a public discovery read (see below) — the isolation
+    // contract lives on the CALL endpoints.
+    it("rejects the account Basic creds on a call endpoint", async () => {
+      const res = await createApp(store).request("/openai/v1/chat/completions", {
+        method: "POST",
         headers: { authorization: basic },
+        body: JSON.stringify({ model: "m", messages: [] }),
       });
       expect(res.status).toBe(401);
     });
 
-    it("accepts the api key as Bearer", async () => {
-      const res = await createApp(store).request("/openai/v1/models", {
+    it("passes the api-key gate with Bearer (reaches routing: 404 model, not 401)", async () => {
+      const res = await createApp(store).request("/openai/v1/chat/completions", {
+        method: "POST",
         headers: { authorization: bearer },
+        body: JSON.stringify({ model: "no-such-model", messages: [] }),
       });
+      expect(res.status).toBe(404);
+    });
+
+    it("GET /openai/v1/models is public (no auth header)", async () => {
+      const res = await createApp(store).request("/openai/v1/models");
       expect(res.status).toBe(200);
+      expect((await json<{ object: string }>(res)).object).toBe("list");
     });
   });
 

@@ -320,6 +320,13 @@ export function proxyApi(
 ): { openai: Hono; anthropic: Hono } {
   const openai = new Hono();
   const anthropic = new Hono();
+  // GET /models is a PUBLIC discovery read — no api key required. It returns only
+  // the enabled model names (like /health), so an agent or a quick curl can see
+  // what each surface offers before wiring up auth. Registered BEFORE the auth
+  // middleware so it isn't gated: Hono only runs middleware on routes registered
+  // after it.
+  openai.get("/models", (c) => modelsList(c, store, "openai"));
+  anthropic.get("/models", (c) => modelsList(c, store, "anthropic"));
   openai.use("*", auth);
   anthropic.use("*", auth);
 
@@ -373,6 +380,16 @@ export function proxyApi(
     const start = Date.now();
     let lastStatus = 502;
     let lastErr = "";
+    // Runtime log (console + server.log). Errors and notable events only — the
+    // per-call history these lines summarize goes to pushLog/logs.jsonl anyway.
+    // UI-triggered probes are excluded: their outcome is shown inline already.
+    const rt = store.getLogger();
+    const sayFailover = (p: Provider, why: string) => {
+      if (!isProbe) rt.warn(`proxy model=${model}: provider '${p.name}' ${why} → trying next`);
+    };
+    const sayCooldown = (p: Provider, r: { entered: boolean; fails: number; cooldownMs: number }) => {
+      if (r.entered && !isProbe) rt.warn(`proxy circuit open: provider '${p.name}' cooldown=${r.cooldownMs}ms fails=${r.fails}`);
+    };
 
     // Skip providers that are either in circuit-breaker cooldown OR over their
     // RPM pacing cap. Both are heuristics: if every candidate is skipped, fall
@@ -414,9 +431,11 @@ export function proxyApi(
         lastStatus = 502;
         lastErr = "network error";
         if (pinIndex != null) break; // per-source probe: fail fast, no circuit impact.
+        sayFailover(provider, "network error");
         const r = store.recordCircuitFailure(provider.id, lastStatus, lastErr);
         if (r.entered) {
           store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: lastErr });
+          sayCooldown(provider, r);
         }
         continue;
       }
@@ -446,6 +465,7 @@ export function proxyApi(
               // A pinned per-source probe takes no circuit side-effects (a manual
               // test must not trip the breaker) — mirrors the retryable branch.
               if (pinIndex == null) store.recordCircuitFailure(provider.id, info.status, info.error || "stream failed");
+              if (!isProbe) rt.warn(`proxy stream failed: provider '${provider.name}' status=${info.status} (${info.error || "stream failed"})`);
               store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: info.status, ms: ttfb, stream, error: info.error });
             }
           },
@@ -459,6 +479,7 @@ export function proxyApi(
         const txt = await upstream.text().catch(() => "");
         lastErr = shortError(txt) || `HTTP ${upstream.status}`;
         if (pinIndex != null) break; // per-source probe: fail fast, no circuit impact.
+        sayFailover(provider, `HTTP ${lastStatus} (${lastErr})`);
         // A 429/overloaded upstream usually carries Retry-After; honoring it
         // cools for exactly as long as asked (clamped) instead of the escalating
         // guess. Absent (5xx often, OR a quota error that buried the reset time
@@ -469,6 +490,7 @@ export function proxyApi(
         const r = store.recordCircuitFailure(provider.id, lastStatus, lastErr, retryAfterMs ?? resetInMs, !!resetInMs);
         if (r.entered) {
           store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: lastErr });
+          sayCooldown(provider, r);
         }
         continue;
       }
@@ -481,6 +503,7 @@ export function proxyApi(
 
     const last = order[order.length - 1];
     const lastUpstreamModel = last.model && last.model !== model ? last.model : undefined;
+    if (!isProbe) rt.error(`proxy all providers failed model=${model} (last status ${lastStatus})`);
     store.pushLog({ ts: Date.now(), model, upstreamModel: lastUpstreamModel, provider: last.provider.name, providerId: last.provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, error: lastErr || `all providers failed (last status ${lastStatus})` });
     // A pinned (per-source) probe failed: surface the REAL upstream status the
     // one slot returned (429/500/…), not a collapsed 502, and tag it with
@@ -499,18 +522,14 @@ export function proxyApi(
     );
   };
 
-  // OpenAI surface: chat/completions + responses, plus its own (openai-slot)
-  // model list.
+  // OpenAI surface: chat/completions + responses (/models is registered above,
+  // before the auth middleware, so it stays public).
   openai.post("/chat/completions", (c) => dispatch(c, "openai"));
   // OpenAI Responses API — its own routing slot (sources must be supportsResponses).
   openai.post("/responses", (c) => dispatch(c, "responses"));
-  openai.get("/models", (c) => modelsList(c, store, "openai"));
 
-  // Anthropic surface: messages, plus its own (anthropic-slot) model list — so
-  // an Anthropic client can discover models enabled only on the anthropic slot,
-  // which the shared-/v1 design couldn't surface.
+  // Anthropic surface: messages (/models likewise registered above, public).
   anthropic.post("/messages", (c) => dispatch(c, "anthropic"));
-  anthropic.get("/models", (c) => modelsList(c, store, "anthropic"));
 
   return { openai, anthropic };
 }

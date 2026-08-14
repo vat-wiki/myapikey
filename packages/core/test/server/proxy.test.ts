@@ -736,6 +736,11 @@ describe("proxy", () => {
       expect(ids).toEqual(["m", "onlyA"]);
       for (const d of j.data) expect(d.owned_by).toBe("A");
     });
+
+    it("is public — no api key required", async () => {
+      const res = await createApp(store).request("/openai/v1/models");
+      expect(res.status).toBe(200);
+    });
   });
 
   describe("GET /anthropic/v1/models", () => {
@@ -752,6 +757,11 @@ describe("proxy", () => {
       const ids = j.data.map((d: { id: string }) => d.id).sort();
       expect(ids).toEqual(["m"]);
       for (const d of j.data) expect(d.owned_by).toBe("A");
+    });
+
+    it("is public — no api key required", async () => {
+      const res = await createApp(store).request("/anthropic/v1/models");
+      expect(res.status).toBe(200);
     });
   });
 
