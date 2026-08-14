@@ -218,7 +218,7 @@ function discTitle(p: ProviderPublic): string {
 <template>
   <Dialog v-model:open="open">
     <DialogContent class="max-w-xl">
-      <div class="flex items-center gap-2 pr-8">
+      <div class="flex shrink-0 items-center gap-2 pr-8">
         <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/15 text-primary">
           <ServerCog class="h-4 w-4" />
         </span>
@@ -228,6 +228,7 @@ function discTitle(p: ProviderPublic): string {
         </div>
       </div>
 
+      <div class="min-h-0 flex-1 space-y-4 overflow-y-auto">
       <p v-if="loading" class="py-4 text-center text-sm text-muted-foreground">{{ t("common.loading") }}</p>
       <p v-else-if="err" class="py-4 text-center text-sm text-destructive">{{ err }}</p>
 
@@ -382,6 +383,7 @@ function discTitle(p: ProviderPublic): string {
             </div>
           </div>
         </div>
+      </div>
       </div>
     </DialogContent>
   </Dialog>

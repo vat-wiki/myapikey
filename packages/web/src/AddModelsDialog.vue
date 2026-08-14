@@ -179,7 +179,7 @@ async function submit() {
 <template>
   <Dialog v-model:open="open">
     <DialogContent :class="isNew ? 'max-w-lg' : 'max-w-md'">
-      <div class="flex items-center gap-2 pr-8">
+      <div class="flex shrink-0 items-center gap-2 pr-8">
         <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/15 text-primary">
           <Plus class="h-4 w-4" />
         </span>
@@ -189,7 +189,7 @@ async function submit() {
         </div>
       </div>
 
-      <div class="space-y-3">
+      <div class="min-h-0 flex-1 space-y-3 overflow-y-auto">
         <div class="space-y-1.5">
           <label class="text-xs font-medium text-muted-foreground">{{ t("models.providerLabel") }}</label>
           <Select v-model="providerId">
@@ -241,17 +241,17 @@ async function submit() {
             {{ t("models.addModelsCount", { n: effectiveNames.length }) }}
           </p>
         </div>
+      </div>
 
-        <div class="flex justify-end gap-2">
-          <Button variant="outline" :disabled="submitting" @click="open = false">
-            {{ t("common.cancel") }}
-          </Button>
-          <Button :disabled="!canSubmit" @click="submit">
-            <Loader2 v-if="submitting" class="h-4 w-4 animate-spin" />
-            <Plus v-else class="h-4 w-4" />
-            {{ t("models.addModelsBtn") }}
-          </Button>
-        </div>
+      <div class="flex shrink-0 justify-end gap-2">
+        <Button variant="outline" :disabled="submitting" @click="open = false">
+          {{ t("common.cancel") }}
+        </Button>
+        <Button :disabled="!canSubmit" @click="submit">
+          <Loader2 v-if="submitting" class="h-4 w-4 animate-spin" />
+          <Plus v-else class="h-4 w-4" />
+          {{ t("models.addModelsBtn") }}
+        </Button>
       </div>
     </DialogContent>
   </Dialog>
