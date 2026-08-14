@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, watch, nextTick, onBeforeUnmount } from "vue";
 import { useI18n } from "vue-i18n";
 import { Input } from "@/components/ui/input";
 import { Check, X } from "lucide-vue-next";
@@ -73,6 +73,49 @@ function onFocusOut(e: FocusEvent) {
   if (rt && rootRef.value?.contains(rt)) return;
   open.value = false;
 }
+
+/** Dropdown geometry, teleported to <body> as position:fixed. Rendering it
+ *  inside the field (absolute) clips it against the dialog's overflow-hidden /
+ *  overflow-y-auto ancestors and inflates the dialog's scrollable height —
+ *  the same reason the ui-kit Select portals its content. */
+const menu = ref<{ top: number; left: number; width: number } | null>(null);
+
+/** Estimated open height of the dropdown (max-h-56 = 224px), used to decide
+ *  whether it fits below the field or must flip up. */
+const menuH = computed(() => Math.min(Math.max(filtered.value.length * 34 + 8, 48), 224));
+
+function syncMenu() {
+  const r = rootRef.value?.getBoundingClientRect();
+  if (!r) return;
+  const below = r.bottom + 6 + menuH.value <= window.innerHeight;
+  menu.value = {
+    top: below ? r.bottom + 6 : Math.max(r.top - 6 - menuH.value, 8),
+    left: Math.max(Math.min(r.left, window.innerWidth - r.width - 8), 8),
+    width: r.width,
+  };
+}
+
+function onReposition() {
+  if (open.value) syncMenu();
+}
+
+watch(open, async (o) => {
+  if (o) {
+    await nextTick();
+    syncMenu();
+    window.addEventListener("scroll", onReposition, true); // capture: also catches dialog-inner scrolls
+    window.addEventListener("resize", onReposition);
+  } else {
+    window.removeEventListener("scroll", onReposition, true);
+    window.removeEventListener("resize", onReposition);
+  }
+});
+// Refiltering changes the estimated height — re-evaluate the flip decision.
+watch(menuH, () => open.value && syncMenu());
+onBeforeUnmount(() => {
+  window.removeEventListener("scroll", onReposition, true);
+  window.removeEventListener("resize", onReposition);
+});
 </script>
 
 <template>
@@ -97,26 +140,29 @@ function onFocusOut(e: FocusEvent) {
         </button>
       </span>
     </div>
-    <ul
-      v-if="open && (filtered.length || (multi && q.trim()))"
-      class="absolute z-50 mt-1 max-h-56 w-full overflow-auto rounded-md border bg-popover p-1 text-sm shadow-md"
-    >
-      <li v-for="o in filtered" :key="o">
-        <button
-          type="button"
-          class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left font-mono hover:bg-accent hover:text-accent-foreground"
-          :class="o === modelValue || selected.includes(o) ? 'text-primary' : ''"
-          @mousedown.prevent="pick(o)"
-        >
-          <Check v-if="o === modelValue || selected.includes(o)" class="h-3.5 w-3.5 shrink-0" />
-          <span v-else class="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-          <span class="flex-1 truncate">{{ o }}</span>
-        </button>
-      </li>
-      <li v-if="!filtered.length" class="px-2 py-1 text-xs text-muted-foreground">{{ t("combobox.noMatch") }}</li>
-      <li v-else-if="cappedCount > 0" class="px-2 py-1 text-xs text-muted-foreground">
-        {{ t("combobox.more", { n: cappedCount }) }}
-      </li>
-    </ul>
+    <Teleport to="body">
+      <ul
+        v-if="open && (filtered.length || (multi && q.trim()))"
+        class="fixed z-[60] max-h-56 overflow-auto rounded-md border bg-popover p-1 text-sm shadow-md"
+        :style="menu ? { top: `${menu.top}px`, left: `${menu.left}px`, width: `${menu.width}px` } : undefined"
+      >
+        <li v-for="o in filtered" :key="o">
+          <button
+            type="button"
+            class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left font-mono hover:bg-accent hover:text-accent-foreground"
+            :class="o === modelValue || selected.includes(o) ? 'text-primary' : ''"
+            @mousedown.prevent="pick(o)"
+          >
+            <Check v-if="o === modelValue || selected.includes(o)" class="h-3.5 w-3.5 shrink-0" />
+            <span v-else class="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            <span class="flex-1 truncate">{{ o }}</span>
+          </button>
+        </li>
+        <li v-if="!filtered.length" class="px-2 py-1 text-xs text-muted-foreground">{{ t("combobox.noMatch") }}</li>
+        <li v-else-if="cappedCount > 0" class="px-2 py-1 text-xs text-muted-foreground">
+          {{ t("combobox.more", { n: cappedCount }) }}
+        </li>
+      </ul>
+    </Teleport>
   </div>
 </template>
