@@ -5,6 +5,10 @@ export default {
     confirm: "Confirm",
     cancel: "Cancel",
   },
+  combobox: {
+    more: "+{n} more — refine your search",
+    noMatch: "No match",
+  },
   nav: {
     connect: "Usage",
     models: "Models",
@@ -201,6 +205,7 @@ export default {
     addSourceTargetsHint: "Will attach to:",
     addSourceDupHint: "Already attached — adding another slot lets you map a different upstream model (failover across models on one backend).",
     addSourcePartial: "Some routes failed to add",
+    addSourceNewHint: "Create a new source, then attach it to this model.",
     removeAria: 'Remove model "{name}"',
     moveUpAria: "Move up",
     moveDownAria: "Move down",

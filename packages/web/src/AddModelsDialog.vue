@@ -7,8 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Separator } from "@/components/ui/separator";
+import Combobox from "@/components/Combobox.vue";
+import NewSourceForm from "@/NewSourceForm.vue";
 import { Plus, Loader2 } from "lucide-vue-next";
 
 const { t } = useI18n();
@@ -30,49 +30,31 @@ const providerId = ref("");
 const raw = ref("");
 const submitting = ref(false);
 
-// --- inline "new source" form (mirrors SourcesDialog's add form) ---
-const newName = ref("");
-const newBaseUrlOpenai = ref("");
-const newBaseUrlAnthropic = ref("");
-const newKey = ref("");
-const fmtOpenai = ref(true);
-const fmtAnthropic = ref(false);
-const newResponses = ref(false);
-const formErr = ref("");
+// Inline "new source" form (shared component; also used by SourcesDialog and
+// AddSourceDialog so the create flow reads the same everywhere).
+const newForm = ref<InstanceType<typeof NewSourceForm> | null>(null);
 
-// Discovered models the user has ticked on (click-to-add chips), independent of
-// the textarea below; their results union with the typed names in effectiveNames.
+// Discovered models the user has picked via the Combobox, independent of the
+// textarea below; their results union with the typed names in effectiveNames.
 // Cleared on open and whenever the selected source changes.
-const picked = ref<Set<string>>(new Set());
+const picked = ref<string[]>([]);
 // Discovery returned when a brand-new source is created inline. props.providers
 // won't contain it until the parent reloads, so we carry the list locally to
 // populate the picker for the just-created source immediately.
 const createdDiscovered = ref<string[]>([]);
-// Search filter over the discovered-model chip wall — a source can carry many
-// models (商汤, opencode, …), so this narrows the wall to matches instead of
-// scanning a wall of dozens.
-const discQuery = ref("");
 
 watch(open, (o) => {
   if (!o) return;
   providerId.value = props.providers.length ? props.providers[0].id : NEW_SOURCE;
   raw.value = "";
-  picked.value = new Set();
+  picked.value = [];
   createdDiscovered.value = [];
-  discQuery.value = "";
-  // reset the new-source form each time the dialog opens
-  newName.value = newKey.value = "";
-  newBaseUrlOpenai.value = newBaseUrlAnthropic.value = "";
-  fmtOpenai.value = true;
-  fmtAnthropic.value = false;
-  newResponses.value = false;
-  formErr.value = "";
+  newForm.value?.reset();
 });
-// Clear chip selections when the chosen source changes — a model picked for one
-// source shouldn't silently carry over to another.
+// Clear picks when the chosen source changes — a model picked for one source
+// shouldn't silently carry over to another.
 watch(providerId, () => {
-  picked.value = new Set();
-  discQuery.value = "";
+  picked.value = [];
 });
 
 const isNew = computed(() => providerId.value === NEW_SOURCE);
@@ -89,37 +71,10 @@ function slotsFor(p: { formats: string[]; supportsResponses?: boolean }): string
 /** Live preview of the slots the chosen source will enable, shown under the select. */
 const selectedSlots = computed(() => {
   if (isNew.value || isNone.value)
-    return slotsFor({ formats: pickedFormats(), supportsResponses: fmtOpenai.value && newResponses.value });
+    return slotsFor({ formats: newForm.value?.payload.formats ?? [], supportsResponses: newForm.value?.payload.supportsResponses });
   const p = props.providers.find((x) => x.id === providerId.value);
   return p ? slotsFor(p) : [];
 });
-
-/** Toggle a format checkbox, but never let both be turned off. */
-function toggleFmt(which: "openai" | "anthropic") {
-  if (which === "openai") {
-    if (fmtOpenai.value && !fmtAnthropic.value) return;
-    fmtOpenai.value = !fmtOpenai.value;
-  } else {
-    if (fmtAnthropic.value && !fmtOpenai.value) return;
-    fmtAnthropic.value = !fmtAnthropic.value;
-  }
-}
-
-function pickedFormats(): string[] {
-  const out: string[] = [];
-  if (fmtOpenai.value) out.push("openai");
-  if (fmtAnthropic.value) out.push("anthropic");
-  return out;
-}
-
-/** Localized error string for the new-source form, or "" when valid. */
-function validateNewSource(): string {
-  if (!newName.value.trim() || !newKey.value) return t("sources.errRequired");
-  if (!pickedFormats().length) return t("sources.errFormat");
-  if ((fmtOpenai.value && !newBaseUrlOpenai.value.trim()) || (fmtAnthropic.value && !newBaseUrlAnthropic.value.trim()))
-    return t("sources.errBaseUrl");
-  return "";
-}
 
 /** Split pasted text into unique, non-empty model names (order preserved). */
 const names = computed(() => {
@@ -136,8 +91,8 @@ const names = computed(() => {
 });
 
 /** Effective model-name set = textarea names ∪ picked chips (deduped; typed
- *  names first, picked appended). Chips and the textarea are two independent
- *  input modes whose results merge here. */
+ *  names first, picked appended). The Combobox and the textarea are two
+ * independent input modes whose results merge here. */
 const effectiveNames = computed(() => {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -150,7 +105,7 @@ const effectiveNames = computed(() => {
   return out;
 });
 
-/** Discovered models for the selected source — the pool the chips draw from.
+/** Discovered models for the selected source — the pool the picker draws from.
  *  Found in props for an existing source; falls back to the captured list for a
  *  source created inline this session (props hasn't reloaded yet). */
 const discoveredForSelected = computed<string[]>(() => {
@@ -159,21 +114,6 @@ const discoveredForSelected = computed<string[]>(() => {
   return p ? p.discoveredModels ?? [] : createdDiscovered.value;
 });
 
-/** Discovered models for the chip wall, narrowed by the search box. Empty query
- *  shows the full list. */
-const filteredDiscovered = computed(() => {
-  const q = discQuery.value.trim().toLowerCase();
-  if (!q) return discoveredForSelected.value;
-  return discoveredForSelected.value.filter((n) => n.toLowerCase().includes(q));
-});
-
-function toggleDiscovered(name: string): void {
-  const next = new Set(picked.value);
-  if (next.has(name)) next.delete(name);
-  else next.add(name);
-  picked.value = next; // immutable replace so dependent computeds re-evaluate
-}
-
 const canSubmit = computed(() => !!providerId.value && effectiveNames.value.length > 0 && selectedSlots.value.length > 0 && !submitting.value);
 
 /** Enable every pasted model on every format the chosen provider speaks — one
@@ -181,27 +121,14 @@ const canSubmit = computed(() => !!providerId.value && effectiveNames.value.leng
  *  attach the models. Counts distinct names that landed on ≥1 slot. */
 async function submit() {
   if (!canSubmit.value) return;
-  if (isNew.value) {
-    const err = validateNewSource();
-    if (err) {
-      formErr.value = err;
-      return;
-    }
-  }
+  if (isNew.value && !newForm.value?.validate()) return;
   submitting.value = true;
   try {
     let pid = providerId.value;
     let slots: string[] = [];
     let createdSource = false;
     if (isNew.value) {
-      const r = await req<{ provider: ProviderPublic; discovered: string[] }>("POST", "/admin/providers", {
-        name: newName.value.trim(),
-        baseUrlOpenai: newBaseUrlOpenai.value,
-        baseUrlAnthropic: newBaseUrlAnthropic.value,
-        apiKey: newKey.value,
-        formats: pickedFormats(),
-        supportsResponses: fmtOpenai.value && newResponses.value,
-      });
+      const r = await req<{ provider: ProviderPublic; discovered: string[] }>("POST", "/admin/providers", newForm.value!.payload);
       pid = r.provider.id;
       // Pin the select to the just-created source: a retry (some models failed)
       // then re-enables instead of creating a duplicate source.
@@ -215,7 +142,7 @@ async function submit() {
     } else if (isNone.value) {
       // No source: enable the picked slots with an empty provider chain. The
       // models show up enabled-but-sourceless; the user attaches a source later.
-      slots = slotsFor({ formats: pickedFormats(), supportsResponses: fmtOpenai.value && newResponses.value });
+      slots = slotsFor({ formats: newForm.value?.payload.formats ?? [], supportsResponses: newForm.value?.payload.supportsResponses });
     } else {
       const p = props.providers.find((x) => x.id === pid);
       slots = p ? slotsFor(p) : [];
@@ -232,9 +159,17 @@ async function submit() {
       else fail++;
     });
     if (okNames.size) toast(t("models.addedToast", { n: okNames.size }), "success");
-    if (fail) toast(t("models.addModelsFailed", { n: fail }), "error");
     if (createdSource || okNames.size) emit("changed");
-    if (okNames.size) open.value = false;
+    if (fail) {
+      // Partial failure: keep the dialog open with just the failed names, so a
+      // retry doesn't re-type them (succeeded names and picks are dropped).
+      const failedNames = effectiveNames.value.filter((n) => !okNames.has(n));
+      toast(t("models.addModelsFailed", { n: failedNames.length }), "error");
+      raw.value = failedNames.join("\n");
+      picked.value = [];
+    } else {
+      open.value = false;
+    }
   } finally {
     submitting.value = false;
   }
@@ -277,89 +212,20 @@ async function submit() {
              additionally fills in name/base URLs/key to create that source first. -->
         <div v-if="isNew || isNone" class="space-y-3 rounded-lg border bg-muted/30 p-4">
           <p class="text-xs text-muted-foreground">{{ isNew ? t("models.addModelsNewHint") : t("models.addModelsNoneHint") }}</p>
-          <div v-if="isNew" class="space-y-1.5">
-            <label class="text-xs font-medium text-muted-foreground">{{ t("sources.nameLabel") }}</label>
-            <Input v-model="newName" :placeholder="t('sources.namePh')" autocomplete="off" aria-label="name" />
-          </div>
-          <div class="space-y-1.5">
-            <label class="text-xs font-medium text-muted-foreground">{{ t("sources.formats") }}</label>
-            <div class="space-y-2 rounded-md border bg-background/50 p-3">
-              <div class="space-y-2">
-                <div class="flex items-center gap-2.5">
-                  <Checkbox
-                    :model-value="fmtOpenai"
-                    :disabled="fmtOpenai && !fmtAnthropic"
-                    aria-label="openai"
-                    @update:model-value="toggleFmt('openai')"
-                  />
-                  <span class="text-sm font-medium leading-none">openai</span>
-                  <span class="text-xs text-muted-foreground">/chat/completions</span>
-                </div>
-                <div class="flex items-center gap-2.5 pl-7">
-                  <Checkbox v-model="newResponses" :disabled="!fmtOpenai" :aria-label="t('sources.responses')" />
-                  <span class="text-sm leading-none" :class="fmtOpenai ? '' : 'text-muted-foreground'">{{ t("sources.responses") }}</span>
-                  <span class="text-xs text-muted-foreground">/responses</span>
-                </div>
-              </div>
-              <Separator />
-              <div class="flex items-center gap-2.5">
-                <Checkbox
-                  :model-value="fmtAnthropic"
-                  :disabled="fmtAnthropic && !fmtOpenai"
-                  aria-label="anthropic"
-                  @update:model-value="toggleFmt('anthropic')"
-                />
-                <span class="text-sm font-medium leading-none">anthropic</span>
-                <span class="text-xs text-muted-foreground">/messages</span>
-              </div>
-            </div>
-          </div>
-          <div v-if="isNew && fmtOpenai" class="space-y-1.5">
-            <label class="text-xs font-medium text-muted-foreground">{{ t("sources.urlLabelOpenai") }}</label>
-            <Input v-model="newBaseUrlOpenai" :placeholder="t('sources.urlPhOpenai')" autocomplete="off" aria-label="openai base url" />
-            <p class="text-xs text-muted-foreground">{{ t("sources.urlHintOpenai") }}</p>
-          </div>
-          <div v-if="isNew && fmtAnthropic" class="space-y-1.5">
-            <label class="text-xs font-medium text-muted-foreground">{{ t("sources.urlLabelAnthropic") }}</label>
-            <Input v-model="newBaseUrlAnthropic" :placeholder="t('sources.urlPhAnthropic')" autocomplete="off" aria-label="anthropic base url" />
-            <p class="text-xs text-muted-foreground">{{ t("sources.urlHintAnthropic") }}</p>
-          </div>
-          <div v-if="isNew" class="space-y-1.5">
-            <label class="text-xs font-medium text-muted-foreground">{{ t("sources.keyLabel") }}</label>
-            <Input v-model="newKey" type="password" :placeholder="t('sources.keyPh')" autocomplete="new-password" aria-label="api key" />
-          </div>
-          <p v-if="isNew && formErr" class="text-sm text-destructive">{{ formErr }}</p>
+          <NewSourceForm ref="newForm" :formats-only="isNone" />
         </div>
 
         <!-- Existing source (or one just created inline): offer its discovered
-             models as click-to-add chips, so adding more of a source's models
-             is one click each instead of typing or re-creating the source. The
-             search box narrows the wall — a source can carry many models. -->
+             models via the shared searchable picker, so adding more of a
+             source's models is one click each instead of typing or re-creating
+             the source. -->
         <div v-if="!isNew && !isNone" class="space-y-1.5">
           <div class="flex items-center justify-between gap-2">
             <label class="text-xs font-medium text-muted-foreground">{{ t("models.addModelsDiscoveredLabel") }}</label>
             <span v-if="discoveredForSelected.length" class="text-xs text-muted-foreground">{{ t("models.addModelsDiscoveredHint") }}</span>
           </div>
           <p v-if="!discoveredForSelected.length" class="text-xs text-muted-foreground">{{ t("models.addModelsDiscoveredEmpty") }}</p>
-          <template v-else>
-            <Input v-model="discQuery" :placeholder="t('models.searchPh')" autocomplete="off" />
-            <p v-if="!filteredDiscovered.length" class="text-xs text-muted-foreground">{{ t("models.addModelsDiscoveredNoMatch") }}</p>
-            <div v-else class="flex max-h-40 flex-wrap gap-1 overflow-y-auto rounded-md border bg-background/50 p-2">
-              <button
-                v-for="name in filteredDiscovered"
-                :key="name"
-                type="button"
-                :aria-pressed="picked.has(name)"
-                class="inline-flex items-center rounded-md border px-2 py-0.5 font-mono text-xs transition-colors"
-                :class="picked.has(name)
-                  ? 'border-transparent bg-primary text-primary-foreground shadow-sm'
-                  : 'border-input text-muted-foreground hover:bg-accent hover:text-accent-foreground'"
-                @click="toggleDiscovered(name)"
-              >
-                {{ name }}
-              </button>
-            </div>
-          </template>
+          <Combobox v-else v-model="picked" multi :options="discoveredForSelected" :placeholder="t('models.searchPh')" />
         </div>
 
         <div class="space-y-1.5">

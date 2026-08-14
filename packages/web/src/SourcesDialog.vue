@@ -12,6 +12,7 @@ import { Separator } from "@/components/ui/separator";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 import { Plus, Trash2, Loader2, Pencil, RefreshCw, ServerCog, MoreHorizontal, Info, ChevronDown } from "lucide-vue-next";
 import ConfirmDialog from "@/ConfirmDialog.vue";
+import NewSourceForm from "@/NewSourceForm.vue";
 
 const { t } = useI18n();
 
@@ -22,16 +23,9 @@ const providers = ref<ProviderPublic[]>([]);
 const loading = ref(false);
 const err = ref("");
 
-// --- add form ---
-const newName = ref("");
-const newBaseUrlOpenai = ref("");
-const newBaseUrlAnthropic = ref("");
-const newKey = ref("");
-const fmtOpenai = ref(true);
-const fmtAnthropic = ref(false);
-const newResponses = ref(false);
+// --- add form (shared component; driven via its exposed reset/validate/payload) ---
+const newForm = ref<InstanceType<typeof NewSourceForm> | null>(null);
 const adding = ref(false);
-const formErr = ref("");
 const showAdd = ref(false);
 const showBaseHelp = ref(false);
 
@@ -70,56 +64,32 @@ watch(open, (o) => {
   if (o) load();
 });
 
-/** Toggle a format button, but never let both be turned off. */
-function toggleFmt(scope: "new" | "edit", which: "openai" | "anthropic") {
-  const o = scope === "new" ? fmtOpenai : editFmtOpenai;
-  const a = scope === "new" ? fmtAnthropic : editFmtAnthropic;
+/** Toggle an edit-form format button, but never let both be turned off. */
+function toggleFmt(which: "openai" | "anthropic") {
   if (which === "openai") {
-    if (o.value && !a.value) return;
-    o.value = !o.value;
+    if (editFmtOpenai.value && !editFmtAnthropic.value) return;
+    editFmtOpenai.value = !editFmtOpenai.value;
   } else {
-    if (a.value && !o.value) return;
-    a.value = !a.value;
+    if (editFmtAnthropic.value && !editFmtOpenai.value) return;
+    editFmtAnthropic.value = !editFmtAnthropic.value;
   }
 }
 
-function pickedFormats(scope: "new" | "edit"): string[] {
+function pickedFormats(): string[] {
   const out: string[] = [];
-  if ((scope === "new" ? fmtOpenai : editFmtOpenai).value) out.push("openai");
-  if ((scope === "new" ? fmtAnthropic : editFmtAnthropic).value) out.push("anthropic");
+  if (editFmtOpenai.value) out.push("openai");
+  if (editFmtAnthropic.value) out.push("anthropic");
   return out;
 }
 
 async function add() {
   if (adding.value) return;
-  formErr.value = "";
-  const formats = pickedFormats("new");
-  if (!newName.value || !newKey.value) {
-    formErr.value = t("sources.errRequired");
-    return;
-  }
-  if (!formats.length) {
-    formErr.value = t("sources.errFormat");
-    return;
-  }
-  if ((fmtOpenai.value && !newBaseUrlOpenai.value) || (fmtAnthropic.value && !newBaseUrlAnthropic.value)) {
-    formErr.value = t("sources.errBaseUrl");
-    return;
-  }
+  if (!newForm.value?.validate()) return;
   adding.value = true;
   try {
-    const r = await req<{ provider: ProviderPublic }>("POST", "/admin/providers", {
-      name: newName.value,
-      baseUrlOpenai: newBaseUrlOpenai.value,
-      baseUrlAnthropic: newBaseUrlAnthropic.value,
-      apiKey: newKey.value,
-      formats,
-      supportsResponses: fmtOpenai.value && newResponses.value,
-    });
+    const r = await req<{ provider: ProviderPublic }>("POST", "/admin/providers", newForm.value!.payload);
     providers.value = [...providers.value, r.provider];
-    newName.value = newKey.value = "";
-    newBaseUrlOpenai.value = newBaseUrlAnthropic.value = "";
-    newResponses.value = false;
+    newForm.value?.reset();
     showAdd.value = false;
     toast(t("sources.added"), "success");
     emit("changed");
@@ -147,7 +117,7 @@ function cancelEdit() {
 
 async function saveEdit(p: ProviderPublic) {
   if (saving.value) return;
-  const formats = pickedFormats("edit");
+  const formats = pickedFormats();
   if (!editName.value) {
     toast(t("sources.errRequired"), "error");
     return;
@@ -289,59 +259,7 @@ function discTitle(p: ProviderPublic): string {
         <Plus class="h-4 w-4" />{{ t("sources.add") }}
       </Button>
       <div v-else class="space-y-3 rounded-lg border bg-muted/30 p-4">
-        <div class="space-y-1.5">
-          <label class="text-xs font-medium text-muted-foreground">{{ t("sources.nameLabel") }}</label>
-          <Input v-model="newName" :placeholder="t('sources.namePh')" autocomplete="off" aria-label="name" />
-        </div>
-        <div class="space-y-1.5">
-          <label class="text-xs font-medium text-muted-foreground">{{ t("sources.formats") }}</label>
-          <div class="space-y-3 rounded-md border bg-background/50 p-3">
-            <div class="space-y-2">
-              <div class="flex items-center gap-2.5">
-                <Checkbox
-                  :model-value="fmtOpenai"
-                  :disabled="fmtOpenai && !fmtAnthropic"
-                  aria-label="openai"
-                  @update:model-value="toggleFmt('new', 'openai')"
-                />
-                <span class="text-sm font-medium leading-none">openai</span>
-                <span class="text-xs text-muted-foreground">/chat/completions</span>
-              </div>
-              <div class="flex items-center gap-2.5 pl-7">
-                <Checkbox v-model="newResponses" :disabled="!fmtOpenai" :aria-label="t('sources.responses')" />
-                <span class="text-sm leading-none" :class="fmtOpenai ? '' : 'text-muted-foreground'">{{ t("sources.responses") }}</span>
-                <span class="text-xs text-muted-foreground">/responses</span>
-              </div>
-            </div>
-            <Separator />
-            <div class="flex items-center gap-2.5">
-              <Checkbox
-                :model-value="fmtAnthropic"
-                :disabled="fmtAnthropic && !fmtOpenai"
-                aria-label="anthropic"
-                @update:model-value="toggleFmt('new', 'anthropic')"
-              />
-              <span class="text-sm font-medium leading-none">anthropic</span>
-              <span class="text-xs text-muted-foreground">/messages</span>
-            </div>
-          </div>
-          <p class="text-xs text-muted-foreground">{{ t("sources.addHint") }}</p>
-        </div>
-        <div v-if="fmtOpenai" class="space-y-1.5">
-          <label class="text-xs font-medium text-muted-foreground">{{ t("sources.urlLabelOpenai") }}</label>
-          <Input v-model="newBaseUrlOpenai" :placeholder="t('sources.urlPhOpenai')" autocomplete="off" aria-label="openai base url" />
-          <p class="text-xs text-muted-foreground">{{ t("sources.urlHintOpenai") }}</p>
-        </div>
-        <div v-if="fmtAnthropic" class="space-y-1.5">
-          <label class="text-xs font-medium text-muted-foreground">{{ t("sources.urlLabelAnthropic") }}</label>
-          <Input v-model="newBaseUrlAnthropic" :placeholder="t('sources.urlPhAnthropic')" autocomplete="off" aria-label="anthropic base url" />
-          <p class="text-xs text-muted-foreground">{{ t("sources.urlHintAnthropic") }}</p>
-        </div>
-        <div class="space-y-1.5">
-          <label class="text-xs font-medium text-muted-foreground">{{ t("sources.keyLabel") }}</label>
-          <Input v-model="newKey" type="password" :placeholder="t('sources.keyPh')" autocomplete="new-password" aria-label="api key" />
-        </div>
-        <p v-if="formErr" class="text-sm text-destructive">{{ formErr }}</p>
+        <NewSourceForm ref="newForm" />
         <div class="flex justify-end gap-2">
           <Button v-if="providers.length" variant="ghost" size="sm" @click="showAdd = false">{{ t("sources.cancel") }}</Button>
           <Button size="sm" :disabled="adding" @click="add">
@@ -410,7 +328,7 @@ function discTitle(p: ProviderPublic): string {
                       :model-value="editFmtOpenai"
                       :disabled="editFmtOpenai && !editFmtAnthropic"
                       aria-label="openai"
-                      @update:model-value="toggleFmt('edit', 'openai')"
+                      @update:model-value="toggleFmt('openai')"
                     />
                     <span class="text-sm font-medium leading-none">openai</span>
                     <span class="text-xs text-muted-foreground">/chat/completions</span>
@@ -427,7 +345,7 @@ function discTitle(p: ProviderPublic): string {
                     :model-value="editFmtAnthropic"
                     :disabled="editFmtAnthropic && !editFmtOpenai"
                     aria-label="anthropic"
-                    @update:model-value="toggleFmt('edit', 'anthropic')"
+                    @update:model-value="toggleFmt('anthropic')"
                   />
                   <span class="text-sm font-medium leading-none">anthropic</span>
                   <span class="text-xs text-muted-foreground">/messages</span>

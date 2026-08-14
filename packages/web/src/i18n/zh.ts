@@ -5,6 +5,10 @@ export default {
     confirm: "确认",
     cancel: "取消",
   },
+  combobox: {
+    more: "还有 {n} 个 — 继续输入筛选",
+    noMatch: "无匹配项",
+  },
   nav: {
     connect: "使用方式",
     models: "模型",
@@ -201,6 +205,7 @@ export default {
     addSourceTargetsHint: "将挂到:",
     addSourceDupHint: "已挂在该路由 —— 再加一个槽位通常用于映射不同的上游模型（同一来源跨多个模型做故障转移）。",
     addSourcePartial: "部分路由添加失败",
+    addSourceNewHint: "先建一个新来源,再把它挂到该模型上。",
     removeAria: "移除模型「{name}」",
     moveUpAria: "上移",
     moveDownAria: "下移",
