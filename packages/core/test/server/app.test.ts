@@ -79,6 +79,33 @@ describe("server/app", () => {
     });
   });
 
+  describe("API-prefix miss → JSON 404 (never the SPA's HTML)", () => {
+    it("answers a doubled path like /openai/v1/v1/models with JSON", async () => {
+      // With the api key: passes the sub-app's auth, then nothing matches →
+      // falls through to the parent's JSON 404 (previously the SPA's HTML —
+      // which is exactly what broke pi's model refresh with "Unexpected token '<'").
+      const res = await createApp(store).request("/openai/v1/v1/models", { headers: { authorization: bearer } });
+      expect(res.status).toBe(404);
+      expect(res.headers.get("content-type")).toContain("application/json");
+      const j = await json<{ error: { message: string } }>(res);
+      expect(j.error.message).toContain("/openai/v1/v1/models");
+    });
+
+    it("tells the legacy /v1 surface where to go", async () => {
+      const res = await createApp(store).request("/v1/models");
+      expect(res.status).toBe(404);
+      const j = await json<{ error: { message: string } }>(res);
+      expect(j.error.message).toContain("/openai/v1");
+      expect(j.error.message).toContain("/anthropic/v1");
+    });
+
+    it("unmatched /admin paths answer JSON too (with valid Basic)", async () => {
+      const res = await createApp(store).request("/admin/nope", { headers: { authorization: basic } });
+      expect(res.status).toBe(404);
+      expect(res.headers.get("content-type")).toContain("application/json");
+    });
+  });
+
   describe("web UI fallback", () => {
     it("returns a 404 banner when no webDir is configured", async () => {
       const res = await createApp(store).request("/");
