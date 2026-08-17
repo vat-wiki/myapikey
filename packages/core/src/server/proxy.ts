@@ -4,8 +4,10 @@ import type { Format, Provider, RouteKey, Usage } from "../shared/types";
 import type { Store } from "./store";
 import { UsageCollector } from "./tokens";
 
-/** HTTP statuses that should trigger failover to the next provider. */
-const RETRYABLE = new Set([408, 425, 429, 500, 502, 503, 504]);
+/** HTTP statuses that should trigger failover to the next provider. 401/403
+ *  included: a banned/invalid credential (e.g. "User has been banned") is dead
+ *  for THIS source only - the same request may be fine on the next one. */
+const RETRYABLE = new Set([401, 403, 408, 425, 429, 500, 502, 503, 504]);
 
 /** Headers copied from upstream back to the client. */
 const COPY_DOWN = ["content-type", "cache-control", "x-request-id", "openai-organization", "anthropic-ratelimit-requests-reset"];

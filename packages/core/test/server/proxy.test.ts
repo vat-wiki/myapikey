@@ -193,6 +193,19 @@ describe("proxy", () => {
       expect(mock.calls.filter((c) => c.url.includes("/b/")).length).toBe(1);
     });
 
+    it("fails over on 403 (banned credential) and 401 (invalid key)", async () => {
+      for (const status of [401, 403]) {
+        mock?.restore();
+        mock = mockFetch([
+          { match: "/a/v1/chat/completions", response: { status, body: { error: { message: "User has been banned" } } } },
+          { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "B" } }] } } },
+        ]);
+        const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+        expect(res.status).toBe(200);
+        expect(mock.calls.filter((c) => c.url.includes("/b/")).length).toBe(1);
+      }
+    });
+
     it("fails over when fetch throws (network error path)", async () => {
       mock = mockFetch([
         { match: "/a/v1/chat/completions", response: () => { throw new Error("net"); } },
