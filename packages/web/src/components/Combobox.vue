@@ -2,15 +2,17 @@
 import { ref, computed, watch, nextTick, onBeforeUnmount } from "vue";
 import { useI18n } from "vue-i18n";
 import { Input } from "@/components/ui/input";
-import { Check, ChevronDown, X } from "lucide-vue-next";
+import { Check, ChevronDown, Plus, X } from "lucide-vue-next";
 
 /** A searchable picker for model lists that don't fit a plain <Select>: type to
  *  filter, click to pick. The ONE control both Models dialogs use for a source's
  *  discovered models, so the interaction reads the same everywhere:
  *  - single (default): the field holds the value; free-text is kept, so a name
  *    not in `options` (a custom / mapped upstream id) still works.
- *  - multi: the field is a search box; picks accumulate as removable chips
- *    below it and the dropdown toggles membership.
+ *  - multi: the field is a tags-input - pick from the dropdown or type any
+ *    name and press Enter (the "add" row commits it too); picks and typed
+ *    names accumulate as removable chips. Typed values need not be in
+ *    `options` (custom / undiscovered names are legal).
  *  The list is capped at `limit` rows with a "+N more, refine your search"
  *  hint, so a source carrying hundreds of models stays snappy. Built on the
  *  existing Input + a plain dropdown — no new deps. */
@@ -85,6 +87,36 @@ function removeChip(o: string) {
   emit("update:modelValue", selected.value.filter((x) => x !== o));
 }
 
+/** multi: commit a raw string as chips - typed input isn't limited to
+ *  `options` (custom / undiscovered names are legal values). Tokens split on
+ *  whitespace/commas/semicolons so a pasted list adds in one go, matching the
+ *  separators the old bulk textarea accepted. */
+function commitTokens(s: string) {
+  const tokens = s.split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean);
+  if (!tokens.length) return;
+  const next = [...selected.value];
+  for (const tok of tokens) if (!next.includes(tok)) next.push(tok);
+  emit("update:modelValue", next);
+  q.value = "";
+}
+
+/** Enter commits what's typed - predictable tags-input rule: you get exactly
+ *  the name you typed, not the first dropdown match. */
+function onEnter() {
+  if (props.multi) commitTokens(q.value);
+}
+
+/** Pasting a multi-token list into a single-line input would lose the
+ *  separators (the browser strips newlines), so intercept it and add the
+ *  tokens directly. A single clean token pastes normally. */
+function onPaste(e: ClipboardEvent) {
+  if (!props.multi) return;
+  const text = e.clipboardData?.getData("text") ?? "";
+  if (!text.trim() || !/[\s,;]/.test(text)) return;
+  e.preventDefault();
+  commitTokens(text);
+}
+
 function onFocusOut(e: FocusEvent) {
   // Focus moving to the dropdown (mousedown.prevent keeps it in the field, but
   // guard anyway) shouldn't close it; only a real blur to outside should.
@@ -149,6 +181,8 @@ onBeforeUnmount(() => {
         class="pr-8"
         @update:model-value="onInput"
         @keydown.esc="onEsc"
+        @keydown.enter.prevent="onEnter"
+        @paste="onPaste"
       />
       <button
         type="button"
@@ -187,6 +221,20 @@ onBeforeUnmount(() => {
         :style="menu ? { top: `${menu.top}px`, left: `${menu.left}px`, width: `${menu.width}px` } : undefined"
         @pointerdown.stop
       >
+        <!-- multi with typed text: the escape hatch the whole merge rests on -
+             committing the raw typed name as a chip, clickable as well as
+             Enter-able. Shown above the matches, including when nothing
+             matches (that's its point). -->
+        <li v-if="multi && q.trim()">
+          <button
+            type="button"
+            class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent hover:text-accent-foreground"
+            @mousedown.prevent="commitTokens(q)"
+          >
+            <Plus class="h-3.5 w-3.5 shrink-0" />
+            <span class="flex-1 truncate font-mono">{{ t("combobox.add", { q: q.trim() }) }}</span>
+          </button>
+        </li>
         <li v-for="o in filtered" :key="o">
           <button
             type="button"
@@ -199,7 +247,7 @@ onBeforeUnmount(() => {
             <span class="flex-1 truncate">{{ o }}</span>
           </button>
         </li>
-        <li v-if="!filtered.length" class="px-2 py-1 text-xs text-muted-foreground">{{ t("combobox.noMatch") }}</li>
+        <li v-if="!filtered.length && !(multi && q.trim())" class="px-2 py-1 text-xs text-muted-foreground">{{ t("combobox.noMatch") }}</li>
         <li v-else-if="cappedCount > 0" class="px-2 py-1 text-xs text-muted-foreground">
           {{ t("combobox.more", { n: cappedCount }) }}
         </li>

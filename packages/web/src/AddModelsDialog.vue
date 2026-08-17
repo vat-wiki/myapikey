@@ -4,7 +4,6 @@ import { useI18n } from "vue-i18n";
 import { req, type ProviderPublic } from "@/api";
 import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import Combobox from "@/components/Combobox.vue";
@@ -27,16 +26,15 @@ const NEW_SOURCE = "__new__";
 const NO_SOURCE = "__none__";
 
 const providerId = ref("");
-const raw = ref("");
 const submitting = ref(false);
 
 // Inline "new source" form (shared component; also used by SourcesDialog and
 // AddSourceDialog so the create flow reads the same everywhere).
 const newForm = ref<InstanceType<typeof NewSourceForm> | null>(null);
 
-// Discovered models the user has picked via the Combobox, independent of the
-// textarea below; their results union with the typed names in effectiveNames.
-// Cleared on open and whenever the selected source changes.
+// The single tags-input (Combobox multi) holds the names to enable: picked
+// from the source's discovered models or typed free-form. Cleared on open and
+// whenever the selected source changes.
 const picked = ref<string[]>([]);
 // Discovery returned when a brand-new source is created inline. props.providers
 // won't contain it until the parent reloads, so we carry the list locally to
@@ -46,7 +44,6 @@ const createdDiscovered = ref<string[]>([]);
 watch(open, (o) => {
   if (!o) return;
   providerId.value = props.providers.length ? props.providers[0].id : NEW_SOURCE;
-  raw.value = "";
   picked.value = [];
   createdDiscovered.value = [];
   newForm.value?.reset();
@@ -76,47 +73,20 @@ const selectedSlots = computed(() => {
   return p ? slotsFor(p) : [];
 });
 
-/** Split pasted text into unique, non-empty model names (order preserved). */
-const names = computed(() => {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const part of raw.value.split(/[\s,;]+/)) {
-    const n = part.trim();
-    if (n && !seen.has(n)) {
-      seen.add(n);
-      out.push(n);
-    }
-  }
-  return out;
-});
-
-/** Effective model-name set = textarea names ∪ picked chips (deduped; typed
- *  names first, picked appended). The Combobox and the textarea are two
- * independent input modes whose results merge here. */
-const effectiveNames = computed(() => {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const n of [...names.value, ...picked.value]) {
-    if (!seen.has(n)) {
-      seen.add(n);
-      out.push(n);
-    }
-  }
-  return out;
-});
-
-/** Discovered models for the selected source — the pool the picker draws from.
+/** Discovered models for the selected source - the pool the picker draws from.
  *  Found in props for an existing source; falls back to the captured list for a
- *  source created inline this session (props hasn't reloaded yet). */
+ *  source created inline this session (props hasn't reloaded yet). Empty for
+ *  the no-source mode (nothing to discover) - the tags-input still accepts
+ *  typed names either way. */
 const discoveredForSelected = computed<string[]>(() => {
   if (isNone.value) return [];
   const p = props.providers.find((x) => x.id === providerId.value);
   return p ? p.discoveredModels ?? [] : createdDiscovered.value;
 });
 
-const canSubmit = computed(() => !!providerId.value && effectiveNames.value.length > 0 && selectedSlots.value.length > 0 && !submitting.value);
+const canSubmit = computed(() => !!providerId.value && picked.value.length > 0 && selectedSlots.value.length > 0 && !submitting.value);
 
-/** Enable every pasted model on every format the chosen provider speaks — one
+/** Enable every model on every format the chosen provider speaks — one
  *  POST per (name, slot). If "new source" is selected, create it first, then
  *  attach the models. Counts distinct names that landed on ≥1 slot. */
 async function submit() {
@@ -147,8 +117,12 @@ async function submit() {
       const p = props.providers.find((x) => x.id === pid);
       slots = p ? slotsFor(p) : [];
     }
+    // Snapshot before the awaits: pinning providerId to an inline-created
+    // source fires the change-watcher that clears `picked`, and the awaits
+    // below let that watcher run mid-submit.
+    const requested = picked.value;
     const tasks: { name: string; slot: string }[] = [];
-    for (const name of effectiveNames.value) for (const slot of slots) tasks.push({ name, slot });
+    for (const name of requested) for (const slot of slots) tasks.push({ name, slot });
     const results = await Promise.allSettled(
       tasks.map((task) => req("POST", "/admin/models", { name: task.name, format: task.slot, providers: isNone.value ? [] : [pid] })),
     );
@@ -162,11 +136,10 @@ async function submit() {
     if (createdSource || okNames.size) emit("changed");
     if (fail) {
       // Partial failure: keep the dialog open with just the failed names, so a
-      // retry doesn't re-type them (succeeded names and picks are dropped).
-      const failedNames = effectiveNames.value.filter((n) => !okNames.has(n));
+      // retry doesn't re-add them (succeeded names are dropped from the chips).
+      const failedNames = requested.filter((n) => !okNames.has(n));
       toast(t("models.addModelsFailed", { n: failedNames.length }), "error");
-      raw.value = failedNames.join("\n");
-      picked.value = [];
+      picked.value = failedNames;
     } else {
       open.value = false;
     }
@@ -215,30 +188,19 @@ async function submit() {
           <NewSourceForm ref="newForm" :formats-only="isNone" />
         </div>
 
-        <!-- Existing source (or one just created inline): offer its discovered
-             models via the shared searchable picker, so adding more of a
-             source's models is one click each instead of typing or re-creating
-             the source. -->
-        <div v-if="!isNew && !isNone" class="space-y-1.5">
-          <div class="flex items-center justify-between gap-2">
-            <label class="text-xs font-medium text-muted-foreground">{{ t("models.addModelsDiscoveredLabel") }}</label>
-            <span v-if="discoveredForSelected.length" class="text-xs text-muted-foreground">{{ t("models.addModelsDiscoveredHint") }}</span>
-          </div>
-          <p v-if="!discoveredForSelected.length" class="text-xs text-muted-foreground">{{ t("models.addModelsDiscoveredEmpty") }}</p>
-          <Combobox v-else v-model="picked" multi :options="discoveredForSelected" :placeholder="t('models.searchPh')" />
-        </div>
-
+        <!-- The ONE name input: a tags-input over the selected source's
+             discovered models. Pick from the dropdown or type any name and
+             press Enter - chips are the names to enable, removable one by one.
+             Works for all three source modes (existing / new / none): an empty
+             discovery pool just leaves typing. -->
         <div class="space-y-1.5">
           <label class="text-xs font-medium text-muted-foreground">{{ t("models.namesLabel") }}</label>
-          <textarea
-            v-model="raw"
-            :placeholder="t('models.addModelsNamesPh')"
-            rows="6"
-            spellcheck="false"
-            class="flex w-full resize-y rounded-md border border-input bg-transparent px-3 py-2 font-mono text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50"
-          />
-          <p v-if="effectiveNames.length" class="text-xs text-muted-foreground">
-            {{ t("models.addModelsCount", { n: effectiveNames.length }) }}
+          <Combobox v-model="picked" multi :options="discoveredForSelected" :placeholder="t('models.addModelsPickPh')" />
+          <p class="text-xs text-muted-foreground">
+            {{ discoveredForSelected.length ? t("models.addModelsPickHint") : t("models.addModelsDiscoveredEmpty") }}
+          </p>
+          <p v-if="picked.length" class="text-xs text-muted-foreground">
+            {{ t("models.addModelsCount", { n: picked.length }) }}
           </p>
         </div>
       </div>
