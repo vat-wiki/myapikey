@@ -1,6 +1,6 @@
 {
   "name": "myapikey",
-  "version": "0.14.3",
+  "version": "0.15.0",
   "type": "module",
   "description": "Personal LLM API gateway & proxy — one address + one API key for all your models. Forwards OpenAI & Anthropic calls to your backends with failover and a circuit breaker. Pure passthrough, no format translation. Self-hosted (CLI + web UI).",
   "keywords": [
