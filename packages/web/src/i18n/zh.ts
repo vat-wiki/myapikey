@@ -8,6 +8,7 @@ export default {
   combobox: {
     more: "还有 {n} 个 — 继续输入筛选",
     noMatch: "无匹配项",
+    toggle: "展开 / 收起选项",
   },
   nav: {
     connect: "使用方式",

@@ -8,6 +8,7 @@ export default {
   combobox: {
     more: "+{n} more — refine your search",
     noMatch: "No match",
+    toggle: "Show / hide options",
   },
   nav: {
     connect: "Usage",

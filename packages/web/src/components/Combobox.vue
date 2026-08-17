@@ -2,7 +2,7 @@
 import { ref, computed, watch, nextTick, onBeforeUnmount } from "vue";
 import { useI18n } from "vue-i18n";
 import { Input } from "@/components/ui/input";
-import { Check, X } from "lucide-vue-next";
+import { Check, ChevronDown, X } from "lucide-vue-next";
 
 /** A searchable picker for model lists that don't fit a plain <Select>: type to
  *  filter, click to pick. The ONE control both Models dialogs use for a source's
@@ -28,9 +28,28 @@ const emit = defineEmits<{ "update:modelValue": [string | string[]] }>();
 const { t } = useI18n();
 
 const rootRef = ref<HTMLDivElement | null>(null);
+const inputRef = ref<InstanceType<typeof Input> | null>(null);
 const open = ref(false);
 // multi-mode search query (single mode filters by the value itself)
 const q = ref("");
+
+/** Chevron toggle: the field is BOTH a free-text input and a dropdown - the
+ *  chevron makes the dropdown half discoverable (same affordance as Select).
+ *  mousedown.prevent keeps focus in the field so a close-toggle isn't undone
+ *  by the root focusin handler. */
+function toggle() {
+  open.value = !open.value;
+  if (open.value) inputRef.value?.$el?.focus();
+}
+
+/** Esc closes just the dropdown - .stop keeps it from the dialog's own Esc
+ *  handler, which would close the whole dialog. */
+function onEsc(e: KeyboardEvent) {
+  if (!open.value) return;
+  e.stopPropagation();
+  e.preventDefault();
+  open.value = false;
+}
 
 /** multi: the selected names, as a plain array. */
 const selected = computed(() => (Array.isArray(props.modelValue) ? props.modelValue : []));
@@ -119,14 +138,28 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="rootRef" class="relative" @focusin="open = true" @focusout="onFocusOut">
-    <Input
-      :model-value="multi ? q : (modelValue as string)"
-      :placeholder="placeholder"
-      autocomplete="off"
-      spellcheck="false"
-      @update:model-value="onInput"
-    />
+  <div ref="rootRef" @focusin="open = true" @focusout="onFocusOut">
+    <div class="relative">
+      <Input
+        ref="inputRef"
+        :model-value="multi ? q : (modelValue as string)"
+        :placeholder="placeholder"
+        autocomplete="off"
+        spellcheck="false"
+        class="pr-8"
+        @update:model-value="onInput"
+        @keydown.esc="onEsc"
+      />
+      <button
+        type="button"
+        tabindex="-1"
+        class="absolute right-2 top-1/2 -translate-y-1/2 rounded-sm text-muted-foreground/70 transition-colors hover:text-foreground"
+        :aria-label="t('combobox.toggle')"
+        @mousedown.prevent="toggle"
+      >
+        <ChevronDown class="h-4 w-4 transition-transform" :class="open ? 'rotate-180' : ''" />
+      </button>
+    </div>
     <!-- multi: the current selection as removable chips -->
     <div v-if="multi && selected.length" class="mt-1.5 flex flex-wrap gap-1">
       <span
@@ -141,10 +174,18 @@ onBeforeUnmount(() => {
       </span>
     </div>
     <Teleport to="body">
+      <!-- pointer-events-auto + @pointerdown.stop are load-bearing: a modal
+           Dialog sets `body { pointer-events: none }` and only restores it for
+           its own layer tree, so a plain body-teleported dropdown would be
+           unclickable (and hover-dead), and its pointerdown would bubble to
+           the dialog's outside-dismiss handler and close the whole dialog.
+           reka's own portals get this via DismissableLayer, which isn't
+           publicly exported - so replicate the two effects by hand. -->
       <ul
         v-if="open && (filtered.length || (multi && q.trim()))"
-        class="fixed z-[60] max-h-56 overflow-auto rounded-md border bg-popover p-1 text-sm shadow-md"
+        class="pointer-events-auto fixed z-[60] max-h-56 overflow-auto rounded-md border bg-popover p-1 text-sm shadow-md"
         :style="menu ? { top: `${menu.top}px`, left: `${menu.left}px`, width: `${menu.width}px` } : undefined"
+        @pointerdown.stop
       >
         <li v-for="o in filtered" :key="o">
           <button
