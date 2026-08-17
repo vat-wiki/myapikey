@@ -638,6 +638,38 @@ describe("server/admin", () => {
       expect(find(await modelsOf(app), "gpt-4o")).toBeUndefined();
     });
 
+    it("POST /admin/models/:name/rename moves the entry (chains + mappings) under the new key", async () => {
+      const a = makeProvider({ formats: ["openai"] });
+      await seedStore(store, { providers: [a], models: { "gpt-4o": makeModel({ openai: fe([{ id: a.id, model: "up-name" }]) }) } });
+      const app = createApp(store);
+      const res = await app.request("/admin/models/gpt-4o/rename", {
+        method: "POST", headers: H, body: JSON.stringify({ name: "fast-chat" }),
+      });
+      expect(res.status).toBe(200);
+      expect(find(await modelsOf(app), "gpt-4o")).toBeUndefined();
+      const m = find(await modelsOf(app), "fast-chat")!;
+      expect(m.openai.enabled).toBe(true);
+      expect(m.openai.providers[0]).toMatchObject({ id: a.id, model: "up-name" });
+    });
+
+    it("POST /admin/models/:name/rename rejects an existing target name (409) and a missing model (404)", async () => {
+      await seedStore(store, {
+        models: { "gpt-4o": makeModel({ openai: fe([]) }), "fast-chat": makeModel({ openai: fe([]) }) },
+      });
+      const app = createApp(store);
+      const dup = await app.request("/admin/models/gpt-4o/rename", {
+        method: "POST", headers: H, body: JSON.stringify({ name: "fast-chat" }),
+      });
+      expect(dup.status).toBe(409);
+      const missing = await app.request("/admin/models/nope/rename", {
+        method: "POST", headers: H, body: JSON.stringify({ name: "whatever" }),
+      });
+      expect(missing.status).toBe(404);
+      // Both models untouched.
+      expect(store.get().models["gpt-4o"]).toBeDefined();
+      expect(store.get().models["fast-chat"]).toBeDefined();
+    });
+
     it("POST /admin/models/:name/providers/test pins to ONE slot (no failover)", async () => {
       const a = makeProvider({ name: "alpha", formats: ["openai"], baseUrlOpenai: "https://a.up.test/v1", apiKey: "sk-a" });
       const b = makeProvider({ name: "bravo", formats: ["openai"], baseUrlOpenai: "https://b.up.test/v1", apiKey: "sk-b" });

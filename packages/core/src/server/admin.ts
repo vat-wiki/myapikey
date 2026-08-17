@@ -356,6 +356,28 @@ export function adminApi(store: Store, auth: MiddlewareHandler, openai: Hono, an
     return c.json({ ok: true }, 201);
   });
 
+  // Rename a model - changes the ROUTING KEY, the name clients request. The
+  // config entry (enabled slots, chains, upstream mappings) moves as-is, so
+  // an unmapped slot now forwards the NEW name upstream (that's the point of
+  // renaming); slots with an explicit upstream mapping keep it. Renaming to
+  // an existing name is rejected; key order in data.json is preserved.
+  app.post("/models/:name/rename", async (c) => {
+    const name = c.req.param("name");
+    const body = await readJson<{ name?: string }>(c.req.raw);
+    const next = body?.name?.trim();
+    if (!next) return c.json({ error: { message: "name is required" } }, 400);
+    if (next === name) return c.json({ error: { message: "new name is the same as the current one" } }, 400);
+    const cfg = store.get();
+    if (!cfg.models[name]) return c.json({ error: { message: "model not found" } }, 404);
+    if (cfg.models[next]) return c.json({ error: { message: `model already exists: ${next}` } }, 409);
+    await store.update((d) => {
+      const rebuilt: typeof d.models = {};
+      for (const [k, v] of Object.entries(d.models)) rebuilt[k === name ? next : k] = v;
+      d.models = rebuilt;
+    });
+    return c.json({ ok: true });
+  });
+
   app.post("/models/:name/providers", async (c) => {
     const name = c.req.param("name");
     const body = await readJson<{ format?: RouteKey; providerId?: string; model?: string }>(c.req.raw);

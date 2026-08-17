@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import {
   ChevronRight,
   ChevronDown,
@@ -80,6 +81,43 @@ const vFocus = { mounted: (el: HTMLInputElement) => el.focus() };
 
 const confirmTarget = ref<Row | null>(null);
 const confirmOpen = ref(false);
+
+// Rename flow: a small dialog, not inline editing - the name sits inside the
+// expand/collapse click target, and inline editing there would fight it.
+const renameTarget = ref<Row | null>(null);
+const renameOpen = ref(false);
+const renameValue = ref("");
+const renaming = ref(false);
+
+function askRename(r: Row) {
+  renameTarget.value = r;
+  renameValue.value = r.name;
+  renameOpen.value = true;
+}
+
+async function doRename() {
+  const r = renameTarget.value;
+  const next = renameValue.value.trim();
+  if (!r || !next || next === r.name) return;
+  renaming.value = true;
+  try {
+    await req("POST", `/admin/models/${enc(r.name)}/rename`, { name: next });
+    // Keep the row expanded under its new name if it was before.
+    if (expandedModels.value.has(r.name)) {
+      const s = new Set(expandedModels.value);
+      s.delete(r.name);
+      s.add(next);
+      expandedModels.value = s;
+    }
+    await load();
+    toast(t("models.renamedToast", { from: r.name, to: next }), "success");
+    renameOpen.value = false;
+  } catch (e) {
+    toast((e as Error).message, "error");
+  } finally {
+    renaming.value = false;
+  }
+}
 
 const enc = encodeURIComponent;
 
@@ -790,6 +828,10 @@ onMounted(load);
                           <Zap v-else />
                           {{ t("models.testModel") }}
                         </DropdownMenuItem>
+                        <DropdownMenuItem @select="askRename(r)">
+                          <Pencil class="h-4 w-4" />
+                          {{ t("models.renameModel") }}
+                        </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem class="text-destructive focus:bg-destructive/10 focus:text-destructive" @select="askRemoveModel(r)">
                           <Trash2 />
@@ -1083,5 +1125,41 @@ onMounted(load);
       :loading="confirmTarget ? !!removing[confirmTarget.name] : false"
       @confirm="doRemoveModel"
     />
+
+    <Dialog v-model:open="renameOpen">
+      <DialogContent class="max-w-md">
+        <div class="flex shrink-0 items-center gap-2 pr-8">
+          <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/15 text-primary">
+            <Pencil class="h-4 w-4" />
+          </span>
+          <div class="min-w-0">
+            <DialogTitle class="text-base">{{ t("models.renameModel") }}</DialogTitle>
+            <DialogDescription>{{ t("models.renameDesc") }}</DialogDescription>
+          </div>
+        </div>
+        <div class="space-y-1.5">
+          <label class="text-xs font-medium text-muted-foreground">{{ t("models.namesLabel") }}</label>
+          <Input
+            v-model="renameValue"
+            :placeholder="renameTarget?.name"
+            autocomplete="off"
+            spellcheck="false"
+            class="font-mono"
+            @keyup.enter="doRename"
+          />
+          <p class="text-xs text-muted-foreground">{{ t("models.renameHint") }}</p>
+        </div>
+        <div class="flex shrink-0 justify-end gap-2">
+          <Button variant="outline" :disabled="renaming" @click="renameOpen = false">
+            {{ t("common.cancel") }}
+          </Button>
+          <Button :disabled="renaming || !renameValue.trim() || renameValue.trim() === renameTarget?.name" @click="doRename">
+            <Loader2 v-if="renaming" class="h-4 w-4 animate-spin" />
+            <Pencil v-else class="h-4 w-4" />
+            {{ t("models.renameModel") }}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   </div>
 </template>
