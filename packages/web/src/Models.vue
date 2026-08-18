@@ -160,6 +160,8 @@ interface Row {
   openai: FormatRow;
   anthropic: FormatRow;
   responses: FormatRow;
+  /** Per-model even-pacing cap (0 = unlimited). */
+  paceRpm: number;
   offering: { id: string; name: string; formats: string[]; supportsResponses?: boolean }[];
 }
 
@@ -182,6 +184,7 @@ const rows = computed<Row[]>(() => {
       openai: toRow(m?.openai),
       anthropic: toRow(m?.anthropic),
       responses: toRow(m?.responses),
+      paceRpm: m?.paceRpm ?? 0,
       offering: off,
     };
   });
@@ -392,6 +395,7 @@ async function enable(r: Row, fmt: Fmt) {
       openai: { enabled: fmt === "openai", providers: fmt === "openai" ? srcObjs : [] },
       anthropic: { enabled: fmt === "anthropic", providers: fmt === "anthropic" ? srcObjs : [] },
       responses: { enabled: fmt === "responses", providers: fmt === "responses" ? srcObjs : [] },
+      paceRpm: 0,
     });
   }
   try {
@@ -651,6 +655,42 @@ function revertRpm(p: ChainSrc, el: HTMLInputElement): void {
   el.blur();
 }
 
+// Per-model even pacing (leaky bucket): same one-draft-at-a-time pattern as the
+// per-source rpm editor above, but against PUT /admin/models/:name/pace.
+const paceEditingName = ref<string>("");
+const paceDraft = ref<string>("");
+function isPaceEditing(r: Row): boolean {
+  return paceEditingName.value === r.name;
+}
+function enterPaceEdit(r: Row): void {
+  paceEditingName.value = r.name;
+  paceDraft.value = r.paceRpm ? String(r.paceRpm) : "";
+}
+/** Release interval in whole seconds (10/min → 6), for badges + toasts. */
+function paceInterval(n: number): number {
+  return Math.max(1, Math.round(60 / n));
+}
+/** Commit on blur/Enter; blank/0 clears. No-op when the draft matches, so
+ * Enter→blur and Esc→blur don't double-write. */
+async function commitPace(r: Row): Promise<void> {
+  paceEditingName.value = "";
+  const n = Number(paceDraft.value);
+  const rpm = Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+  if (rpm === r.paceRpm) return;
+  try {
+    await req("PUT", `/admin/models/${enc(r.name)}/pace`, { rpm });
+    models.value = models.value.map((x) => (x.name === r.name ? { ...x, paceRpm: rpm } : x));
+    toast(rpm ? t("models.paceSaved", { n: rpm, s: paceInterval(rpm) }) : t("models.paceCleared"), rpm ? "success" : "default");
+  } catch (e) {
+    toast((e as Error).message, "error");
+  }
+}
+/** Esc: reset the draft to the current cap, then blur (→ commit is a no-op). */
+function revertPace(r: Row, el: HTMLInputElement): void {
+  paceDraft.value = r.paceRpm ? String(r.paceRpm) : "";
+  el.blur();
+}
+
 /** Remove a single slot by index (NOT all slots for the source — a source may
  *  occupy several slots, and the per-row trash button removes just the one). */
 async function removeSource(r: Row, fmt: Fmt, i: number) {
@@ -786,6 +826,9 @@ onMounted(load);
                           >
                             <Copy class="h-3 w-3" />
                           </button>
+                          <Badge v-if="r.paceRpm" variant="outline" class="gap-1" :title="t('models.paceBadgeHint', { n: r.paceRpm, s: paceInterval(r.paceRpm) })">
+                            <Gauge class="h-3 w-3" />{{ t("models.paceBadge", { n: r.paceRpm }) }}
+                          </Badge>
                           <Badge v-if="rowProbe(r)?.state === 'testing'" variant="muted" class="gap-1"><Loader2 class="h-3 w-3 animate-spin" />{{ t("models.probeTesting") }}</Badge>
                           <Badge v-else-if="rowProbe(r)?.state === 'ok'" variant="success" :title="t('models.probeOkHint', { name: rowProbe(r)?.provider ?? '' })">{{ t("models.probeOk") }}</Badge>
                           <Badge v-else-if="rowProbe(r)?.state === 'fail'" variant="destructive" :title="rowProbe(r)?.error || t('models.probeFailHint')">{{ t("models.probeFail") }} · {{ rowProbe(r)?.status || '?' }}</Badge>
@@ -983,6 +1026,41 @@ onMounted(load);
                         <Plus class="h-3.5 w-3.5" />
                         {{ t("models.addSourceToChain") }}
                       </Button>
+                    </div>
+
+                    <!-- model-level even pacing (leaky bucket): the release rate
+                         input sits at the chain footer - it applies to every route
+                         of the model, not to any single source. -->
+                    <div class="flex items-center gap-2 px-1 pt-1 text-xs text-muted-foreground">
+                      <Gauge class="h-3 w-3 shrink-0" />
+                      <span class="shrink-0 font-medium">{{ t("models.paceLabel") }}</span>
+                      <span v-if="isPaceEditing(r)" class="flex items-center gap-1">
+                        <input
+                          v-focus
+                          type="number"
+                          min="0"
+                          inputmode="numeric"
+                          :value="paceDraft"
+                          :placeholder="t('models.paceNone')"
+                          :aria-label="t('models.paceLabel')"
+                          :title="t('models.paceBadgeHint', { n: 60, s: 1 })"
+                          class="h-6 w-16 rounded-md border border-input bg-background px-2 font-mono text-xs shadow-sm transition-colors placeholder:font-sans placeholder:text-muted-foreground/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+                          @input="paceDraft = ($event.target as HTMLInputElement).value"
+                          @keyup.enter="($event.target as HTMLInputElement).blur()"
+                          @keyup.esc="revertPace(r, $event.target as HTMLInputElement)"
+                          @blur="commitPace(r)"
+                        />
+                        <span>/ {{ t("models.pacePerMin") }}</span>
+                      </span>
+                      <button
+                        v-else
+                        type="button"
+                        :title="t('models.paceBadgeHint', { n: r.paceRpm || 60, s: r.paceRpm ? paceInterval(r.paceRpm) : 1 })"
+                        class="inline-flex items-center gap-1 rounded-full border border-input bg-background px-2 py-0.5 font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                        @click="enterPaceEdit(r)"
+                      >
+                        {{ r.paceRpm ? t("models.paceBadge", { n: r.paceRpm }) : t("models.paceNone") }}
+                      </button>
                     </div>
                   </div>
                 </div>

@@ -40,6 +40,11 @@ const RESET_CAP_MS = 6 * 60 * 60 * 1000;
  *  window. 60s matches the usual "requests per minute" limit. */
 const RPM_WINDOW_MS = 60_000;
 
+/** Even-pacing queue cap: a request whose reserved slot is further out than
+ *  this gets rejected (429) instead of queueing. Bounds both the client's hang
+ *  time and the queue depth (at N rpm / 60s wait, at most ~N requests queue). */
+const PACE_MAX_WAIT_MS = 60_000;
+
 /** Per-provider circuit state (in-memory, never persisted). */
 interface CircuitEntry {
   fails: number;
@@ -183,6 +188,9 @@ export class Store {
   /** Per-provider dispatch timestamps within the RPM pacing window. In-memory,
    *  NOT persisted (resets on restart). Pruned as `rpmUsed` reads. */
   private rpm = new Map<string, number[]>();
+  /** Per-model even-pacing queue: model name -> epoch ms of the next free
+   *  release slot. In-memory, NOT persisted (resets on restart). */
+  private pace = new Map<string, number>();
 
   constructor(dataDir: string, opts: { logger?: Logger } = {}) {
     this.dataDir = dataDir;
@@ -597,6 +605,26 @@ export class Store {
     const arr = this.rpm.get(id);
     if (arr) arr.push(Date.now());
     else this.rpm.set(id, [Date.now()]);
+  }
+
+  // --- even pacing (per model, in-memory leaky-bucket queue) ---
+
+  /** Reserve the next release slot for a call to `model`, paced at `rpm`
+   *  requests/min (one every 60/rpm seconds). Returns the ms the caller should
+   *  sleep BEFORE forwarding (0 = go now), or -1 when the next free slot is
+   *  further out than PACE_MAX_WAIT_MS (caller rejects with 429 - the slot is
+   *  left unclaimed so rejections never push the queue further back). Slot
+   *  claiming is synchronous, so concurrent dispatches get strictly FIFO slots;
+   *  after an idle period the stale slot is clamped to now (first request goes
+   *  through immediately). */
+  paceClaim(model: string, rpm: number): number {
+    const interval = RPM_WINDOW_MS / rpm;
+    const now = Date.now();
+    const next = Math.max(this.pace.get(model) ?? 0, now);
+    const wait = next - now;
+    if (wait > PACE_MAX_WAIT_MS) return -1;
+    this.pace.set(model, next + interval);
+    return wait;
   }
 
   /** Snapshot of every configured provider's circuit state for GET /admin/circuit.

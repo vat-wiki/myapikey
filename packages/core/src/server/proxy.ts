@@ -9,6 +9,11 @@ import { UsageCollector } from "./tokens";
  *  for THIS source only - the same request may be fine on the next one. */
 const RETRYABLE = new Set([401, 403, 408, 425, 429, 500, 502, 503, 504]);
 
+/** Even pacing (per-model `paceRpm`) message constants. The queue itself lives
+ *  in Store.paceClaim - 60s wait horizon, one release every 60/rpm seconds. */
+const PACE_MAX_WAIT_S = 60;
+const RPM_SECONDS = 60;
+
 /** Headers copied from upstream back to the client. */
 const COPY_DOWN = ["content-type", "cache-control", "x-request-id", "openai-organization", "anthropic-ratelimit-requests-reset"];
 
@@ -398,6 +403,35 @@ export function proxyApi(
     const sayCooldown = (p: Provider, r: { entered: boolean; fails: number; cooldownMs: number }) => {
       if (r.entered && !isProbe) rt.warn(`proxy circuit open: provider '${p.name}' cooldown=${r.cooldownMs}ms fails=${r.fails}`);
     };
+
+    // Even pacing (per-model leaky bucket, `paceRpm`): spread the model's calls
+    // one every 60/rpm seconds - excess requests QUEUE here (bounded by a 60s
+    // wait horizon; past it they're rejected 429 in the wire's own error shape).
+    // One slot per REQUEST, claimed before the failover loop, so a call that
+    // fails over to later sources never queues twice. Independent of the
+    // per-source Provider.rpm skip (that one spills to the next source). Probes
+    // go through the same queue - they are real calls and claim real slots.
+    const paceRpm = store.get().models[model]?.paceRpm;
+    if (paceRpm) {
+      const wait = store.paceClaim(model, paceRpm);
+      if (wait < 0) {
+        const retryAfter = Math.max(1, Math.ceil(RPM_SECONDS / paceRpm));
+        const message = `rate limited: even-pacing queue for '${model}' is full (max wait ${Math.round(PACE_MAX_WAIT_S)}s; retry in ~${retryAfter}s)`;
+        if (!isProbe) rt.warn(`proxy model=${model}: paced out (429)`);
+        store.pushLog({ ts: Date.now(), model, provider: "", format: wire, status: 429, ms: Date.now() - start, stream, error: "even-pacing queue full" });
+        const headers = { "content-type": "application/json", "retry-after": String(retryAfter) };
+        if (wire === "anthropic") {
+          return c.json({ type: "error", error: { type: "rate_limit_error", message } }, 429, headers);
+        }
+        return c.json({ error: { message, type: "rate_limit_error", code: "rate_limit_exceeded" } }, 429, headers);
+      }
+      if (wait > 0) {
+        await new Promise((r) => setTimeout(r, wait));
+        // The client may have hung up while queued - release nothing upstream
+        // (the slot is already spent, but no need to burn provider quota too).
+        if (c.req.raw.signal?.aborted) return new Response(null, { status: 499 });
+      }
+    }
 
     // Skip providers that are either in circuit-breaker cooldown OR over their
     // RPM pacing cap. Both are heuristics: if every candidate is skipped, fall

@@ -184,6 +184,7 @@ model.command("list").action(async () => {
       const chain = fe.providers.map((p: any) => (p.model ? `${p.name}→${p.model}` : p.name)).join(" → ") || "(none)";
       console.log(`  ${f.padEnd(9)} ${fe.enabled ? "✓" : "·"} ${chain}`);
     }
+    if (m.paceRpm) console.log(`  pace      ${m.paceRpm}/min (one every ${Math.round(60 / m.paceRpm)}s)`);
   }
 });
 
@@ -252,6 +253,15 @@ model
     }
     await api(ctx(), "PUT", `/admin/models/${encodeURIComponent(name)}/priority`, { format: opts.format, order });
     console.log(`Priority for ${name} [${opts.format}]: ${refs.join(" → ")}`);
+  });
+
+model
+  .command("pace <name> [rpm]")
+  .description("set/clear the per-model even-pacing limit (requests/min, spread one every 60/rpm s; 0 = unlimited)")
+  .action(async (name: string, rpmRaw: string) => {
+    const rpm = Math.floor(Number(rpmRaw ?? 0)) || 0;
+    const r = (await api(ctx(), "PUT", `/admin/models/${encodeURIComponent(name)}/pace`, { rpm })) as { paceRpm: number };
+    console.log(r.paceRpm ? `Pacing ${name} at ${r.paceRpm}/min (one every ${Math.round(60 / r.paceRpm)}s).` : `Pacing cleared for ${name} (unlimited).`);
   });
 
 model.command("remove <name>").description("remove a model entirely (both formats)").action(async (name: string) => {

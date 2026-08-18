@@ -319,6 +319,7 @@ export function adminApi(store: Store, auth: MiddlewareHandler, openai: Hono, an
       openai: proj(e.openai),
       anthropic: proj(e.anthropic),
       responses: proj(e.responses),
+      paceRpm: e.paceRpm ?? 0,
     }));
     return c.json({ models });
   });
@@ -479,6 +480,28 @@ export function adminApi(store: Store, auth: MiddlewareHandler, openai: Hono, an
     if (errStatus === 404) return c.json({ error: { message: "model not found" } }, 404);
     if (errStatus === 400) return c.json({ error: { message: errMsg } }, 400);
     return c.json({ ok: true });
+  });
+
+  // Set (or clear) the per-model even-pacing limit: `rpm` requests/min spread
+  // evenly (one every 60/rpm seconds; excess calls queue at the gateway, capped
+  // at a 60s wait). 0/blank/invalid clears. Model-wide - shared by all three
+  // route slots - and independent of the per-source Provider.rpm spill-over.
+  app.put("/models/:name/pace", async (c) => {
+    const name = c.req.param("name");
+    const body = await readJson<{ rpm?: number }>(c.req.raw);
+    const rpm = coerceRpm(body?.rpm);
+    let errStatus = 0;
+    await store.update((d) => {
+      const entry = d.models[name];
+      if (!entry) {
+        errStatus = 404;
+        return;
+      }
+      if (rpm) entry.paceRpm = rpm;
+      else delete entry.paceRpm;
+    });
+    if (errStatus === 404) return c.json({ error: { message: "model not found" } }, 404);
+    return c.json({ ok: true, paceRpm: rpm ?? 0 });
   });
 
   // Set (or clear) the upstream-model mapping for ONE chain slot (addressed by

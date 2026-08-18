@@ -81,6 +81,12 @@ export interface ModelEntry {
   openai: FormatEntry;
   anthropic: FormatEntry;
   responses: FormatEntry;
+  /** Even-pacing rate limit (requests/min, leaky-bucket style). When set, calls
+   *  to this model are released one every 60/rpm seconds - excess requests QUEUE
+   *  at the gateway (up to 60s wait) instead of overflowing. Completely
+   *  independent of Provider.rpm (that one skips a busy source and fails over);
+   *  this one paces the model across all three route slots. Absent = unlimited. */
+  paceRpm?: number;
 }
 
 export interface Account {

@@ -314,6 +314,90 @@ describe("proxy", () => {
     });
   });
 
+  describe("dispatch even pacing (per-model leaky bucket)", () => {
+    it("spreads concurrent calls one interval apart on one model", async () => {
+      await seedStore(store, {
+        providers: [A],
+        // rpm=600 -> one release every 100ms.
+        models: { m: makeModel({ paceRpm: 600, openai: fe(["prv_A"]) }) },
+      });
+      const times: number[] = [];
+      mock = mockFetch([
+        {
+          match: "/a/v1/chat/completions",
+          response: () => {
+            times.push(Date.now());
+            return { status: 200, body: { choices: [{ message: { content: "ok" } }] } };
+          },
+        },
+      ]);
+      const [r1, r2] = await Promise.all([
+        post("/openai/v1/chat/completions", { model: "m", messages: [] }),
+        post("/openai/v1/chat/completions", { model: "m", messages: [] }),
+      ]);
+      expect(r1.status).toBe(200);
+      expect(r2.status).toBe(200);
+      expect(times).toHaveLength(2);
+      // Second release waits a full interval (allow scheduling slack).
+      expect(times[1] - times[0]).toBeGreaterThanOrEqual(90);
+    });
+
+    it("does not delay a model without paceRpm", async () => {
+      await seedStore(store, {
+        providers: [A],
+        models: { m: makeModel({ openai: fe(["prv_A"]) }) },
+      });
+      const times: number[] = [];
+      mock = mockFetch([
+        {
+          match: "/a/v1/chat/completions",
+          response: () => {
+            times.push(Date.now());
+            return { status: 200, body: { choices: [{ message: { content: "ok" } }] } };
+          },
+        },
+      ]);
+      await Promise.all([
+        post("/openai/v1/chat/completions", { model: "m", messages: [] }),
+        post("/openai/v1/chat/completions", { model: "m", messages: [] }),
+      ]);
+      expect(times).toHaveLength(2);
+      expect(times[1] - times[0]).toBeLessThan(90);
+    });
+
+    it("429s with Retry-After when the queue is past the 60s horizon, and logs it", async () => {
+      await seedStore(store, {
+        providers: [A],
+        models: { m: makeModel({ paceRpm: 10, openai: fe(["prv_A"]) }) },
+      });
+      // Pre-fill the queue: 11 claims (immediate + 6s..60s) - the next slot is
+      // 66s out, past the 60s horizon.
+      for (let i = 0; i < 11; i++) store.paceClaim("m", 10);
+      mock = mockFetch([]);
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      expect(res.status).toBe(429);
+      expect(res.headers.get("retry-after")).toBe("6");
+      expect((await json<{ error: { type: string; code: string } }>(res)).error.type).toBe("rate_limit_error");
+      // Never touched the upstream; the rejection is visible in the timeline.
+      expect(mock.calls).toHaveLength(0);
+      expect(store.getLogs().some((l) => l.status === 429 && l.model === "m")).toBe(true);
+    });
+
+    it("429s in the anthropic error shape on the anthropic surface", async () => {
+      await seedStore(store, {
+        providers: [A],
+        models: { m: makeModel({ paceRpm: 10, anthropic: fe(["prv_A"]) }) },
+      });
+      for (let i = 0; i < 11; i++) store.paceClaim("m", 10);
+      mock = mockFetch([]);
+      const res = await post("/anthropic/v1/messages", { model: "m", messages: [] });
+      expect(res.status).toBe(429);
+      const body = await json<{ type: string; error: { type: string } }>(res);
+      expect(body.type).toBe("error");
+      expect(body.error.type).toBe("rate_limit_error");
+    });
+  });
+
   describe("dispatch model mapping", () => {
     it("rewrites model per provider and recomputes from the original on failover", async () => {
       // Reseed m so only B has an upstream name mapped.

@@ -14,6 +14,7 @@ type FlatModel = {
   openai: { enabled: boolean; providers: Array<{ id: string; name?: string; model?: string }> };
   anthropic?: { enabled: boolean; providers: Array<{ id: string; name?: string; model?: string }> };
   responses?: { enabled: boolean; providers: Array<{ id: string; name?: string; model?: string }> };
+  paceRpm?: number;
 };
 
 describe("server/admin", () => {
@@ -504,6 +505,39 @@ describe("server/admin", () => {
         method: "PUT", headers: H, body: JSON.stringify({ format: "openai", order: [] }),
       });
       expect(res.status).toBe(404);
+    });
+
+    it("PUT /admin/models/:name/pace sets, echoes, and clears the cap (visible via GET)", async () => {
+      const a = makeProvider({ formats: ["openai"] });
+      await seedStore(store, { providers: [a], models: { "gpt-4o": makeModel({ openai: fe([a.id]) }) } });
+      const app = createApp(store);
+      const set = await app.request("/admin/models/gpt-4o/pace", {
+        method: "PUT", headers: H, body: JSON.stringify({ rpm: 10 }),
+      });
+      expect(set.status).toBe(200);
+      expect((await json<{ paceRpm: number }>(set)).paceRpm).toBe(10);
+      expect(find(await modelsOf(app), "gpt-4o")!.paceRpm).toBe(10);
+      const clear = await app.request("/admin/models/gpt-4o/pace", {
+        method: "PUT", headers: H, body: JSON.stringify({ rpm: 0 }),
+      });
+      expect(clear.status).toBe(200);
+      expect((await json<{ paceRpm: number }>(clear)).paceRpm).toBe(0);
+      expect(find(await modelsOf(app), "gpt-4o")!.paceRpm).toBe(0);
+    });
+
+    it("PUT /admin/models/:name/pace clears invalid values and 404s on a missing model", async () => {
+      const a = makeProvider({ formats: ["openai"] });
+      await seedStore(store, { providers: [a], models: { "gpt-4o": makeModel({ paceRpm: 5, openai: fe([a.id]) }) } });
+      const app = createApp(store);
+      const bad = await app.request("/admin/models/gpt-4o/pace", {
+        method: "PUT", headers: H, body: JSON.stringify({ rpm: "nope" }),
+      });
+      expect(bad.status).toBe(200);
+      expect(find(await modelsOf(app), "gpt-4o")!.paceRpm).toBe(0);
+      const missing = await app.request("/admin/models/nope/pace", {
+        method: "PUT", headers: H, body: JSON.stringify({ rpm: 10 }),
+      });
+      expect(missing.status).toBe(404);
     });
 
     it("PUT /admin/models/:name/map sets the upstream mapping (visible via GET)", async () => {

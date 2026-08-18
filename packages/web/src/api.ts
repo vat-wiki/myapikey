@@ -84,6 +84,9 @@ export interface ModelView {
   openai: FormatView;
   anthropic: FormatView;
   responses: FormatView;
+  /** Per-model even-pacing limit (requests/min, 0 = unlimited). Calls are
+   *  spread one every 60/rpm seconds; excess queue at the gateway. */
+  paceRpm: number;
 }
 
 /** One provider's circuit-breaker state (GET /admin/circuit). Mirrors the

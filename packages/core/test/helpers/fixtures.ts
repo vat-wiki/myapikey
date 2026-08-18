@@ -30,12 +30,15 @@ export function fe(slots: (string | ChainSlot)[], over: { enabled?: boolean } = 
   return { enabled: over.enabled ?? providers.length > 0, providers };
 }
 
-/** A model entry; defaults to all slots disabled/empty. */
+/** A model entry; defaults to all slots disabled/empty. Non-slot fields
+ *  (e.g. `paceRpm`) pass through as-is. */
 export function makeModel(slots: Partial<ModelEntry> = {}): ModelEntry {
+  const { openai, anthropic, responses, ...rest } = slots;
   return {
-    openai: slots.openai ?? fe([]),
-    anthropic: slots.anthropic ?? fe([]),
-    responses: slots.responses ?? fe([]),
+    ...rest,
+    openai: openai ?? fe([]),
+    anthropic: anthropic ?? fe([]),
+    responses: responses ?? fe([]),
   };
 }
 
