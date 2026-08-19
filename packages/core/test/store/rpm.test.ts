@@ -45,6 +45,23 @@ describe("store rpm pacing", () => {
     });
   });
 
+  describe("rpmNextFreeMs", () => {
+    it("is 0 with no recorded dispatches", () => {
+      expect(env.store.rpmNextFreeMs("prv_1")).toBe(0);
+    });
+    it("reports ms until the oldest window entry ages out", () => {
+      env.store.recordDispatch("prv_1"); // at BASE
+      vi.advanceTimersByTime(10_000);
+      expect(env.store.rpmNextFreeMs("prv_1")).toBe(50_000);
+    });
+    it("is 0 once the window has expired, pruning as it reads", () => {
+      env.store.recordDispatch("prv_1"); // at BASE
+      vi.advanceTimersByTime(60_001);
+      expect(env.store.rpmNextFreeMs("prv_1")).toBe(0);
+      expect(env.store.rpmUsed("prv_1")).toBe(0);
+    });
+  });
+
   describe("circuitState exposes rpm", () => {
     it("reports the configured cap and live window count", () => {
       env.store.recordDispatch("prv_1");

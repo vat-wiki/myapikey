@@ -433,135 +433,166 @@ export function proxyApi(
       }
     }
 
-    // Skip providers that are either in circuit-breaker cooldown OR over their
-    // RPM pacing cap. Both are heuristics: if every candidate is skipped, fall
-    // back to the full list anyway — one real attempt beats a guaranteed 502
-    // (a skipped provider that now succeeds also resets its state). A pinned
-    // (per-source) probe ignores both — the user is testing THIS source now,
-    // whatever its breaker/pacing state.
-    const skipped = (slot: CandidateSlot) => {
-      const p = slot.provider;
-      return store.isCooling(p.id) || (!!p.rpm && store.rpmUsed(p.id) >= p.rpm);
+    // Selection + failover run in ROUNDS. Each round attempts the candidates
+    // that are neither in circuit-breaker cooldown nor over their rpm cap; a
+    // capped-but-healthy source still spills to the next free source (failover
+    // first). Only when NOTHING is immediately usable but some candidate is
+    // merely over its rpm cap does the request QUEUE: sleep until that source's
+    // soonest window slot frees and run another round — the client perceives
+    // only the wait (or its own timeout), never an rpm error. There is no wait
+    // cap: rounds terminate anyway because retryable failures escalate the
+    // circuit breaker, so sources converge to cooling and the final round is
+    // the old try-anyway fallback (full list — one real attempt beats a
+    // guaranteed 502, and a skipped provider that now succeeds also resets its
+    // state). A pinned (per-source) probe ignores all of this — the user is
+    // testing THIS source now, whatever its breaker/pacing state.
+    const cooling = (slot: CandidateSlot) => store.isCooling(slot.provider.id);
+    const overRpm = (slot: CandidateSlot) => !!slot.provider.rpm && store.rpmUsed(slot.provider.id) >= slot.provider.rpm;
+    /** Sleep until the soonest rpm slot frees among `capped`. Returns false
+     *  when the client hung up while queued — the caller drops the request
+     *  (nothing was sent upstream, so no log row either). */
+    const waitForSlot = async (capped: CandidateSlot[]): Promise<boolean> => {
+      const wait = Math.max(1, Math.min(...capped.map((s) => store.rpmNextFreeMs(s.provider.id))));
+      if (!isProbe) rt.warn(`proxy model=${model}: all sources over rpm cap — queued, next slot in ~${Math.round(wait / 1000)}s`);
+      await new Promise((r) => setTimeout(r, wait));
+      return !c.req.raw.signal?.aborted;
     };
-    const live = pinIndex != null ? list : list.filter((slot) => !skipped(slot));
-    const order = live.length ? live : list;
 
-    for (const slot of order) {
-      const provider = slot.provider;
-      // Per-slot upstream model name (absent = send the public name). Read from
-      // the slot each iteration, so failover never carries the previous slot's
-      // upstream name.
-      body.model = slot.model ?? model;
-      // The actual upstream model forwarded this attempt (after the per-slot
-      // rewrite). Recorded on the log row so history shows which real model a
-      // routed call landed on when a source remaps the public name. `undefined`
-      // when the public name went through verbatim — JSON.stringify drops it, so
-      // identity + legacy rows stay clean.
-      const upstreamModel = slot.model && slot.model !== model ? slot.model : undefined;
-      // Count this attempt toward the source's RPM window — but not for a pinned
-      // probe, which (like circuit state) takes no routing side-effects.
-      if (pinIndex == null) store.recordDispatch(provider.id);
-      let upstream: Response;
-      try {
-        upstream = await fetch(upstreamTarget(provider, key).url, {
-          method: "POST",
-          headers: upstreamHeaders(provider, wire, clientVersion),
-          body: JSON.stringify(body),
-        });
-      } catch {
-        // Network error / DNS / timeout → try next provider.
-        lastStatus = 502;
-        lastErr = "network error";
-        if (pinIndex != null) break; // per-source probe: fail fast, no circuit impact.
-        sayFailover(provider, "network error");
-        const r = store.recordCircuitFailure(provider.id, lastStatus, lastErr);
-        if (r.entered) {
-          store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: lastErr });
-          sayCooldown(provider, r);
+    for (;;) {
+      // Re-read the chain each round: config and circuit state move while queued.
+      const cur = pinIndex != null ? list : candidates(store, model, key);
+      if (pinIndex == null && !cur.length) return notFound(c, model); // disabled while queued
+      const live = pinIndex != null ? cur : cur.filter((s) => !cooling(s) && !overRpm(s));
+      const capped = pinIndex != null ? [] : cur.filter((s) => !cooling(s) && overRpm(s));
+      if (pinIndex == null && !live.length && capped.length) {
+        if (await waitForSlot(capped)) continue;
+        return new Response(null, { status: 499 });
+      }
+      const order = live.length ? live : cur;
+
+      for (const slot of order) {
+        const provider = slot.provider;
+        // Per-slot upstream model name (absent = send the public name). Read from
+        // the slot each iteration, so failover never carries the previous slot's
+        // upstream name.
+        body.model = slot.model ?? model;
+        // The actual upstream model forwarded this attempt (after the per-slot
+        // rewrite). Recorded on the log row so history shows which real model a
+        // routed call landed on when a source remaps the public name. `undefined`
+        // when the public name went through verbatim — JSON.stringify drops it, so
+        // identity + legacy rows stay clean.
+        const upstreamModel = slot.model && slot.model !== model ? slot.model : undefined;
+        // Count this attempt toward the source's RPM window — but not for a pinned
+        // probe, which (like circuit state) takes no routing side-effects.
+        if (pinIndex == null) store.recordDispatch(provider.id);
+        let upstream: Response;
+        try {
+          upstream = await fetch(upstreamTarget(provider, key).url, {
+            method: "POST",
+            headers: upstreamHeaders(provider, wire, clientVersion),
+            body: JSON.stringify(body),
+          });
+        } catch {
+          // Network error / DNS / timeout → try next provider.
+          lastStatus = 502;
+          lastErr = "network error";
+          if (pinIndex != null) break; // per-source probe: fail fast, no circuit impact.
+          sayFailover(provider, "network error");
+          const r = store.recordCircuitFailure(provider.id, lastStatus, lastErr);
+          if (r.entered) {
+            store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: lastErr });
+            sayCooldown(provider, r);
+          }
+          continue;
         }
-        continue;
-      }
 
-      if (upstream.ok) {
-        // A 200 from the upstream is NOT proof the call succeeded: some backends
-        // return 200 then truncate the stream (or emit no content) for request
-        // shapes they mishandle. We commit the 200 status to the client right
-        // away (headers are already sent) but OBSERVE the body as it flows and
-        // settle once — on a clean, fully-terminated stream we close the circuit
-        // + log 200; on a truncated/errored stream we log 502, trip the circuit
-        // (so the NEXT call fails over), and — on the anthropic wire — inject a
-        // synthetic SSE error event so the client learns the stream died instead
-        // of seeing a silent EOF. TTFB is captured now; logging is deferred to
-        // the body's end (so the row reflects the real outcome, not just the
-        // headers). See observedBody() for the detection rules.
-        const ttfb = Date.now() - start;
-        const out = observedBody(upstream, {
-          stream,
-          key,
-          requestMessages: body.messages,
-          onSettle: (info) => {
-            if (info.ok) {
-              store.recordCircuitSuccess(provider.id);
-              store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: 200, ms: ttfb, stream, usage: info.usage });
-            } else {
-              // A pinned per-source probe takes no circuit side-effects (a manual
-              // test must not trip the breaker) — mirrors the retryable branch.
-              if (pinIndex == null) store.recordCircuitFailure(provider.id, info.status, info.error || "stream failed");
-              if (!isProbe) rt.warn(`proxy stream failed: provider '${provider.name}' status=${info.status} (${info.error || "stream failed"})`);
-              store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: info.status, ms: ttfb, stream, error: info.error });
-            }
-          },
-        });
-        return new Response(out, { status: upstream.status, headers: downHeaders(upstream, isProbe ? provider.name : undefined) });
-      }
-      if (RETRYABLE.has(upstream.status)) {
-        lastStatus = upstream.status;
-        // Drain so the connection can be reused, then move on; capture the
-        // reason for the log (this branch never streams back to the client).
-        const txt = await upstream.text().catch(() => "");
-        lastErr = shortError(txt) || `HTTP ${upstream.status}`;
-        if (pinIndex != null) break; // per-source probe: fail fast, no circuit impact.
-        sayFailover(provider, `HTTP ${lastStatus} (${lastErr})`);
-        // A 429/overloaded upstream usually carries Retry-After; honoring it
-        // cools for exactly as long as asked (clamped) instead of the escalating
-        // guess. Absent (5xx often, OR a quota error that buried the reset time
-        // in the BODY — e.g. Volcengine Ark's 1308 "您的限额将在 <datetime> 重置")
-        // → parse that deadline out of the body, else fall back to escalating.
-        const retryAfterMs = parseRetryAfter(upstream.headers.get("retry-after"));
-        const resetInMs = retryAfterMs ? undefined : parseResetFromBody(txt);
-        const r = store.recordCircuitFailure(provider.id, lastStatus, lastErr, retryAfterMs ?? resetInMs, !!resetInMs);
-        if (r.entered) {
-          store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: lastErr });
-          sayCooldown(provider, r);
+        if (upstream.ok) {
+          // A 200 from the upstream is NOT proof the call succeeded: some backends
+          // return 200 then truncate the stream (or emit no content) for request
+          // shapes they mishandle. We commit the 200 status to the client right
+          // away (headers are already sent) but OBSERVE the body as it flows and
+          // settle once — on a clean, fully-terminated stream we close the circuit
+          // + log 200; on a truncated/errored stream we log 502, trip the circuit
+          // (so the NEXT call fails over), and — on the anthropic wire — inject a
+          // synthetic SSE error event so the client learns the stream died instead
+          // of seeing a silent EOF. TTFB is captured now; logging is deferred to
+          // the body's end (so the row reflects the real outcome, not just the
+          // headers). See observedBody() for the detection rules.
+          const ttfb = Date.now() - start;
+          const out = observedBody(upstream, {
+            stream,
+            key,
+            requestMessages: body.messages,
+            onSettle: (info) => {
+              if (info.ok) {
+                store.recordCircuitSuccess(provider.id);
+                store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: 200, ms: ttfb, stream, usage: info.usage });
+              } else {
+                // A pinned per-source probe takes no circuit side-effects (a manual
+                // test must not trip the breaker) — mirrors the retryable branch.
+                if (pinIndex == null) store.recordCircuitFailure(provider.id, info.status, info.error || "stream failed");
+                if (!isProbe) rt.warn(`proxy stream failed: provider '${provider.name}' status=${info.status} (${info.error || "stream failed"})`);
+                store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: info.status, ms: ttfb, stream, error: info.error });
+              }
+            },
+          });
+          return new Response(out, { status: upstream.status, headers: downHeaders(upstream, isProbe ? provider.name : undefined) });
         }
-        continue;
+        if (RETRYABLE.has(upstream.status)) {
+          lastStatus = upstream.status;
+          // Drain so the connection can be reused, then move on; capture the
+          // reason for the log (this branch never streams back to the client).
+          const txt = await upstream.text().catch(() => "");
+          lastErr = shortError(txt) || `HTTP ${upstream.status}`;
+          if (pinIndex != null) break; // per-source probe: fail fast, no circuit impact.
+          sayFailover(provider, `HTTP ${lastStatus} (${lastErr})`);
+          // A 429/overloaded upstream usually carries Retry-After; honoring it
+          // cools for exactly as long as asked (clamped) instead of the escalating
+          // guess. Absent (5xx often, OR a quota error that buried the reset time
+          // in the BODY — e.g. Volcengine Ark's 1308 "您的限额将在 <datetime> 重置")
+          // → parse that deadline out of the body, else fall back to escalating.
+          const retryAfterMs = parseRetryAfter(upstream.headers.get("retry-after"));
+          const resetInMs = retryAfterMs ? undefined : parseResetFromBody(txt);
+          const r = store.recordCircuitFailure(provider.id, lastStatus, lastErr, retryAfterMs ?? resetInMs, !!resetInMs);
+          if (r.entered) {
+            store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: lastErr });
+            sayCooldown(provider, r);
+          }
+          continue;
+        }
+        // Non-retryable client error: return it to the caller as-is. Read the
+        // error text off a CLONE so the original body still streams back.
+        const errText = await upstream.clone().text().catch(() => "");
+        store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: upstream.status, ms: Date.now() - start, stream, error: shortError(errText) || `HTTP ${upstream.status}` });
+        return passThrough(upstream, isProbe ? provider.name : undefined);
       }
-      // Non-retryable client error: return it to the caller as-is. Read the
-      // error text off a CLONE so the original body still streams back.
-      const errText = await upstream.clone().text().catch(() => "");
-      store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: upstream.status, ms: Date.now() - start, stream, error: shortError(errText) || `HTTP ${upstream.status}` });
-      return passThrough(upstream, isProbe ? provider.name : undefined);
-    }
 
-    const last = order[order.length - 1];
-    const lastUpstreamModel = last.model && last.model !== model ? last.model : undefined;
-    if (!isProbe) rt.error(`proxy all providers failed model=${model} (last status ${lastStatus})`);
-    store.pushLog({ ts: Date.now(), model, upstreamModel: lastUpstreamModel, provider: last.provider.name, providerId: last.provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, error: lastErr || `all providers failed (last status ${lastStatus})` });
-    // A pinned (per-source) probe failed: surface the REAL upstream status the
-    // one slot returned (429/500/…), not a collapsed 502, and tag it with
-    // x-myapikey-provider so the source-row badge names the tested source.
-    if (pinIndex != null) {
-      const h = new Headers({ "content-type": "application/json" });
-      if (isProbe) h.set("x-myapikey-provider", encodeTag(last.provider.name));
-      return new Response(
-        JSON.stringify({ error: { message: lastErr || `provider failed (status ${lastStatus})`, type: "upstream_error" } }),
-        { status: lastStatus, headers: h },
+      const last = order[order.length - 1];
+      const lastUpstreamModel = last.model && last.model !== model ? last.model : undefined;
+      // Every slot in this round failed retryably. rpm-capped candidates
+      // remain - queue for their next slot instead of erroring the client.
+      if (pinIndex == null && capped.length) {
+        if (await waitForSlot(capped)) continue;
+        return new Response(null, { status: 499 });
+      }
+      if (!isProbe) rt.error(`proxy all providers failed model=${model} (last status ${lastStatus})`);
+      store.pushLog({ ts: Date.now(), model, upstreamModel: lastUpstreamModel, provider: last.provider.name, providerId: last.provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, error: lastErr || `all providers failed (last status ${lastStatus})` });
+      // A pinned (per-source) probe failed: surface the REAL upstream status the
+      // one slot returned (429/500/…), not a collapsed 502, and tag it with
+      // x-myapikey-provider so the source-row badge names the tested source.
+      if (pinIndex != null) {
+        const h = new Headers({ "content-type": "application/json" });
+        if (isProbe) h.set("x-myapikey-provider", encodeTag(last.provider.name));
+        return new Response(
+          JSON.stringify({ error: { message: lastErr || `provider failed (status ${lastStatus})`, type: "upstream_error" } }),
+          { status: lastStatus, headers: h },
+        );
+      }
+      return c.json(
+        { error: { message: `all providers for '${model}' failed (last status ${lastStatus})`, type: "upstream_error" } },
+        502,
       );
     }
-    return c.json(
-      { error: { message: `all providers for '${model}' failed (last status ${lastStatus})`, type: "upstream_error" } },
-      502,
-    );
   };
 
   // OpenAI surface: chat/completions + responses (/models is registered above,

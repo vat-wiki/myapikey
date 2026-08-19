@@ -607,6 +607,28 @@ export class Store {
     else this.rpm.set(id, [Date.now()]);
   }
 
+  /** Ms until one slot frees in this source's trailing window (i.e. until its
+   *  OLDEST recorded dispatch ages out) - the soonest a call over the source's
+   *  rpm cap could go through. 0 when the window's first entry has already
+   *  expired or the source has no recent activity (whether a slot is actually
+   *  free is the caller's rpmUsed-vs-rpm check). Prunes expired entries as it
+   *  reads, like rpmUsed. Used by dispatch to sleep out an rpm cap when every
+   *  candidate source is over its limit. */
+  rpmNextFreeMs(id: string): number {
+    const arr = this.rpm.get(id);
+    if (!arr || !arr.length) return 0;
+    const now = Date.now();
+    const cutoff = now - RPM_WINDOW_MS;
+    let i = 0;
+    while (i < arr.length && arr[i] < cutoff) i++;
+    if (i > 0) arr.splice(0, i);
+    if (!arr.length) {
+      this.rpm.delete(id);
+      return 0;
+    }
+    return Math.max(0, arr[0] + RPM_WINDOW_MS - now);
+  }
+
   // --- even pacing (per model, in-memory leaky-bucket queue) ---
 
   /** Reserve the next release slot for a call to `model`, paced at `rpm`

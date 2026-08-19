@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createApp } from "../../src/server/app";
 import { shortError, anthropicAuthHeaders } from "../../src/server/proxy";
 import type { Store } from "../../src/server/store";
@@ -280,21 +280,86 @@ describe("proxy", () => {
       expect(mock.calls.filter((c) => c.url.includes("/a/")).length).toBe(1);
     });
 
-    it("falls back to trying anyway when EVERY source is over its cap", async () => {
-      await seedStore(store, {
-        providers: [{ ...A, rpm: 1 }, { ...B, rpm: 1 }],
-        models: { m: makeModel({ openai: fe(["prv_A", "prv_B"]) }) },
-      });
-      // Both at their cap → heuristic would skip both, but the gateway falls back
-      // to the full chain rather than returning a guaranteed 502.
-      store.recordDispatch("prv_A");
-      store.recordDispatch("prv_B");
-      mock = mockFetch([
-        { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "from-A" } }] } } },
-      ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
-      expect(res.status).toBe(200);
-      expect(mock.calls.filter((c) => c.url.includes("/a/")).length).toBe(1);
+    it("queues when EVERY source is over its cap, dispatching once a slot frees", async () => {
+      vi.useFakeTimers();
+      try {
+        await seedStore(store, {
+          providers: [{ ...A, rpm: 1 }, { ...B, rpm: 1 }],
+          models: { m: makeModel({ openai: fe(["prv_A", "prv_B"]) }) },
+        });
+        // Both at their cap: nothing live, nothing cooling -> the request queues
+        // in the gateway instead of being sent over the limit (or erroring).
+        // The client just waits - here until the 60s windows slide.
+        store.recordDispatch("prv_A");
+        store.recordDispatch("prv_B");
+        mock = mockFetch([
+          { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "from-A" } }] } } },
+        ]);
+        const resPromise = post("/openai/v1/chat/completions", { model: "m", messages: [] });
+        await vi.advanceTimersByTimeAsync(60_001); // windows slide, queue releases
+        const res = await resPromise;
+        expect(res.status).toBe(200);
+        expect((await json<ChatBody>(res)).choices[0].message.content).toBe("from-A");
+        expect(mock.calls.filter((c) => c.url.includes("/a/")).length).toBe(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("queues for a capped source after the free sources all fail, instead of 502", async () => {
+      vi.useFakeTimers();
+      try {
+        await seedStore(store, {
+          providers: [{ ...A, rpm: 1 }, B],
+          models: { m: makeModel({ openai: fe(["prv_A", "prv_B"]) }) },
+        });
+        store.recordDispatch("prv_A"); // A capped; B free but failing
+        mock = mockFetch([
+          { match: "/b/v1/chat/completions", response: { status: 500, body: { error: { message: "boom" } } } },
+          { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "from-A" } }] } } },
+        ]);
+        const resPromise = post("/openai/v1/chat/completions", { model: "m", messages: [] });
+        // B fails (retryable) immediately; A is capped -> the request queues.
+        await vi.advanceTimersByTimeAsync(60_001);
+        const res = await resPromise;
+        expect(res.status).toBe(200);
+        expect((await json<ChatBody>(res)).choices[0].message.content).toBe("from-A");
+        expect(mock.calls.filter((c) => c.url.includes("/a/")).length).toBe(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("drops a queued request when the client disconnects - no upstream call, no log row", async () => {
+      vi.useFakeTimers();
+      try {
+        await seedStore(store, {
+          providers: [{ ...A, rpm: 1 }],
+          models: { m: makeModel({ openai: fe(["prv_A"]) }) },
+        });
+        store.recordDispatch("prv_A"); // at cap
+        mock = mockFetch([
+          { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "ok" } }] } } },
+        ]);
+        const ctrl = new AbortController();
+        const req = new Request("http://gw.test/openai/v1/chat/completions", {
+          method: "POST",
+          headers: { authorization: "Bearer " + store.get().apiKey, "content-type": "application/json" },
+          body: JSON.stringify({ model: "m", messages: [] }),
+          signal: ctrl.signal,
+        });
+        const resPromise = createApp(store).fetch(req);
+        // Let the request settle into the queue, then hang up.
+        await vi.advanceTimersByTimeAsync(0);
+        ctrl.abort();
+        await vi.advanceTimersByTimeAsync(60_001);
+        const res = await resPromise;
+        expect(res.status).toBe(499);
+        expect(mock.calls.filter((c) => c.url.includes("/a/")).length).toBe(0);
+        expect(store.getLogs().filter((e) => e.model === "m").length).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("a pinned per-source probe ignores the rpm cap and records nothing", async () => {
