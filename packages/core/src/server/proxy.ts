@@ -62,12 +62,14 @@ function parseResetFromBody(text: string): number | undefined {
 }
 
 /** One resolved routing slot: the provider to forward to plus THIS slot's
- *  optional upstream model name (absent = send the public model name). The
- *  same provider may occupy several slots in a chain — each is an independent
- *  failover slot carrying its own upstream model. */
+ *  optional upstream model name (absent = send the public model name) and
+ *  default thinking level. The same provider may occupy several slots in a
+ *  chain — each is an independent failover slot carrying its own upstream
+ *  model. */
 interface CandidateSlot {
   provider: Provider;
   model?: string;
+  thinking?: string;
 }
 
 /** Resolve the ordered, compatible provider slots for a model on a routing slot. */
@@ -83,7 +85,7 @@ function candidates(store: Store, model: string, key: RouteKey): CandidateSlot[]
   return fe.providers
     .map((s): CandidateSlot | null => {
       const p = byId.get(s.id);
-      return p ? { provider: p, model: s.model } : null;
+      return p ? { provider: p, model: s.model, thinking: s.thinking } : null;
     })
     .filter((slot): slot is CandidateSlot => {
       if (!slot) return false;
@@ -102,6 +104,84 @@ function notFound(c: Context, model: string) {
     },
     404,
   );
+}
+
+// --- per-slot default thinking level -----------------------------------------
+// Each routing slot can carry a default thinking level, injected ONLY when the
+// request itself carries no thinking parameter (a request's own setting always
+// wins). No cross-format translation — the default is applied in the wire's own
+// dialect, matching how the model rewrite stays a pure passthrough body edit:
+//   openai /chat/completions → `reasoning_effort: "<token>"` (low/medium/high/…)
+//   /responses               → `reasoning: { effort: "<token>" }`
+//   anthropic /v1/messages   → `thinking: { type: "enabled", budget_tokens: N }`
+//     (Anthropic has no named levels — the stored default IS the budget, a
+//     positive integer. The API also demands max_tokens > budget_tokens, so an
+//     at-or-below cap is lifted to budget+1; otherwise the call would 400 —
+//     including our own max_tokens:1 probe.)
+
+/** The body field this slot's thinking parameter travels in. */
+function thinkingField(key: RouteKey): "reasoning_effort" | "reasoning" | "thinking" {
+  if (key === "anthropic") return "thinking";
+  if (key === "responses") return "reasoning";
+  return "reasoning_effort";
+}
+
+/** Whether the CLIENT's own body already steers thinking on this slot, plus a
+ *  short best-effort display of what it asked for (for the log row). On openai
+ *  chat, any of the ecosystem's switches counts — compat backends also honor
+ *  `thinking` / `enable_thinking`, and double-specifying alongside a default
+ *  would only confuse them. */
+function clientThinking(body: Record<string, unknown>, key: RouteKey): { set: boolean; value?: string } {
+  const show = (v: unknown): string | undefined => (typeof v === "object" && v !== null ? JSON.stringify(v) : String(v));
+  if (key === "responses") {
+    const r = body.reasoning;
+    if (r === undefined || r === null) return { set: false };
+    const effort = (r as { effort?: unknown }).effort;
+    return { set: true, value: effort === undefined ? show(r) : show(effort) };
+  }
+  if (key === "anthropic") {
+    const t = body.thinking;
+    if (t === undefined || t === null) return { set: false };
+    const budget = (t as { budget_tokens?: unknown }).budget_tokens;
+    return { set: true, value: budget === undefined ? show(t) : show(budget) };
+  }
+  const found = [
+    body.reasoning_effort,
+    (body.reasoning as { effort?: unknown } | undefined)?.effort,
+    (body.thinking as { budget_tokens?: unknown } | undefined)?.budget_tokens,
+    (body.thinking as { type?: unknown } | undefined)?.type,
+    body.enable_thinking,
+  ].find((v) => v !== undefined && v !== null);
+  return { set: found !== undefined, value: found === undefined ? undefined : show(found) };
+}
+
+/** Apply THIS slot's thinking default to the body (mutating it), and return the
+ *  log row's `thinking` field: the level that applied and where it came from.
+ *  Undefined = nothing applied. A slot without a default CLEARS whatever an
+ *  earlier failover slot injected, so a chain never leaks slot A's level into
+ *  slot B (the model rewrite has the same recompute-per-attempt discipline). */
+function applySlotThinking(
+  body: Record<string, unknown>,
+  key: RouteKey,
+  def: string | undefined,
+  client: { set: boolean; value?: string },
+): { value: string; from: "client" | "default" } | undefined {
+  if (client.set) return { value: client.value ?? "", from: "client" };
+  const field = thinkingField(key);
+  if (!def) {
+    delete body[field]; // no-op unless a previous slot injected one
+    return undefined;
+  }
+  if (key === "anthropic") {
+    const budget = Number(def);
+    body.thinking = { type: "enabled", budget_tokens: budget };
+    if (typeof body.max_tokens === "number" && body.max_tokens <= budget) body.max_tokens = budget + 1;
+  } else if (key === "responses") {
+    body.reasoning = { effort: def };
+  } else {
+    body.reasoning_effort = def;
+  }
+  return { value: def, from: "default" };
 }
 
 /** Auth headers for the Anthropic wire format. Sends BOTH x-api-key and
@@ -353,6 +433,9 @@ export function proxyApi(
     const model: string = body.model;
     const wire: Format = key === "anthropic" ? "anthropic" : "openai";
     const stream = body.stream === true;
+    // The client's own thinking setting, read ONCE from the original body (the
+    // per-slot default injection below would otherwise read back as "client").
+    const clientThink = clientThinking(body, key);
     // The model-page "test" button drives dispatch via an in-process loopback
     // (adminApi calls v1.request). The probe is a real call in every respect —
     // including being logged — so we only tag it to report WHICH provider
@@ -393,6 +476,9 @@ export function proxyApi(
     const start = Date.now();
     let lastStatus = 502;
     let lastErr = "";
+    // Thinking level of the most recent attempt (for the all-failed row after
+    // the rounds loop; per-attempt rows capture the loop's own `think` const).
+    let lastThink: { value: string; from: "client" | "default" } | undefined;
     // Runtime log (console + server.log). Errors and notable events only — the
     // per-call history these lines summarize goes to pushLog/logs.jsonl anyway.
     // UI-triggered probes are excluded: their outcome is shown inline already.
@@ -482,6 +568,12 @@ export function proxyApi(
         // when the public name went through verbatim — JSON.stringify drops it, so
         // identity + legacy rows stay clean.
         const upstreamModel = slot.model && slot.model !== model ? slot.model : undefined;
+        // Per-slot default thinking level: re-read from the slot and re-applied
+        // every attempt (an earlier slot's injection is cleared when this one
+        // has no default — see applySlotThinking). The request's own thinking
+        // parameter, when present, was captured once above and always wins.
+        const think = applySlotThinking(body, key, slot.thinking, clientThink);
+        lastThink = think;
         // Count this attempt toward the source's RPM window — but not for a pinned
         // probe, which (like circuit state) takes no routing side-effects.
         if (pinIndex == null) store.recordDispatch(provider.id);
@@ -500,7 +592,7 @@ export function proxyApi(
           sayFailover(provider, "network error");
           const r = store.recordCircuitFailure(provider.id, lastStatus, lastErr);
           if (r.entered) {
-            store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: lastErr });
+            store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, thinking: think, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: lastErr });
             sayCooldown(provider, r);
           }
           continue;
@@ -526,13 +618,13 @@ export function proxyApi(
             onSettle: (info) => {
               if (info.ok) {
                 store.recordCircuitSuccess(provider.id);
-                store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: 200, ms: ttfb, stream, usage: info.usage });
+                store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: 200, ms: ttfb, stream, thinking: think, usage: info.usage });
               } else {
                 // A pinned per-source probe takes no circuit side-effects (a manual
                 // test must not trip the breaker) — mirrors the retryable branch.
                 if (pinIndex == null) store.recordCircuitFailure(provider.id, info.status, info.error || "stream failed");
                 if (!isProbe) rt.warn(`proxy stream failed: provider '${provider.name}' status=${info.status} (${info.error || "stream failed"})`);
-                store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: info.status, ms: ttfb, stream, error: info.error });
+                store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: info.status, ms: ttfb, stream, thinking: think, error: info.error });
               }
             },
           });
@@ -555,7 +647,7 @@ export function proxyApi(
           const resetInMs = retryAfterMs ? undefined : parseResetFromBody(txt);
           const r = store.recordCircuitFailure(provider.id, lastStatus, lastErr, retryAfterMs ?? resetInMs, !!resetInMs);
           if (r.entered) {
-            store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: lastErr });
+            store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, thinking: think, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: lastErr });
             sayCooldown(provider, r);
           }
           continue;
@@ -563,7 +655,7 @@ export function proxyApi(
         // Non-retryable client error: return it to the caller as-is. Read the
         // error text off a CLONE so the original body still streams back.
         const errText = await upstream.clone().text().catch(() => "");
-        store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: upstream.status, ms: Date.now() - start, stream, error: shortError(errText) || `HTTP ${upstream.status}` });
+        store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: upstream.status, ms: Date.now() - start, stream, thinking: think, error: shortError(errText) || `HTTP ${upstream.status}` });
         return passThrough(upstream, isProbe ? provider.name : undefined);
       }
 
@@ -576,7 +668,7 @@ export function proxyApi(
         return new Response(null, { status: 499 });
       }
       if (!isProbe) rt.error(`proxy all providers failed model=${model} (last status ${lastStatus})`);
-      store.pushLog({ ts: Date.now(), model, upstreamModel: lastUpstreamModel, provider: last.provider.name, providerId: last.provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, error: lastErr || `all providers failed (last status ${lastStatus})` });
+      store.pushLog({ ts: Date.now(), model, upstreamModel: lastUpstreamModel, provider: last.provider.name, providerId: last.provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, thinking: lastThink, error: lastErr || `all providers failed (last status ${lastStatus})` });
       // A pinned (per-source) probe failed: surface the REAL upstream status the
       // one slot returned (429/500/…), not a collapsed 502, and tag it with
       // x-myapikey-provider so the source-row badge names the tested source.

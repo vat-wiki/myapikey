@@ -74,6 +74,11 @@ export interface ModelProvider {
   /** Upstream model name this source is mapped to on this route
    *  (undefined = send the public model name verbatim). */
   model?: string;
+  /** Default thinking level for this slot on this route (undefined = pure
+   *  passthrough). Effort token on openai/responses routes, thinking budget
+   *  tokens (integer) on anthropic routes. Applied only when the request
+   *  carries no thinking parameter of its own. */
+  thinking?: string;
 }
 export interface FormatView {
   enabled: boolean;

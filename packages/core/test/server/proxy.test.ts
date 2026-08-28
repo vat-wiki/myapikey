@@ -492,6 +492,117 @@ describe("proxy", () => {
     });
   });
 
+  describe("dispatch thinking default", () => {
+    it("injects the slot's default when the request carries no thinking parameter, and logs it as the default", async () => {
+      await seedStore(store, {
+        models: { m: makeModel({ openai: fe([{ id: "prv_A", thinking: "high" }]) }) },
+      });
+      mock = mockFetch([
+        { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "ok" } }] } } },
+      ]);
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      expect(res.status).toBe(200);
+      expect(JSON.parse(mock.calls[0].body).reasoning_effort).toBe("high");
+      await res.text(); // drain so the success row's onSettle fires + logs
+      const log = store.getLogs().find((e) => e.model === "m" && !e.kind);
+      expect(log?.thinking).toEqual({ value: "high", from: "default" });
+    });
+
+    it("forwards the request's own thinking setting untouched and logs it as client-set", async () => {
+      await seedStore(store, {
+        models: { m: makeModel({ openai: fe([{ id: "prv_A", thinking: "high" }]) }) },
+      });
+      mock = mockFetch([
+        { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "ok" } }] } } },
+      ]);
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [], reasoning_effort: "low" });
+      await res.text();
+      expect(JSON.parse(mock.calls[0].body).reasoning_effort).toBe("low");
+      expect(store.getLogs().find((e) => e.model === "m")?.thinking).toEqual({ value: "low", from: "client" });
+    });
+
+    it("treats a compat-backend thinking switch (enable_thinking) as client-set and injects nothing", async () => {
+      await seedStore(store, {
+        models: { m: makeModel({ openai: fe([{ id: "prv_A", thinking: "high" }]) }) },
+      });
+      mock = mockFetch([
+        { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "ok" } }] } } },
+      ]);
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [], enable_thinking: true });
+      await res.text();
+      const up = JSON.parse(mock.calls[0].body);
+      expect(up.enable_thinking).toBe(true);
+      expect(up.reasoning_effort).toBeUndefined();
+      expect(store.getLogs().find((e) => e.model === "m")?.thinking).toEqual({ value: "true", from: "client" });
+    });
+
+    it("anthropic slot: injects thinking {type,budget_tokens} and lifts max_tokens above the budget", async () => {
+      await seedStore(store, {
+        models: { m: makeModel({ anthropic: fe([{ id: "prv_A", thinking: "2048" }]) }) },
+      });
+      mock = mockFetch([
+        { match: "/a/v1/messages", response: { status: 200, body: { content: [{ type: "text", text: "ok" }] } } },
+      ]);
+      // max_tokens: 1 is exactly what the admin test probe sends — the lift is
+      // what keeps a configured slot's own probe from 400ing.
+      const res = await post("/anthropic/v1/messages", { model: "m", messages: [], max_tokens: 1 });
+      expect(res.status).toBe(200);
+      const up = JSON.parse(mock.calls[0].body);
+      expect(up.thinking).toEqual({ type: "enabled", budget_tokens: 2048 });
+      expect(up.max_tokens).toBe(2049);
+      await res.text();
+      expect(store.getLogs().find((e) => e.model === "m")?.thinking).toEqual({ value: "2048", from: "default" });
+    });
+
+    it("anthropic: the request's own thinking object wins and max_tokens is left alone", async () => {
+      await seedStore(store, {
+        models: { m: makeModel({ anthropic: fe([{ id: "prv_A", thinking: "2048" }]) }) },
+      });
+      mock = mockFetch([
+        { match: "/a/v1/messages", response: { status: 200, body: { content: [{ type: "text", text: "ok" }] } } },
+      ]);
+      const own = { type: "enabled", budget_tokens: 256 };
+      const res = await post("/anthropic/v1/messages", { model: "m", messages: [], max_tokens: 512, thinking: own });
+      await res.text();
+      const up = JSON.parse(mock.calls[0].body);
+      expect(up.thinking).toEqual(own);
+      expect(up.max_tokens).toBe(512);
+      expect(store.getLogs().find((e) => e.model === "m")?.thinking).toEqual({ value: "256", from: "client" });
+    });
+
+    it("responses slot: injects reasoning.effort", async () => {
+      await seedStore(store, {
+        models: { m: makeModel({ responses: fe([{ id: "prv_A", thinking: "medium" }]) }) },
+      });
+      mock = mockFetch([
+        { match: "/a/v1/responses", response: { status: 200, body: { output: [] } } },
+      ]);
+      const res = await post("/openai/v1/responses", { model: "m", input: "x" });
+      await res.text();
+      expect(JSON.parse(mock.calls[0].body).reasoning).toEqual({ effort: "medium" });
+      expect(store.getLogs().find((e) => e.model === "m")?.thinking).toEqual({ value: "medium", from: "default" });
+    });
+
+    it("clears an injected level when failing over to a slot without a default", async () => {
+      await seedStore(store, {
+        models: { m: makeModel({ openai: fe([{ id: "prv_A", thinking: "high" }, { id: "prv_B" }]) }) },
+      });
+      mock = mockFetch([
+        { match: "/a/v1/chat/completions", response: { status: 503, body: { error: { message: "down" } } } },
+        { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "ok" } }] } } },
+      ]);
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      await res.text();
+      // Slot A was attempted WITH its default; B (which answered) got a clean body.
+      expect(JSON.parse(mock.calls.find((c) => c.url.includes("/a/"))!.body).reasoning_effort).toBe("high");
+      expect(JSON.parse(mock.calls.find((c) => c.url.includes("/b/"))!.body).reasoning_effort).toBeUndefined();
+      // Each row reflects the slot it belongs to: B's success ran with nothing
+      // applied; A's cooldown row records the level A was attempted with.
+      expect(store.getLogs().find((e) => e.model === "m" && e.status === 200)?.thinking).toBeUndefined();
+      expect(store.getLogs().find((e) => e.kind === "cooldown")?.thinking).toEqual({ value: "high", from: "default" });
+    });
+  });
+
   describe("dispatch duplicate slots (one source, several upstream models)", () => {
     it("fails over to a second slot under the SAME source, each sending its own upstream model", async () => {
       // coding → Ark:doubao-pro (slot 0) primary, Ark:doubao-lite (slot 1) fallback.

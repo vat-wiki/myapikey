@@ -312,6 +312,8 @@ export function adminApi(store: Store, auth: MiddlewareHandler, openai: Hono, an
         // send the public model name verbatim). Carried inline on each slot so
         // a provider can appear more than once with different upstream names.
         model: s.model,
+        // Default thinking level for this slot (undefined = pure passthrough).
+        thinking: s.thinking,
       })),
     });
     const models = Object.entries(d.models).map(([name, e]) => ({
@@ -538,6 +540,52 @@ export function adminApi(store: Store, auth: MiddlewareHandler, openai: Hono, an
     if (errStatus === 404) return c.json({ error: { message: errMsg } }, 404);
     if (errStatus === 400) return c.json({ error: { message: errMsg } }, 400);
     return c.json({ ok: true });
+  });
+
+  // Set (or clear) the default thinking level for ONE chain slot (addressed by
+  // `index`, like /map above). The value is whatever the slot's wire format
+  // takes natively: an effort token ("low"/"medium"/"high"/…) on openai/
+  // responses slots; a thinking budget in TOKENS (positive integer) on
+  // anthropic slots (Anthropic has no named levels). An empty value clears it
+  // (back to pure passthrough). Dispatch applies it only when the request
+  // carries no thinking parameter of its own.
+  app.put("/models/:name/thinking", async (c) => {
+    const name = c.req.param("name");
+    const body = await readJson<{ format?: RouteKey; index?: number; thinking?: string | number }>(c.req.raw);
+    if (!body?.format) return c.json({ error: { message: "format is required" } }, 400);
+    if (!Number.isInteger(body?.index) || (body?.index ?? -1) < 0)
+      return c.json({ error: { message: "index (non-negative integer) is required" } }, 400);
+    const format = body.format;
+    const index = body.index!;
+    const raw = body.thinking === undefined ? "" : String(body.thinking).trim();
+    if (raw && format === "anthropic" && (!/^\d+$/.test(raw) || Number(raw) < 1)) {
+      return c.json({ error: { message: "anthropic thinking default must be a positive integer (thinking budget tokens, e.g. 8192)" } }, 400);
+    }
+    if (raw && format !== "anthropic" && raw.length > 32) {
+      return c.json({ error: { message: "thinking default too long (max 32 chars)" } }, 400);
+    }
+    const value = raw && format === "anthropic" ? String(Number(raw)) : raw;
+    let errStatus = 0;
+    let errMsg = "";
+    await store.update((d) => {
+      const entry = d.models[name];
+      if (!entry) {
+        errStatus = 404;
+        errMsg = "model not found";
+        return;
+      }
+      const fe = entry[format];
+      if (index >= fe.providers.length) {
+        errStatus = 400;
+        errMsg = "index out of range for this model's chain";
+        return;
+      }
+      if (value) fe.providers[index].thinking = value;
+      else delete fe.providers[index].thinking;
+    });
+    if (errStatus === 404) return c.json({ error: { message: errMsg } }, 404);
+    if (errStatus === 400) return c.json({ error: { message: errMsg } }, 400);
+    return c.json({ ok: true, thinking: value || undefined });
   });
 
   app.post("/models/:name/disable", async (c) => {

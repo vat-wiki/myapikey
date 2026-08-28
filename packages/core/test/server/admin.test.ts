@@ -11,9 +11,9 @@ import type { Store } from "../../src/server/store";
  *  element instead of `unknown`. */
 type FlatModel = {
   name: string;
-  openai: { enabled: boolean; providers: Array<{ id: string; name?: string; model?: string }> };
-  anthropic?: { enabled: boolean; providers: Array<{ id: string; name?: string; model?: string }> };
-  responses?: { enabled: boolean; providers: Array<{ id: string; name?: string; model?: string }> };
+  openai: { enabled: boolean; providers: Array<{ id: string; name?: string; model?: string; thinking?: string }> };
+  anthropic?: { enabled: boolean; providers: Array<{ id: string; name?: string; model?: string; thinking?: string }> };
+  responses?: { enabled: boolean; providers: Array<{ id: string; name?: string; model?: string; thinking?: string }> };
   paceRpm?: number;
 };
 
@@ -584,6 +584,60 @@ describe("server/admin", () => {
       expect(res.status).toBe(200);
       const m = find(await modelsOf(app), "gpt-4o")!;
       expect(m.openai.providers[0].model).toBeUndefined();
+    });
+
+    it("PUT /admin/models/:name/thinking sets the slot default (effort token / budget tokens), visible via GET", async () => {
+      const a = makeProvider({ formats: ["openai", "anthropic"] });
+      await seedStore(store, {
+        providers: [a],
+        models: { "gpt-4o": makeModel({ openai: fe([a.id]), anthropic: fe([a.id]) }) },
+      });
+      const app = createApp(store);
+      const effort = await app.request("/admin/models/gpt-4o/thinking", {
+        method: "PUT", headers: H, body: JSON.stringify({ format: "openai", index: 0, thinking: "high" }),
+      });
+      expect(effort.status).toBe(200);
+      expect((await json<{ thinking?: string }>(effort)).thinking).toBe("high");
+      const budget = await app.request("/admin/models/gpt-4o/thinking", {
+        method: "PUT", headers: H, body: JSON.stringify({ format: "anthropic", index: 0, thinking: 8192 }),
+      });
+      expect(budget.status).toBe(200);
+      expect((await json<{ thinking?: string }>(budget)).thinking).toBe("8192");
+      const m = find(await modelsOf(app), "gpt-4o")!;
+      expect(m.openai.providers[0].thinking).toBe("high");
+      expect(m.anthropic!.providers[0].thinking).toBe("8192");
+    });
+
+    it("PUT /admin/models/:name/thinking rejects a non-numeric value on an anthropic slot", async () => {
+      const a = makeProvider({ formats: ["anthropic"] });
+      await seedStore(store, { providers: [a], models: { "gpt-4o": makeModel({ anthropic: fe([a.id]) }) } });
+      const res = await createApp(store).request("/admin/models/gpt-4o/thinking", {
+        method: "PUT", headers: H, body: JSON.stringify({ format: "anthropic", index: 0, thinking: "high" }),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it("PUT /admin/models/:name/thinking normalizes a numeric budget, clears on empty, 404/400s bad targets", async () => {
+      const a = makeProvider({ formats: ["openai"] });
+      await seedStore(store, { providers: [a], models: { "gpt-4o": makeModel({ openai: fe([a.id]) }) } });
+      const app = createApp(store);
+      const norm = await app.request("/admin/models/gpt-4o/thinking", {
+        method: "PUT", headers: H, body: JSON.stringify({ format: "openai", index: 0, thinking: "  low " }),
+      });
+      expect((await json<{ thinking?: string }>(norm)).thinking).toBe("low");
+      const clear = await app.request("/admin/models/gpt-4o/thinking", {
+        method: "PUT", headers: H, body: JSON.stringify({ format: "openai", index: 0, thinking: "" }),
+      });
+      expect(clear.status).toBe(200);
+      expect(find(await modelsOf(app), "gpt-4o")!.openai.providers[0].thinking).toBeUndefined();
+      const missing = await createApp(store).request("/admin/models/nope/thinking", {
+        method: "PUT", headers: H, body: JSON.stringify({ format: "openai", index: 0, thinking: "high" }),
+      });
+      expect(missing.status).toBe(404);
+      const range = await app.request("/admin/models/gpt-4o/thinking", {
+        method: "PUT", headers: H, body: JSON.stringify({ format: "openai", index: 1, thinking: "high" }),
+      });
+      expect(range.status).toBe(400);
     });
 
     it("POST /admin/models/:name/disable disables that slot", async () => {

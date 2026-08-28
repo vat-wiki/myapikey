@@ -29,6 +29,7 @@ import {
   Gauge,
   Filter,
   Copy,
+  Brain,
 } from "lucide-vue-next";
 import SourcesDialog from "@/SourcesDialog.vue";
 import ConfirmDialog from "@/ConfirmDialog.vue";
@@ -153,7 +154,7 @@ const offeringMap = computed(() => {
   return m;
 });
 
-interface ChainSrc { id: string; name: string; model?: string }
+interface ChainSrc { id: string; name: string; model?: string; thinking?: string }
 interface FormatRow { enabled: boolean; chain: ChainSrc[]; }
 interface Row {
   name: string;
@@ -169,9 +170,9 @@ const rows = computed<Row[]>(() => {
   const names = new Set<string>();
   for (const p of providers.value) for (const n of p.discoveredModels ?? []) names.add(n);
   for (const m of models.value) names.add(m.name);
-  const toRow = (fe: { enabled: boolean; providers: { id: string; name: string; model?: string }[] } | undefined): FormatRow => ({
+  const toRow = (fe: { enabled: boolean; providers: { id: string; name: string; model?: string; thinking?: string }[] } | undefined): FormatRow => ({
     enabled: fe?.enabled ?? false,
-    chain: (fe?.providers ?? []).map((p) => ({ id: p.id, name: p.name, model: p.model })),
+    chain: (fe?.providers ?? []).map((p) => ({ id: p.id, name: p.name, model: p.model, thinking: p.thinking })),
   });
   return [...names].map((name) => {
     const m = models.value.find((x) => x.name === name);
@@ -593,6 +594,59 @@ function revertMap(r: Row, f: Fmt, p: ChainSrc, i: number, el: HTMLInputElement)
   el.blur();
 }
 
+// --- per-slot thinking-level editing (on-demand, one slot at a time) ---
+// Same slot-indexed pattern as the upstream-model editor above. The value is
+// free-form per the wire: an effort token (low/medium/high) on openai/responses
+// routes, a thinking budget in tokens on anthropic routes — the placeholder
+// switches with the route. Applies only when a request carries no thinking
+// parameter of its own (the request's setting always wins).
+
+const thinkDraft = ref<Record<string, string>>({});
+const thinkEditingKey = ref<string>("");
+function isThinkEditing(r: Row, f: Fmt, i: number): boolean {
+  return thinkEditingKey.value === draftKey(r, f, i);
+}
+function enterThinkEdit(r: Row, f: Fmt, p: ChainSrc, i: number): void {
+  const k = draftKey(r, f, i);
+  thinkDraft.value[k] = p.thinking ?? "";
+  thinkEditingKey.value = k;
+}
+function thinkVal(r: Row, f: Fmt, i: number): string {
+  return thinkDraft.value[draftKey(r, f, i)] ?? "";
+}
+function onThinkInput(r: Row, f: Fmt, i: number, v: string): void {
+  thinkDraft.value[draftKey(r, f, i)] = v;
+}
+/** Input placeholder differs by route family: anthropic takes a token budget,
+ *  the OpenAI family an effort tier. */
+function thinkPh(f: Fmt): string {
+  return t(f === "anthropic" ? "models.thinkingPhBudget" : "models.thinkingPhEffort");
+}
+/** Commit on blur/Enter; blank clears the default (pure passthrough again).
+ *  No-op when the draft matches, so Enter→blur and Esc→blur don't double-write. */
+async function commitThink(r: Row, f: Fmt, p: ChainSrc, i: number): Promise<void> {
+  const k = draftKey(r, f, i);
+  thinkEditingKey.value = "";
+  const draft = (thinkDraft.value[k] ?? "").trim();
+  const cur = (p.thinking ?? "").trim();
+  if (draft === cur) return;
+  const m = models.value.find((x) => x.name === r.name);
+  if (m) m[f].providers[i].thinking = draft || undefined;
+  thinkDraft.value[k] = draft; // keep in sync so a follow-up blur is a no-op
+  try {
+    await req("PUT", `/admin/models/${enc(r.name)}/thinking`, { format: f, index: i, thinking: draft });
+    toast(draft ? t("models.thinkingSaved", { v: draft }) : t("models.thinkingCleared"), draft ? "success" : "default");
+  } catch (e) {
+    await load();
+    toast((e as Error).message, "error");
+  }
+}
+/** Esc: reset the draft to the committed value, then blur (→ commit is a no-op). */
+function revertThink(r: Row, f: Fmt, p: ChainSrc, i: number, el: HTMLInputElement): void {
+  thinkDraft.value[draftKey(r, f, i)] = p.thinking ?? "";
+  el.blur();
+}
+
 // --- per-source RPM cap editing (on-demand, one source at a time) ---
 // rpm is a SOURCE property — the key's per-minute limit, shared across every
 // model routed through this source (NOT per-model like the upstream name). So
@@ -981,6 +1035,37 @@ onMounted(load);
                           <span>→</span>{{ p.model }}
                         </button>
 
+                        <!-- default thinking level for THIS slot: same pill →
+                             inline-input pattern as the upstream model name.
+                             The pill shows only when a default is set; an
+                             unset slot reaches the input via the ⋯ menu. -->
+                        <div v-if="isThinkEditing(r, f, i)" class="flex items-center gap-1">
+                          <Brain class="h-3 w-3 text-muted-foreground" />
+                          <input
+                            v-focus
+                            type="text"
+                            :value="thinkVal(r, f, i)"
+                            :placeholder="thinkPh(f)"
+                            :aria-label="t('models.thinkingLabel')"
+                            :title="t('models.thinkingHint')"
+                            spellcheck="false"
+                            class="h-6 w-28 rounded-md border border-input bg-background px-2 font-mono text-xs shadow-sm transition-colors placeholder:font-sans placeholder:text-muted-foreground/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+                            @input="onThinkInput(r, f, i, ($event.target as HTMLInputElement).value)"
+                            @keyup.enter="($event.target as HTMLInputElement).blur()"
+                            @keyup.esc="revertThink(r, f, p, i, $event.target as HTMLInputElement)"
+                            @blur="commitThink(r, f, p, i)"
+                          />
+                        </div>
+                        <button
+                          v-else-if="p.thinking"
+                          type="button"
+                          :title="t('models.thinkingHint')"
+                          class="inline-flex items-center gap-1 rounded border border-transparent px-1.5 py-0.5 font-mono text-xs text-muted-foreground transition-colors hover:border-border hover:bg-background hover:text-foreground"
+                          @click="enterThinkEdit(r, f, p, i)"
+                        >
+                          <Brain class="h-3 w-3" />{{ p.thinking }}
+                        </button>
+
                         <!-- row actions surface on hover, or while the row is focused. -->
                         <div class="ml-auto flex items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
                           <Button variant="ghost" size="icon" class="h-7 w-7" :disabled="i === 0" :aria-label="t('models.moveUpAria')" @click="moveUp(r, i, f)">
@@ -1004,6 +1089,10 @@ onMounted(load);
                               <DropdownMenuItem @select="enterEdit(r, f, p, i)">
                                 <Pencil class="h-4 w-4" />
                                 {{ t("models.editUpstream") }}
+                              </DropdownMenuItem>
+                              <DropdownMenuItem @select="enterThinkEdit(r, f, p, i)">
+                                <Brain class="h-4 w-4" />
+                                {{ t("models.thinkingLabel") }}
                               </DropdownMenuItem>
                               <DropdownMenuItem @select="enterRpmEdit(p)">
                                 <Gauge class="h-4 w-4" />

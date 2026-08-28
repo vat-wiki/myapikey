@@ -68,6 +68,13 @@ export interface ChainSlot {
   /** Upstream model name to send to this provider. Absent = forward the public
    *  model name (the key in GateConfig.models) unchanged. */
   model?: string;
+  /** Default thinking level for this slot, applied when the REQUEST carries no
+   *  thinking parameter of its own (a request's own setting always wins). The
+   *  value is whatever the slot's wire format takes natively — no translation:
+   *  an effort token ("low"/"medium"/"high"/…) on openai/responses slots, a
+   *  thinking budget in tokens (positive integer) on anthropic slots. Absent =
+   *  pure passthrough. */
+  thinking?: string;
 }
 
 /** A model's routing dimensions — one per forwarding endpoint. /chat/completions
@@ -148,6 +155,12 @@ export interface LogEntry {
   usage?: Usage;
   /** Short upstream error text on non-2xx (omitted on success). */
   error?: string;
+  /** The thinking level this call ran with, and where it came from: "client" =
+   *  the request carried its own thinking parameter (forwarded untouched);
+   *  "default" = the gateway injected the routing slot's `thinking` default
+   *  because the request had none. Absent when neither applied (no default
+   *  configured, request carried nothing). */
+  thinking?: { value: string; from: "client" | "default" };
   /** Row kind. Absent on legacy lines → treated as a normal call. "cooldown"
    *  marks a circuit-breaker event (a provider just entered cooldown), shown
    *  distinctly in the timeline alongside the failures that caused it. */

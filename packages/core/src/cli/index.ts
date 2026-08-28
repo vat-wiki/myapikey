@@ -181,7 +181,7 @@ model.command("list").action(async () => {
     console.log(m.name);
     for (const f of fmts) {
       const fe = m[f];
-      const chain = fe.providers.map((p: any) => (p.model ? `${p.name}→${p.model}` : p.name)).join(" → ") || "(none)";
+      const chain = fe.providers.map((p: any) => `${p.model ? `${p.name}→${p.model}` : p.name}${p.thinking ? ` thinking=${p.thinking}` : ""}`).join(" → ") || "(none)";
       console.log(`  ${f.padEnd(9)} ${fe.enabled ? "✓" : "·"} ${chain}`);
     }
     if (m.paceRpm) console.log(`  pace      ${m.paceRpm}/min (one every ${Math.round(60 / m.paceRpm)}s)`);
@@ -262,6 +262,20 @@ model
     const rpm = Math.floor(Number(rpmRaw ?? 0)) || 0;
     const r = (await api(ctx(), "PUT", `/admin/models/${encodeURIComponent(name)}/pace`, { rpm })) as { paceRpm: number };
     console.log(r.paceRpm ? `Pacing ${name} at ${r.paceRpm}/min (one every ${Math.round(60 / r.paceRpm)}s).` : `Pacing cleared for ${name} (unlimited).`);
+  });
+
+model
+  .command("thinking <name> <index> [value]")
+  .description("set/clear the default thinking level of one chain slot (effort on openai/responses, budget tokens on anthropic; empty = clear)")
+  .addOption(fmtOption())
+  .action(async (name: string, indexRaw: string, value: string | undefined, opts: { format: "openai" | "anthropic" | "responses" }) => {
+    const index = Number(indexRaw);
+    const r = (await api(ctx(), "PUT", `/admin/models/${encodeURIComponent(name)}/thinking`, { format: opts.format, index, thinking: value ?? "" })) as { thinking?: string };
+    console.log(
+      r.thinking
+        ? `Default thinking for ${name} [${opts.format}] slot ${index}: ${r.thinking}.`
+        : `Default thinking cleared for ${name} [${opts.format}] slot ${index}.`,
+    );
   });
 
 model.command("remove <name>").description("remove a model entirely (both formats)").action(async (name: string) => {

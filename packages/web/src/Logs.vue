@@ -10,7 +10,7 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@
 import { Input } from "@/components/ui/input";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
-import { Activity, RefreshCw, Pause, Play, Loader2, Search, ChevronRight, ChevronDown, Filter, X, Timer, Gauge } from "lucide-vue-next";
+import { Activity, RefreshCw, Pause, Play, Loader2, Search, ChevronRight, ChevronDown, Filter, X, Timer, Gauge, Brain } from "lucide-vue-next";
 
 const { t } = useI18n();
 
@@ -36,6 +36,11 @@ interface LogEntry {
   /** Token usage for this call (success rows only). `estimated` marks local-
    *  tokenizer approximations (OpenAI chat streams w/o include_usage) → ≈. */
   usage?: Usage;
+  /** Thinking level this call ran with, and where it came from: "default" =
+   *  the gateway injected the routing slot's default (the request carried
+   *  none); "client" = the request's own setting, forwarded untouched.
+   *  Absent when neither applied. */
+  thinking?: { value: string; from: "client" | "default" };
 }
 
 const logs = ref<LogEntry[]>([]);
@@ -491,6 +496,14 @@ onUnmounted(stopPolling);
                   <span class="inline-flex items-center gap-1.5">
                     <Badge variant="outline" :class="fmtBadge(l.format)">{{ l.format }}</Badge>
                     <Badge v-if="l.stream" variant="muted" class="text-[10px]">{{ t("logs.stream") }}</Badge>
+                    <Badge
+                      v-if="l.thinking"
+                      variant="muted"
+                      class="gap-1 font-mono text-[10px]"
+                      :title="t('logs.detail.thinking') + ' · ' + (l.thinking.from === 'default' ? t('logs.thinkingDefault') : t('logs.thinkingClient'))"
+                    >
+                      <Brain class="h-3 w-3" />{{ l.thinking.value }}
+                    </Badge>
                   </span>
                 </TableCell>
                 <TableCell class="text-right font-mono text-xs text-muted-foreground">{{ fmtMs(l.ms) }}</TableCell>
@@ -510,6 +523,13 @@ onUnmounted(stopPolling);
                     <template v-if="l.upstreamModel">
                       <dt class="text-muted-foreground">{{ t("logs.detail.upstreamModel") }}</dt>
                       <dd class="break-all font-mono">{{ l.upstreamModel }}</dd>
+                    </template>
+                    <template v-if="l.thinking">
+                      <dt class="text-muted-foreground">{{ t("logs.detail.thinking") }}</dt>
+                      <dd class="flex items-center gap-1.5 font-mono">
+                        {{ l.thinking.value }}
+                        <Badge variant="muted" class="text-[10px]">{{ l.thinking.from === "default" ? t("logs.thinkingDefault") : t("logs.thinkingClient") }}</Badge>
+                      </dd>
                     </template>
                     <template v-if="l.usage">
                       <dt class="text-muted-foreground">{{ t("logs.detail.tokens") }}</dt>
