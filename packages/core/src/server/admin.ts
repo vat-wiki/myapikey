@@ -546,9 +546,9 @@ export function adminApi(store: Store, auth: MiddlewareHandler, openai: Hono, an
   // `index`, like /map above). The value is whatever the slot's wire format
   // takes natively: an effort token ("low"/"medium"/"high"/…) on openai/
   // responses slots; a thinking budget in TOKENS (positive integer) on
-  // anthropic slots (Anthropic has no named levels). An empty value clears it
-  // (back to pure passthrough). Dispatch applies it only when the request
-  // carries no thinking parameter of its own.
+  // anthropic slots (Anthropic has no named levels). When set, dispatch
+  // applies it IN PLACE OF whatever thinking parameters the request carried
+  // (the gateway's level wins); an empty value clears it (pure passthrough).
   app.put("/models/:name/thinking", async (c) => {
     const name = c.req.param("name");
     const body = await readJson<{ format?: RouteKey; index?: number; thinking?: string | number }>(c.req.raw);

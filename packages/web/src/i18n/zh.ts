@@ -204,7 +204,7 @@ export default {
     thinkingLabel: "思考等级",
     thinkingPhEffort: "如 low / medium / high",
     thinkingPhBudget: "如 8192(预算 tokens)",
-    thinkingHint: "默认思考等级:请求未带任何思考参数时,由网关按本线路的原生格式注入。Anthropic 线路填思考预算 tokens 数(如 8192);OpenAI 线路(含 Responses)填 effort 档位(如 low / medium / high)。请求自带思考参数时一律优先用请求的,留空 = 不注入。",
+    thinkingHint: "默认思考等级:配置后一律覆盖请求自带的思考参数,由网关按本线路的原生格式注入。Anthropic 线路填思考预算 tokens 数(如 8192);OpenAI 线路(含 Responses)填 effort 档位(如 low / medium / high)。留空 = 不覆盖,原样透传请求的参数。",
     thinkingSaved: "思考等级已设为 {v}",
     thinkingCleared: "已清除思考等级(不注入)",
     removeSource: "移除来源",

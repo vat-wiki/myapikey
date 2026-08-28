@@ -37,9 +37,9 @@ interface LogEntry {
    *  tokenizer approximations (OpenAI chat streams w/o include_usage) → ≈. */
   usage?: Usage;
   /** Thinking level this call ran with, and where it came from: "default" =
-   *  the gateway injected the routing slot's default (the request carried
-   *  none); "client" = the request's own setting, forwarded untouched.
-   *  Absent when neither applied. */
+   *  the answering slot's configured level ran, OVERRIDING whatever the
+   *  request carried; "client" = no default on that slot, so the request's
+   *  own setting ran (forwarded untouched). Absent when neither applied. */
   thinking?: { value: string; from: "client" | "default" };
 }
 

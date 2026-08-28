@@ -107,30 +107,36 @@ function notFound(c: Context, model: string) {
 }
 
 // --- per-slot default thinking level -----------------------------------------
-// Each routing slot can carry a default thinking level, injected ONLY when the
-// request itself carries no thinking parameter (a request's own setting always
-// wins). No cross-format translation — the default is applied in the wire's own
-// dialect, matching how the model rewrite stays a pure passthrough body edit:
+// Each routing slot can carry a default thinking level. When a slot HAS one it
+// takes precedence over EVERYTHING the request carried — the gateway's own
+// config is the authority, so the default replaces the request's thinking
+// parameters outright (all of them, including compat-backend switches, leaving
+// exactly one thinking instruction in the body). A slot WITHOUT a default is
+// pure passthrough: whatever the request carried goes through untouched —
+// restored verbatim if an earlier failover slot overrode it. Like the model
+// rewrite, the default is written in the wire's own dialect, never translated
+// across formats:
 //   openai /chat/completions → `reasoning_effort: "<token>"` (low/medium/high/…)
 //   /responses               → `reasoning: { effort: "<token>" }`
 //   anthropic /v1/messages   → `thinking: { type: "enabled", budget_tokens: N }`
 //     (Anthropic has no named levels — the stored default IS the budget, a
 //     positive integer. The API also demands max_tokens > budget_tokens, so an
-//     at-or-below cap is lifted to budget+1; otherwise the call would 400 —
-//     including our own max_tokens:1 probe.)
+//     at-or-below cap is lifted to budget+1 (and restored on a passthrough
+//     slot); otherwise the call would 400 — including our own max_tokens:1
+//     probe.)
 
-/** The body field this slot's thinking parameter travels in. */
-function thinkingField(key: RouteKey): "reasoning_effort" | "reasoning" | "thinking" {
-  if (key === "anthropic") return "thinking";
-  if (key === "responses") return "reasoning";
-  return "reasoning_effort";
+/** The body fields that steer thinking on a slot. The FIRST is the wire's
+ *  canonical parameter — the one a default is written into; the rest are
+ *  compat-backend switches (`thinking`, `enable_thinking` on chat/completions)
+ *  that an override clears so the forced level is the only instruction left. */
+function thinkingFields(key: RouteKey): string[] {
+  if (key === "anthropic") return ["thinking"];
+  if (key === "responses") return ["reasoning"];
+  return ["reasoning_effort", "reasoning", "thinking", "enable_thinking"];
 }
 
-/** Whether the CLIENT's own body already steers thinking on this slot, plus a
- *  short best-effort display of what it asked for (for the log row). On openai
- *  chat, any of the ecosystem's switches counts — compat backends also honor
- *  `thinking` / `enable_thinking`, and double-specifying alongside a default
- *  would only confuse them. */
+/** Best-effort display of what a body's own thinking switches ask for (for the
+ *  log row on a passthrough slot, where the request's setting is what ran). */
 function clientThinking(body: Record<string, unknown>, key: RouteKey): { set: boolean; value?: string } {
   const show = (v: unknown): string | undefined => (typeof v === "object" && v !== null ? JSON.stringify(v) : String(v));
   if (key === "responses") {
@@ -155,23 +161,42 @@ function clientThinking(body: Record<string, unknown>, key: RouteKey): { set: bo
   return { set: found !== undefined, value: found === undefined ? undefined : show(found) };
 }
 
-/** Apply THIS slot's thinking default to the body (mutating it), and return the
- *  log row's `thinking` field: the level that applied and where it came from.
- *  Undefined = nothing applied. A slot without a default CLEARS whatever an
- *  earlier failover slot injected, so a chain never leaks slot A's level into
- *  slot B (the model rewrite has the same recompute-per-attempt discipline). */
+/** Snapshot of the request's own thinking switches, taken once before the
+ *  failover loop — every attempt mutates the shared body, so a passthrough
+ *  slot needs the originals kept aside to restore. */
+interface ThinkingOrig {
+  fields: Record<string, unknown>;
+  /** anthropic only: the request's original max_tokens (restored alongside,
+   *  since an override may have lifted it above the forced budget). */
+  maxTokens: unknown;
+}
+
+/** Apply THIS slot's thinking level to the body (mutating it), and return the
+ *  log row's `thinking` field: the level that ran and where it came from.
+ *  Undefined = nothing applied. A slot WITH a default overrides the request's
+ *  own parameters entirely; a slot WITHOUT one restores them (undoing any
+ *  override an earlier failover slot applied — same recompute-per-attempt
+ *  discipline as the model rewrite, so slot A's level never leaks into B). */
 function applySlotThinking(
   body: Record<string, unknown>,
   key: RouteKey,
   def: string | undefined,
-  client: { set: boolean; value?: string },
+  orig: ThinkingOrig,
 ): { value: string; from: "client" | "default" } | undefined {
-  if (client.set) return { value: client.value ?? "", from: "client" };
-  const field = thinkingField(key);
+  const fields = thinkingFields(key);
   if (!def) {
-    delete body[field]; // no-op unless a previous slot injected one
-    return undefined;
+    for (const f of fields) {
+      if (orig.fields[f] === undefined) delete body[f];
+      else body[f] = orig.fields[f];
+    }
+    if (key === "anthropic") {
+      if (orig.maxTokens === undefined) delete body.max_tokens;
+      else body.max_tokens = orig.maxTokens;
+    }
+    const own = clientThinking(orig.fields, key);
+    return own.set ? { value: own.value ?? "", from: "client" } : undefined;
   }
+  for (const f of fields) delete body[f];
   if (key === "anthropic") {
     const budget = Number(def);
     body.thinking = { type: "enabled", budget_tokens: budget };
@@ -433,9 +458,13 @@ export function proxyApi(
     const model: string = body.model;
     const wire: Format = key === "anthropic" ? "anthropic" : "openai";
     const stream = body.stream === true;
-    // The client's own thinking setting, read ONCE from the original body (the
-    // per-slot default injection below would otherwise read back as "client").
-    const clientThink = clientThinking(body, key);
+    // The request's own thinking switches, snapshotted BEFORE the failover
+    // loop — each attempt mutates the shared body, and a passthrough slot
+    // (no default) must restore these originals.
+    const thinkOrig: ThinkingOrig = {
+      fields: Object.fromEntries(thinkingFields(key).map((f) => [f, body[f]])),
+      maxTokens: body.max_tokens,
+    };
     // The model-page "test" button drives dispatch via an in-process loopback
     // (adminApi calls v1.request). The probe is a real call in every respect —
     // including being logged — so we only tag it to report WHICH provider
@@ -568,11 +597,11 @@ export function proxyApi(
         // when the public name went through verbatim — JSON.stringify drops it, so
         // identity + legacy rows stay clean.
         const upstreamModel = slot.model && slot.model !== model ? slot.model : undefined;
-        // Per-slot default thinking level: re-read from the slot and re-applied
-        // every attempt (an earlier slot's injection is cleared when this one
-        // has no default — see applySlotThinking). The request's own thinking
-        // parameter, when present, was captured once above and always wins.
-        const think = applySlotThinking(body, key, slot.thinking, clientThink);
+        // Per-slot thinking level: re-read from the slot and re-applied every
+        // attempt. A configured default OVERRIDES whatever the request carried;
+        // a slot without one restores the request's own switches (see
+        // applySlotThinking), so slot A's level never leaks into slot B.
+        const think = applySlotThinking(body, key, slot.thinking, thinkOrig);
         lastThink = think;
         // Count this attempt toward the source's RPM window — but not for a pinned
         // probe, which (like circuit state) takes no routing side-effects.

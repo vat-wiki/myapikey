@@ -598,8 +598,8 @@ function revertMap(r: Row, f: Fmt, p: ChainSrc, i: number, el: HTMLInputElement)
 // Same slot-indexed pattern as the upstream-model editor above. The value is
 // free-form per the wire: an effort token (low/medium/high) on openai/responses
 // routes, a thinking budget in tokens on anthropic routes — the placeholder
-// switches with the route. Applies only when a request carries no thinking
-// parameter of its own (the request's setting always wins).
+// switches with the route. A configured level OVERRIDES whatever the request
+// carried; blank = pure passthrough (the request's own setting runs).
 
 const thinkDraft = ref<Record<string, string>>({});
 const thinkEditingKey = ref<string>("");

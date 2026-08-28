@@ -204,7 +204,7 @@ export default {
     thinkingLabel: "Thinking level",
     thinkingPhEffort: "e.g. low / medium / high",
     thinkingPhBudget: "e.g. 8192 (budget tokens)",
-    thinkingHint: "Default thinking level, injected in this route's native format only when the request carries no thinking parameter. Anthropic routes take a thinking budget in tokens (e.g. 8192); OpenAI routes (incl. Responses) take an effort tier (e.g. low / medium / high). A request's own setting always wins; empty = never inject.",
+    thinkingHint: "Default thinking level. When set it OVERRIDES whatever thinking parameters the request carried, injected in this route's native format. Anthropic routes take a thinking budget in tokens (e.g. 8192); OpenAI routes (incl. Responses) take an effort tier (e.g. low / medium / high). Empty = pure passthrough (the request's own setting runs).",
     thinkingSaved: "Thinking level set to {v}",
     thinkingCleared: "Thinking level cleared (never inject)",
     removeSource: "Remove source",

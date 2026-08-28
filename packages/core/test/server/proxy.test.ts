@@ -508,7 +508,7 @@ describe("proxy", () => {
       expect(log?.thinking).toEqual({ value: "high", from: "default" });
     });
 
-    it("forwards the request's own thinking setting untouched and logs it as client-set", async () => {
+    it("OVERRIDES the request's own thinking setting with the slot default (the gateway's level wins)", async () => {
       await seedStore(store, {
         models: { m: makeModel({ openai: fe([{ id: "prv_A", thinking: "high" }]) }) },
       });
@@ -517,13 +517,28 @@ describe("proxy", () => {
       ]);
       const res = await post("/openai/v1/chat/completions", { model: "m", messages: [], reasoning_effort: "low" });
       await res.text();
-      expect(JSON.parse(mock.calls[0].body).reasoning_effort).toBe("low");
-      expect(store.getLogs().find((e) => e.model === "m")?.thinking).toEqual({ value: "low", from: "client" });
+      expect(JSON.parse(mock.calls[0].body).reasoning_effort).toBe("high");
+      expect(store.getLogs().find((e) => e.model === "m")?.thinking).toEqual({ value: "high", from: "default" });
     });
 
-    it("treats a compat-backend thinking switch (enable_thinking) as client-set and injects nothing", async () => {
+    it("an override replaces a compat thinking switch too (enable_thinking is cleared)", async () => {
       await seedStore(store, {
         models: { m: makeModel({ openai: fe([{ id: "prv_A", thinking: "high" }]) }) },
+      });
+      mock = mockFetch([
+        { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "ok" } }] } } },
+      ]);
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [], enable_thinking: true });
+      await res.text();
+      const up = JSON.parse(mock.calls[0].body);
+      expect(up.reasoning_effort).toBe("high");
+      expect(up.enable_thinking).toBeUndefined();
+      expect(store.getLogs().find((e) => e.model === "m")?.thinking).toEqual({ value: "high", from: "default" });
+    });
+
+    it("without a default the request's own switch passes through and is logged as client-set", async () => {
+      await seedStore(store, {
+        models: { m: makeModel({ openai: fe([{ id: "prv_A" }]) }) },
       });
       mock = mockFetch([
         { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "ok" } }] } } },
@@ -554,20 +569,25 @@ describe("proxy", () => {
       expect(store.getLogs().find((e) => e.model === "m")?.thinking).toEqual({ value: "2048", from: "default" });
     });
 
-    it("anthropic: the request's own thinking object wins and max_tokens is left alone", async () => {
+    it("anthropic: the slot default replaces the request's thinking object and lifts its max_tokens", async () => {
       await seedStore(store, {
         models: { m: makeModel({ anthropic: fe([{ id: "prv_A", thinking: "2048" }]) }) },
       });
       mock = mockFetch([
         { match: "/a/v1/messages", response: { status: 200, body: { content: [{ type: "text", text: "ok" }] } } },
       ]);
-      const own = { type: "enabled", budget_tokens: 256 };
-      const res = await post("/anthropic/v1/messages", { model: "m", messages: [], max_tokens: 512, thinking: own });
+      const res = await post("/anthropic/v1/messages", {
+        model: "m",
+        messages: [],
+        max_tokens: 512,
+        thinking: { type: "enabled", budget_tokens: 256 },
+      });
       await res.text();
       const up = JSON.parse(mock.calls[0].body);
-      expect(up.thinking).toEqual(own);
-      expect(up.max_tokens).toBe(512);
-      expect(store.getLogs().find((e) => e.model === "m")?.thinking).toEqual({ value: "256", from: "client" });
+      expect(up.thinking).toEqual({ type: "enabled", budget_tokens: 2048 });
+      // 512 ≤ the forced budget → lifted, else the upstream would 400.
+      expect(up.max_tokens).toBe(2049);
+      expect(store.getLogs().find((e) => e.model === "m")?.thinking).toEqual({ value: "2048", from: "default" });
     });
 
     it("responses slot: injects reasoning.effort", async () => {
@@ -583,7 +603,7 @@ describe("proxy", () => {
       expect(store.getLogs().find((e) => e.model === "m")?.thinking).toEqual({ value: "medium", from: "default" });
     });
 
-    it("clears an injected level when failing over to a slot without a default", async () => {
+    it("failover to a no-default slot restores the request's own thinking setting", async () => {
       await seedStore(store, {
         models: { m: makeModel({ openai: fe([{ id: "prv_A", thinking: "high" }, { id: "prv_B" }]) }) },
       });
@@ -591,15 +611,36 @@ describe("proxy", () => {
         { match: "/a/v1/chat/completions", response: { status: 503, body: { error: { message: "down" } } } },
         { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "ok" } }] } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [], reasoning_effort: "low" });
       await res.text();
-      // Slot A was attempted WITH its default; B (which answered) got a clean body.
+      // Slot A was attempted WITH the forced default; B (which answered) ran the
+      // request's own setting, restored after A's override.
       expect(JSON.parse(mock.calls.find((c) => c.url.includes("/a/"))!.body).reasoning_effort).toBe("high");
-      expect(JSON.parse(mock.calls.find((c) => c.url.includes("/b/"))!.body).reasoning_effort).toBeUndefined();
-      // Each row reflects the slot it belongs to: B's success ran with nothing
-      // applied; A's cooldown row records the level A was attempted with.
-      expect(store.getLogs().find((e) => e.model === "m" && e.status === 200)?.thinking).toBeUndefined();
+      expect(JSON.parse(mock.calls.find((c) => c.url.includes("/b/"))!.body).reasoning_effort).toBe("low");
+      // Each row reflects the slot it belongs to.
+      expect(store.getLogs().find((e) => e.model === "m" && e.status === 200)?.thinking).toEqual({ value: "low", from: "client" });
       expect(store.getLogs().find((e) => e.kind === "cooldown")?.thinking).toEqual({ value: "high", from: "default" });
+    });
+
+    it("anthropic failover: a no-default slot restores the request's thinking object AND max_tokens", async () => {
+      await seedStore(store, {
+        models: { m: makeModel({ anthropic: fe([{ id: "prv_A", thinking: "4096" }, { id: "prv_B" }]) }) },
+      });
+      mock = mockFetch([
+        { match: "/a/v1/messages", response: { status: 503, body: { error: { message: "down" } } } },
+        { match: "/b/v1/messages", response: { status: 200, body: { content: [{ type: "text", text: "ok" }] } } },
+      ]);
+      const own = { type: "enabled", budget_tokens: 200 };
+      const res = await post("/anthropic/v1/messages", { model: "m", messages: [], max_tokens: 300, thinking: own });
+      await res.text();
+      // A: forced budget + lifted cap. B: the request's original pair, restored.
+      const a = JSON.parse(mock.calls.find((c) => c.url.includes("/a/"))!.body);
+      const b = JSON.parse(mock.calls.find((c) => c.url.includes("/b/"))!.body);
+      expect(a.thinking).toEqual({ type: "enabled", budget_tokens: 4096 });
+      expect(a.max_tokens).toBe(4097);
+      expect(b.thinking).toEqual(own);
+      expect(b.max_tokens).toBe(300);
+      expect(store.getLogs().find((e) => e.model === "m" && e.status === 200)?.thinking).toEqual({ value: "200", from: "client" });
     });
   });
 

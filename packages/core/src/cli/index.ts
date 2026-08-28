@@ -266,7 +266,7 @@ model
 
 model
   .command("thinking <name> <index> [value]")
-  .description("set/clear the default thinking level of one chain slot (effort on openai/responses, budget tokens on anthropic; empty = clear)")
+  .description("set/clear the default thinking level of one chain slot (effort on openai/responses, budget tokens on anthropic; overrides the request's own setting; empty = clear)")
   .addOption(fmtOption())
   .action(async (name: string, indexRaw: string, value: string | undefined, opts: { format: "openai" | "anthropic" | "responses" }) => {
     const index = Number(indexRaw);
