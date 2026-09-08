@@ -237,7 +237,7 @@ const FMT_META: Record<Fmt, { label: string; endpoint: string }> = {
 
 <template>
   <Dialog v-model:open="open">
-    <DialogContent class="max-w-2xl">
+    <DialogContent class="max-w-3xl">
       <datalist id="thinking-words">
         <option value="low"></option>
         <option value="medium"></option>

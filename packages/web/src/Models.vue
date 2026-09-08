@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
 import { useI18n } from "vue-i18n";
-import { req, type ModelView, type ProviderPublic } from "@/api";
+import { req, type ModelView, type ModelProvider, type ProviderPublic } from "@/api";
 import type { Fmt } from "@/lib/format";
-import { FMT_ACCENT } from "@/lib/format";
+import { FMT_ACCENT, providerColor } from "@/lib/format";
 import { toast } from "@/lib/toast";
 import { copyText } from "@/lib/clipboard";
 import { Button } from "@/components/ui/button";
@@ -15,7 +15,7 @@ import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/compone
 import { Label } from "@/components/ui/label";
 import {
   Search, Plus, Loader2, Copy, Zap, Gauge, MoreHorizontal, Pencil, Trash2,
-  Cpu, ServerCog, TriangleAlert,
+  Cpu, ServerCog, TriangleAlert, ArrowRight, Brain, Check,
 } from "lucide-vue-next";
 import ModelEditor from "@/ModelEditor.vue";
 import ConfirmDialog from "@/ConfirmDialog.vue";
@@ -135,20 +135,24 @@ const filtered = computed(() => {
 function enabledFormats(m: ModelView): Fmt[] {
   return FORMATS.filter((f) => m[f].enabled);
 }
-function hasAnyRoute(m: ModelView): boolean {
-  return FORMATS.some((f) => m[f].enabled || m[f].providers.length > 0);
-}
 
-/** One-line chain summary under the name: per enabled route, its slot list.
- *  When every enabled route shares the same chain, show it once. */
-const chain = (c: { id: string; name: string; model?: string; thinking?: string }[]) =>
-  c.length ? c.map((s) => (s.model ? `${s.name} → ${s.model}` : s.name)).join(" → ") : t("models.unrouted");
-/** Chains to render under the name, tagged with their format (for the color
- *  dot). Collapsed to a single entry when every enabled route shares a chain —
- *  the row then reads as one plain flow instead of per-protocol repetition. */
-const chainLines = (m: ModelView): { f: Fmt; text: string }[] => {
-  const lines = enabledFormats(m).map((f) => ({ f, text: chain(m[f].providers) }));
-  return lines.length > 1 && new Set(lines.map((l) => l.text)).size === 1 ? [lines[0]] : lines;
+/** Chain lines under the name: formats that have slots are grouped into one
+ *  line per (enabled flag + identical chain) — a shared chain reads as one
+ *  plain flow instead of per-protocol repetition, divergent chains get their
+ *  own labeled line. `fs` lists every format the line stands for; per-slot
+ *  probes fan out over them. */
+interface ChainLine { fs: Fmt[]; enabled: boolean; slots: ModelProvider[]; key: string }
+const chainLines = (m: ModelView): ChainLine[] => {
+  const key = (slots: ModelProvider[]) => slots.map((s) => `${s.id}|${s.model ?? ""}|${s.thinking ?? ""}`).join(">");
+  const merged: ChainLine[] = [];
+  for (const f of FORMATS) {
+    if (!m[f].providers.length) continue;
+    const k = `${m[f].enabled}|${key(m[f].providers)}`;
+    const prev = merged.find((l) => l.key === k);
+    if (prev) prev.fs.push(f);
+    else merged.push({ fs: [f], enabled: m[f].enabled, slots: m[f].providers, key: k });
+  }
+  return merged;
 };
 
 /** Chip state: on (route enabled), off (chain exists but route disabled),
@@ -171,7 +175,7 @@ function chipTitle(m: ModelView, f: Fmt): string {
   return `${t(FMT_META[f].label)} · ${t("models.chipNa")}`;
 }
 
-/** Quick route toggle straight from the list: a single-format PUT (the upsert
+/** Quick route toggle straight from the card: a single-format PUT (the upsert
  *  only replaces the format keys present in the body, so the other routes,
  *  mappings and pace are untouched). */
 async function toggleFmt(m: ModelView, f: Fmt) {
@@ -243,6 +247,62 @@ function rowProbe(m: ModelView): { state: "testing" | "ok" | "fail"; status?: nu
   return null;
 }
 
+// --- per-slot probe ---
+// The old per-source "测试该来源" entry, restored: `POST /models/:name/providers/test`
+// pins the loopback call to ONE chain slot (no failover, no circuit impact), so it
+// answers "does the model work on THIS source under THIS protocol?". A collapsed
+// line stands for several formats — the probe fans out over all of them and the
+// badge aggregates (same rule as the whole-model badge: ok if any route passed);
+// the tooltip keeps the per-protocol truth.
+
+const slotTesting = ref<Record<string, boolean>>({});
+const slotProbe = ref<Record<string, ProbeResult>>({});
+
+async function testSlot(m: ModelView, line: ChainLine, i: number) {
+  const fmts = line.fs.filter((f) => !slotTesting.value[`${m.name}:${f}:${i}`]);
+  if (!fmts.length) return;
+  for (const f of fmts) slotTesting.value[`${m.name}:${f}:${i}`] = true;
+  await Promise.all(fmts.map(async (f) => {
+    const key = `${m.name}:${f}:${i}`;
+    try {
+      const r = await req<{ result: ProbeResult }>("POST", `/admin/models/${enc(m.name)}/providers/test?format=${f}&index=${i}`);
+      slotProbe.value[key] = r.result;
+    } catch (e) {
+      slotProbe.value[key] = { ok: false, status: 0, format: f, error: (e as Error).message };
+    } finally {
+      slotTesting.value[key] = false;
+    }
+  }));
+}
+
+function slotProbeState(m: ModelView, line: ChainLine, i: number): { state: "testing" | "ok" | "fail"; status?: number; provider?: string; error?: string } | null {
+  let testingAny = false;
+  let ok: ProbeResult | null = null;
+  let fail: ProbeResult | null = null;
+  for (const f of line.fs) {
+    const key = `${m.name}:${f}:${i}`;
+    if (slotTesting.value[key]) testingAny = true;
+    const pr = slotProbe.value[key];
+    if (pr?.ok && !ok) ok = pr;
+    else if (pr && !pr.ok && !fail) fail = pr;
+  }
+  if (testingAny) return { state: "testing" };
+  if (ok) return { state: "ok", provider: ok.provider };
+  if (fail) return { state: "fail", status: fail.status, error: fail.error };
+  return null;
+}
+
+/** Tooltip: one line per probed format, e.g. "OpenAI ✓ 可用 (ark)" / "Anthropic ✗ 401 …". */
+function slotProbeTitle(m: ModelView, line: ChainLine, i: number): string {
+  return line.fs.map((f) => {
+    const pr = slotProbe.value[`${m.name}:${f}:${i}`];
+    const label = t(FMT_META[f].label);
+    if (!pr) return label;
+    if (pr.ok) return `${label} ✓ ${t("models.probeOk")}${pr.provider ? ` (${pr.provider})` : ""}`;
+    return `${label} ✗ ${pr.status || "?"}${pr.error ? ` ${pr.error}` : ""}`;
+  }).join("\n");
+}
+
 async function copyName(name: string) {
   const ok = await copyText(name);
   toast(ok ? t("connect.copied") : t("connect.copyFailed"), ok ? "success" : "error");
@@ -299,62 +359,40 @@ async function copyName(name: string) {
 
     <p v-else-if="!filtered.length" class="py-8 text-center text-sm text-muted-foreground">{{ t("models.noMatch") }}</p>
 
-    <!-- model list -->
-    <div v-else class="overflow-hidden rounded-lg border border-border/60 bg-card">
-      <div class="divide-y divide-border">
-        <div
-          v-for="m in filtered"
-          :key="m.name"
-          role="button"
-          tabindex="0"
-          class="group flex cursor-pointer items-center gap-3 px-3 py-3 outline-none transition-colors hover:bg-muted/30 focus-visible:bg-muted/30"
-          @click="openEditor(m)"
-          @keydown.enter.prevent="openEditor(m)"
-          @keydown.space.prevent="openEditor(m)"
-        >
-          <div class="min-w-0 flex-1">
-            <div class="flex items-center gap-1.5">
-              <span class="truncate font-mono text-sm font-medium">{{ m.name }}</span>
-              <button
-                type="button"
-                :title="t('connect.copy')"
-                :aria-label="t('connect.copy')"
-                class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/50 opacity-0 transition-all hover:bg-accent hover:text-accent-foreground focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100"
-                @click.stop="copyName(m.name)"
-              >
-                <Copy class="h-3 w-3" />
-              </button>
-              <Badge v-if="m.paceRpm" variant="outline" class="gap-1" :title="t('models.paceBadgeHint', { n: m.paceRpm, s: Math.max(1, Math.round(60 / m.paceRpm)) })">
-                <Gauge class="h-3 w-3" />{{ t("models.paceBadge", { n: m.paceRpm }) }}
-              </Badge>
-              <Badge v-if="rowProbe(m)?.state === 'testing'" variant="muted" class="gap-1"><Loader2 class="h-3 w-3 animate-spin" />{{ t("models.probeTesting") }}</Badge>
-              <Badge v-else-if="rowProbe(m)?.state === 'ok'" variant="success" :title="t('models.probeOkHint', { name: rowProbe(m)?.provider ?? '' })">{{ t("models.probeOk") }}</Badge>
-              <Badge v-else-if="rowProbe(m)?.state === 'fail'" variant="destructive" :title="rowProbe(m)?.error || t('models.probeFailHint')">{{ t("models.probeFail") }} · {{ rowProbe(m)?.status || '?' }}</Badge>
-              <Badge v-else-if="isStaleAny(m)" variant="secondary" class="gap-1" :title="t('models.delistedHint')">
-                <TriangleAlert class="h-3 w-3" />{{ t("models.delisted") }}
-              </Badge>
-            </div>
-            <div class="mt-0.5 flex items-center gap-2 truncate text-xs text-muted-foreground">
-              <template v-if="chainLines(m).length">
-                <template v-for="(l, i) in chainLines(m)" :key="l.f">
-                  <span v-if="i > 0" class="text-border">·</span>
-                  <span class="inline-flex min-w-0 items-center gap-1.5">
-                    <span
-                      v-if="chainLines(m).length > 1"
-                      class="h-1.5 w-1.5 shrink-0 rounded-full"
-                      :class="FMT_ACCENT[l.f].solid"
-                      :title="t(FMT_META[l.f].label)"
-                    />
-                    <span class="truncate">{{ l.text }}</span>
-                  </span>
-                </template>
-              </template>
-              <span v-else>{{ t("models.unroutedHint") }}</span>
-            </div>
+    <!-- model cards -->
+    <div v-else class="grid items-stretch gap-3 md:grid-cols-2">
+      <Card
+        v-for="m in filtered"
+        :key="m.name"
+        class="group cursor-pointer gap-0 py-0 transition-colors hover:bg-muted/30"
+        @click="openEditor(m)"
+      >
+        <div class="flex h-full flex-col gap-3 p-4">
+          <!-- name + status -->
+          <div class="flex min-w-0 items-center gap-1.5">
+            <span class="truncate font-mono text-sm font-semibold">{{ m.name }}</span>
+            <button
+              type="button"
+              :title="t('connect.copy')"
+              :aria-label="t('connect.copy')"
+              class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/50 opacity-0 transition-all hover:bg-accent hover:text-accent-foreground focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100"
+              @click.stop="copyName(m.name)"
+            >
+              <Copy class="h-3 w-3" />
+            </button>
+            <Badge v-if="m.paceRpm" variant="outline" class="shrink-0 gap-1" :title="t('models.paceBadgeHint', { n: m.paceRpm, s: Math.max(1, Math.round(60 / m.paceRpm)) })">
+              <Gauge class="h-3 w-3" />{{ t("models.paceBadge", { n: m.paceRpm }) }}
+            </Badge>
+            <Badge v-if="rowProbe(m)?.state === 'testing'" variant="muted" class="shrink-0 gap-1"><Loader2 class="h-3 w-3 animate-spin" />{{ t("models.probeTesting") }}</Badge>
+            <Badge v-else-if="rowProbe(m)?.state === 'ok'" variant="success" class="shrink-0" :title="t('models.probeOkHint', { name: rowProbe(m)?.provider ?? '' })">{{ t("models.probeOk") }}</Badge>
+            <Badge v-else-if="rowProbe(m)?.state === 'fail'" variant="destructive" class="shrink-0" :title="rowProbe(m)?.error || t('models.probeFailHint')">{{ t("models.probeFail") }} · {{ rowProbe(m)?.status || '?' }}</Badge>
+            <Badge v-else-if="isStaleAny(m)" variant="secondary" class="shrink-0 gap-1" :title="t('models.delistedHint')">
+              <TriangleAlert class="h-3 w-3" />{{ t("models.delisted") }}
+            </Badge>
           </div>
 
           <!-- per-format quick toggles (only the actionable ones) -->
-          <div v-if="FORMATS.some((f) => chipState(m, f) !== 'none')" class="flex shrink-0 items-center gap-1.5" @click.stop>
+          <div v-if="FORMATS.some((f) => chipState(m, f) !== 'none')" class="flex flex-wrap items-center gap-1.5" @click.stop>
             <template v-for="f in FORMATS" :key="f">
               <button
                 v-if="chipState(m, f) !== 'none'"
@@ -370,32 +408,106 @@ async function copyName(name: string) {
             </template>
           </div>
 
-          <div class="shrink-0" @click.stop>
-            <DropdownMenu>
-              <DropdownMenuTrigger>
-                <Button variant="ghost" size="icon" class="h-8 w-8 text-muted-foreground" :aria-label="t('models.moreActions')">
-                  <MoreHorizontal class="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem :disabled="!enabledFormats(m).length || !!rowProbe(m) && rowProbe(m)!.state === 'testing'" @select="testModel(m)">
-                  <Zap />
-                  {{ t("models.testModel") }}
-                </DropdownMenuItem>
-                <DropdownMenuItem @select="askRename(m)">
-                  <Pencil />
-                  {{ t("models.renameModel") }}
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem class="text-destructive focus:bg-destructive/10 focus:text-destructive" @select="confirmTarget = m; confirmOpen = true">
-                  <Trash2 />
-                  {{ t("models.removeModel") }}
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+          <!-- routing chain, one numbered row per slot -->
+          <div class="min-w-0 flex-1 space-y-1.5">
+            <template v-if="chainLines(m).length">
+              <div v-for="line in chainLines(m)" :key="line.key" class="space-y-1" :class="{ 'opacity-60': !line.enabled }">
+                <div v-if="chainLines(m).length > 1" class="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+                  <template v-for="f in line.fs" :key="f">
+                    <span class="h-1.5 w-1.5 rounded-full" :class="FMT_ACCENT[f].solid" />
+                    {{ t(FMT_META[f].label) }}
+                  </template>
+                  <span v-if="!line.enabled" class="font-normal">· {{ t("models.routeDisabled") }}</span>
+                </div>
+                <div v-for="(s, si) in line.slots" :key="si" class="flex min-w-0 items-center gap-1.5 text-xs">
+                  <span class="w-3 shrink-0 text-right text-[10px] tabular-nums text-muted-foreground/60">{{ si + 1 }}</span>
+                  <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="providerColor(s.id).solid" :title="s.name" />
+                  <span class="shrink-0 font-medium">{{ s.name }}</span>
+                  <template v-if="s.model">
+                    <ArrowRight class="h-3 w-3 shrink-0 text-muted-foreground/50" />
+                    <span class="truncate font-mono text-muted-foreground">{{ s.model }}</span>
+                  </template>
+                  <span
+                    v-if="s.thinking"
+                    class="inline-flex shrink-0 items-center gap-0.5 rounded bg-muted px-1 py-px font-mono text-[10px] text-muted-foreground"
+                    :title="t('models.editor.thinkingLabel')"
+                  >
+                    <Brain class="h-2.5 w-2.5" />{{ s.thinking }}
+                  </span>
+                  <!-- per-slot probe: pin the loopback to THIS source (no failover) -->
+                  <template v-if="line.enabled">
+                    <button
+                      v-if="slotProbeState(m, line, si)?.state !== 'testing'"
+                      type="button"
+                      class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/40 opacity-0 transition-all hover:bg-accent hover:text-accent-foreground focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100"
+                      :title="t('models.testSourceHint')"
+                      :aria-label="`${t('models.testSource')} · ${s.name}`"
+                      @click.stop="testSlot(m, line, si)"
+                    >
+                      <Zap class="h-3 w-3" />
+                    </button>
+                    <Loader2 v-else class="h-3 w-3 shrink-0 animate-spin text-muted-foreground" />
+                    <Badge
+                      v-if="slotProbeState(m, line, si)?.state === 'ok'"
+                      variant="success"
+                      class="shrink-0 gap-1"
+                      :title="slotProbeTitle(m, line, si)"
+                    >
+                      <Check class="h-3 w-3" />{{ t("models.probeOk") }}
+                    </Badge>
+                    <Badge
+                      v-else-if="slotProbeState(m, line, si)?.state === 'fail'"
+                      variant="destructive"
+                      class="shrink-0"
+                      :title="slotProbeTitle(m, line, si)"
+                    >
+                      {{ t("models.probeFail") }} · {{ slotProbeState(m, line, si)?.status || "?" }}
+                    </Badge>
+                  </template>
+                </div>
+              </div>
+            </template>
+            <div v-else class="rounded-md border border-dashed px-2.5 py-2 text-xs text-muted-foreground">
+              {{ t("models.unroutedHint") }}
+            </div>
+          </div>
+
+          <!-- actions -->
+          <div class="flex items-center gap-1 border-t pt-3" @click.stop>
+            <Button
+              variant="ghost" size="sm" class="h-7 gap-1.5 px-2 text-xs"
+              :disabled="!enabledFormats(m).length || !!rowProbe(m) && rowProbe(m)!.state === 'testing'"
+              @click="testModel(m)"
+            >
+              <Loader2 v-if="rowProbe(m)?.state === 'testing'" class="h-3.5 w-3.5 animate-spin" />
+              <Zap v-else class="h-3.5 w-3.5" />{{ t("models.testModel") }}
+            </Button>
+            <Button variant="ghost" size="sm" class="h-7 gap-1.5 px-2 text-xs" @click="openEditor(m)">
+              <Pencil class="h-3.5 w-3.5" />{{ t("models.edit") }}
+            </Button>
+            <div class="ml-auto">
+              <DropdownMenu>
+                <DropdownMenuTrigger>
+                  <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground" :aria-label="t('models.moreActions')">
+                    <MoreHorizontal class="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem @select="askRename(m)">
+                    <Pencil />
+                    {{ t("models.renameModel") }}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem class="text-destructive focus:bg-destructive/10 focus:text-destructive" @select="confirmTarget = m; confirmOpen = true">
+                    <Trash2 />
+                    {{ t("models.removeModel") }}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
           </div>
         </div>
-      </div>
+      </Card>
     </div>
 
     <ModelEditor

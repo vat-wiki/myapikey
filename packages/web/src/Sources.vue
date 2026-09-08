@@ -2,17 +2,16 @@
 import { ref, onMounted } from "vue";
 import { useI18n } from "vue-i18n";
 import { req, type ModelView, type ProviderPublic } from "@/api";
+import type { Fmt } from "@/lib/format";
+import { FMT_ACCENT } from "@/lib/format";
 import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Separator } from "@/components/ui/separator";
-import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
-import { Plus, Trash2, Loader2, Pencil, RefreshCw, ServerCog, MoreHorizontal, ChevronDown, Info } from "lucide-vue-next";
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
+import { Plus, Trash2, Loader2, Pencil, RefreshCw, ServerCog, MoreHorizontal } from "lucide-vue-next";
 import ConfirmDialog from "@/ConfirmDialog.vue";
-import NewSourceForm from "@/NewSourceForm.vue";
+import SourceDialog from "@/SourceDialog.vue";
 
 const { t } = useI18n();
 
@@ -25,132 +24,30 @@ const hasModels = ref(true);
 const loading = ref(false);
 const err = ref("");
 
-const newForm = ref<InstanceType<typeof NewSourceForm> | null>(null);
-const adding = ref(false);
-const showAdd = ref(false);
-const showBaseHelp = ref(false);
+// --- create / edit dialog ---
 
-const editingId = ref<string | null>(null);
-const editName = ref("");
-const editBaseUrlOpenai = ref("");
-const editBaseUrlAnthropic = ref("");
-const editKey = ref("");
-const editRpm = ref("");
-const editFmtOpenai = ref(true);
-const editFmtAnthropic = ref(false);
-const editResponses = ref(false);
-const saving = ref(false);
+const dialogOpen = ref(false);
+const editing = ref<ProviderPublic | null>(null);
+
+function openCreate() {
+  editing.value = null;
+  dialogOpen.value = true;
+}
+function openEdit(p: ProviderPublic) {
+  editing.value = p;
+  dialogOpen.value = true;
+}
+/** Upsert from the dialog: replace the row on edit, append on create. */
+function onSaved(p: ProviderPublic) {
+  const exists = providers.value.some((x) => x.id === p.id);
+  providers.value = exists
+    ? providers.value.map((x) => (x.id === p.id ? p : x))
+    : [...providers.value, p];
+}
+
+// --- discovery / delete ---
 
 const refreshing = ref<Record<string, boolean>>({});
-
-const confirmTarget = ref<ProviderPublic | null>(null);
-const confirmOpen = ref(false);
-const removing = ref(false);
-
-async function load() {
-  loading.value = true;
-  err.value = "";
-  try {
-    const [pr, mr] = await Promise.all([
-      req<{ providers: ProviderPublic[] }>("GET", "/admin/providers"),
-      req<{ models: ModelView[] }>("GET", "/admin/models").catch(() => null),
-    ]);
-    providers.value = pr.providers;
-    hasModels.value = !!mr?.models.length;
-  } catch (e) {
-    err.value = (e as Error).message;
-  } finally {
-    loading.value = false;
-  }
-}
-
-onMounted(load);
-
-function toggleFmt(which: "openai" | "anthropic") {
-  if (which === "openai") {
-    if (editFmtOpenai.value && !editFmtAnthropic.value) return;
-    editFmtOpenai.value = !editFmtOpenai.value;
-  } else {
-    if (editFmtAnthropic.value && !editFmtOpenai.value) return;
-    editFmtAnthropic.value = !editFmtAnthropic.value;
-  }
-}
-
-function pickedFormats(): string[] {
-  const out: string[] = [];
-  if (editFmtOpenai.value) out.push("openai");
-  if (editFmtAnthropic.value) out.push("anthropic");
-  return out;
-}
-
-async function add() {
-  if (adding.value) return;
-  if (!newForm.value?.validate()) return;
-  adding.value = true;
-  try {
-    const r = await req<{ provider: ProviderPublic }>("POST", "/admin/providers", newForm.value!.payload);
-    providers.value = [...providers.value, r.provider];
-    newForm.value?.reset();
-    showAdd.value = false;
-    toast(t("sources.added"), "success");
-  } catch (e) {
-    toast((e as Error).message, "error");
-  } finally {
-    adding.value = false;
-  }
-}
-
-function startEdit(p: ProviderPublic) {
-  editingId.value = p.id;
-  editName.value = p.name;
-  editBaseUrlOpenai.value = p.baseUrlOpenai;
-  editBaseUrlAnthropic.value = p.baseUrlAnthropic;
-  editKey.value = "";
-  editRpm.value = p.rpm ? String(p.rpm) : "";
-  editFmtOpenai.value = p.formats.includes("openai");
-  editFmtAnthropic.value = p.formats.includes("anthropic");
-  editResponses.value = !!p.supportsResponses;
-}
-function cancelEdit() {
-  editingId.value = null;
-}
-
-async function saveEdit(p: ProviderPublic) {
-  if (saving.value) return;
-  const formats = pickedFormats();
-  if (!editName.value) {
-    toast(t("sources.errRequired"), "error");
-    return;
-  }
-  if (!formats.length) {
-    toast(t("sources.errFormat"), "error");
-    return;
-  }
-  if ((editFmtOpenai.value && !editBaseUrlOpenai.value) || (editFmtAnthropic.value && !editBaseUrlAnthropic.value)) {
-    toast(t("sources.errBaseUrl"), "error");
-    return;
-  }
-  saving.value = true;
-  try {
-    const body: Record<string, unknown> = {
-      name: editName.value,
-      baseUrlOpenai: editBaseUrlOpenai.value,
-      baseUrlAnthropic: editBaseUrlAnthropic.value,
-      formats,
-      supportsResponses: editFmtOpenai.value && editResponses.value,
-      rpm: Number(editRpm.value) || 0,
-    };
-    if (editKey.value) body.apiKey = editKey.value;
-    const r = await req<{ provider: ProviderPublic }>("PUT", `/admin/providers/${p.id}`, body);
-    providers.value = providers.value.map((x) => (x.id === p.id ? r.provider : x));
-    editingId.value = null;
-    toast(t("sources.updated"), "success");
-  } catch (e) {
-    toast((e as Error).message, "error");
-  } finally {
-    saving.value = false;
-  }
-}
 
 async function refresh(p: ProviderPublic) {
   refreshing.value[p.id] = true;
@@ -167,6 +64,10 @@ async function refresh(p: ProviderPublic) {
   }
 }
 
+const confirmTarget = ref<ProviderPublic | null>(null);
+const confirmOpen = ref(false);
+const removing = ref(false);
+
 async function doRemove() {
   const p = confirmTarget.value;
   if (!p || removing.value) return;
@@ -182,6 +83,8 @@ async function doRemove() {
     removing.value = false;
   }
 }
+
+// --- discovery badge state ---
 
 function discCount(p: ProviderPublic): number {
   return p.discoveredModels?.length ?? 0;
@@ -202,6 +105,29 @@ function discTitle(p: ProviderPublic): string {
   if (s === "never") return t("sources.notScannedHint");
   return "";
 }
+
+function fmtBadgeClass(f: string): string {
+  return f in FMT_ACCENT ? FMT_ACCENT[f as Fmt].badge : "";
+}
+
+async function load() {
+  loading.value = true;
+  err.value = "";
+  try {
+    const [pr, mr] = await Promise.all([
+      req<{ providers: ProviderPublic[] }>("GET", "/admin/providers"),
+      req<{ models: ModelView[] }>("GET", "/admin/models").catch(() => null),
+    ]);
+    providers.value = pr.providers;
+    hasModels.value = !!mr?.models.length;
+  } catch (e) {
+    err.value = (e as Error).message;
+  } finally {
+    loading.value = false;
+  }
+}
+
+onMounted(load);
 </script>
 
 <template>
@@ -213,7 +139,7 @@ function discTitle(p: ProviderPublic): string {
         <span class="text-base font-semibold">{{ t("sources.pageTitle") }}</span>
         <span class="text-sm text-muted-foreground">{{ t("sources.pageDesc") }}</span>
       </div>
-      <Button v-if="providers.length && !showAdd" size="sm" @click="showAdd = true">
+      <Button v-if="providers.length" size="sm" @click="openCreate">
         <Plus class="h-4 w-4" />{{ t("sources.add") }}
       </Button>
     </div>
@@ -221,156 +147,94 @@ function discTitle(p: ProviderPublic): string {
     <p v-if="loading" class="py-8 text-center text-sm text-muted-foreground">{{ t("common.loading") }}</p>
     <p v-else-if="err" class="py-8 text-center text-sm text-destructive">{{ err }}</p>
 
-    <template v-else>
-      <!-- add form: open by default when there are no sources yet -->
-      <Card v-if="showAdd || !providers.length">
-        <CardContent class="space-y-3 pt-4">
-          <NewSourceForm ref="newForm" />
-          <div class="flex justify-end gap-2">
-            <Button v-if="providers.length" variant="ghost" size="sm" @click="showAdd = false">{{ t("sources.cancel") }}</Button>
-            <Button size="sm" :disabled="adding" @click="add">
-              <Loader2 v-if="adding" class="h-4 w-4 animate-spin" />
-              <Plus v-else class="h-4 w-4" />{{ t("sources.addBtn") }}
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+    <!-- empty: add the first source -->
+    <Card v-else-if="!providers.length">
+      <CardContent class="flex flex-col items-center gap-3 py-12 text-center">
+        <span class="flex h-11 w-11 items-center justify-center rounded-xl bg-primary/15 text-primary">
+          <ServerCog class="h-5 w-5" />
+        </span>
+        <div class="space-y-1">
+          <div class="font-medium">{{ t("sources.emptyTitle") }}</div>
+          <p class="max-w-sm text-sm text-muted-foreground">{{ t("sources.emptyHint") }}</p>
+        </div>
+        <Button @click="openCreate">
+          <Plus class="h-4 w-4" />{{ t("sources.add") }}
+        </Button>
+      </CardContent>
+    </Card>
 
+    <template v-else>
       <!-- first-run nudge: a source alone isn't callable — point at the next step -->
-      <div v-if="providers.length && !hasModels" class="flex flex-wrap items-center gap-3 rounded-lg border border-primary/40 bg-primary/5 px-3 py-2.5">
+      <div v-if="!hasModels" class="flex flex-wrap items-center gap-3 rounded-lg border border-primary/40 bg-primary/5 px-3 py-2.5">
         <p class="min-w-0 flex-1 text-sm">{{ t("sources.nextHint") }}</p>
         <Button size="sm" @click="emit('goto', 'models')">{{ t("sources.nextCta") }}</Button>
       </div>
 
-      <div v-if="providers.length" class="space-y-2">
-        <div v-for="p in providers" :key="p.id" class="rounded-lg border border-border/60 bg-card p-3">
-          <!-- read-only -->
-          <div v-if="editingId !== p.id" class="flex items-center gap-3">
-            <div class="min-w-0 flex-1">
-              <div class="flex items-center gap-2">
-                <span class="truncate font-medium">{{ p.name }}</span>
-                <Badge v-for="f in p.formats" :key="f" variant="secondary">{{ f }}</Badge>
-                <Badge v-if="p.supportsResponses" variant="secondary">responses</Badge>
-                <Badge v-if="p.rpm" variant="outline" :title="t('sources.rpmBadgeHint')">{{ t("sources.rpmBadge", { n: p.rpm }) }}</Badge>
-                <Badge variant="muted" :title="discTitle(p)">{{ discLabel(p) }}</Badge>
-              </div>
-              <div v-if="p.formats.includes('openai')" class="mt-0.5 truncate font-mono text-xs text-muted-foreground"><span class="opacity-60">openai ·</span> {{ p.baseUrlOpenai }}</div>
-              <div v-if="p.formats.includes('anthropic')" class="mt-0.5 truncate font-mono text-xs text-muted-foreground"><span class="opacity-60">anthropic ·</span> {{ p.baseUrlAnthropic }}</div>
+      <!-- source cards -->
+      <div class="grid items-stretch gap-3 md:grid-cols-2">
+        <Card
+          v-for="p in providers"
+          :key="p.id"
+          class="group cursor-pointer gap-0 py-0 transition-colors hover:bg-muted/30"
+          @click="openEdit(p)"
+        >
+          <div class="flex h-full flex-col gap-3 p-4">
+            <!-- name + badges -->
+            <div class="flex min-w-0 flex-wrap items-center gap-1.5">
+              <span class="truncate text-sm font-semibold">{{ p.name }}</span>
+              <Badge
+                v-for="f in p.formats"
+                :key="f"
+                variant="outline"
+                class="shrink-0"
+                :class="fmtBadgeClass(f)"
+              >{{ f }}</Badge>
+              <Badge v-if="p.supportsResponses" variant="outline" class="shrink-0" :class="FMT_ACCENT.responses.badge">responses</Badge>
+              <Badge v-if="p.rpm" variant="outline" class="shrink-0" :title="t('sources.rpmBadgeHint')">{{ t("sources.rpmBadge", { n: p.rpm }) }}</Badge>
+              <Badge variant="muted" class="shrink-0" :title="discTitle(p)">{{ discLabel(p) }}</Badge>
             </div>
-            <DropdownMenu>
-              <DropdownMenuTrigger>
-                <Button variant="ghost" size="icon" class="h-8 w-8" :aria-label="t('sources.moreActions')">
-                  <MoreHorizontal class="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem :disabled="refreshing[p.id]" @select="refresh(p)">
-                  <Loader2 v-if="refreshing[p.id]" class="animate-spin" />
-                  <RefreshCw v-else />
-                  {{ t("sources.refreshModels") }}
-                </DropdownMenuItem>
-                <DropdownMenuItem @select="startEdit(p)">
-                  <Pencil />
-                  {{ t("sources.editLabel") }}
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem class="text-destructive focus:bg-destructive/10 focus:text-destructive" @select="confirmTarget = p; confirmOpen = true">
-                  <Trash2 />
-                  {{ t("sources.deleteLabel") }}
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
 
-          <!-- inline edit -->
-          <div v-else class="space-y-3">
-            <div class="space-y-1.5">
-              <label class="text-xs font-medium text-muted-foreground">{{ t("sources.nameLabel") }}</label>
-              <Input v-model="editName" :placeholder="t('sources.namePh')" autocomplete="off" aria-label="name" />
-            </div>
-            <div class="space-y-1.5">
-              <label class="text-xs font-medium text-muted-foreground">{{ t("sources.formats") }}</label>
-              <div class="space-y-3 rounded-md border bg-background/50 p-3">
-                <div class="space-y-2">
-                  <div class="flex items-center gap-2.5">
-                    <Checkbox
-                      :model-value="editFmtOpenai"
-                      :disabled="editFmtOpenai && !editFmtAnthropic"
-                      aria-label="openai"
-                      @update:model-value="toggleFmt('openai')"
-                    />
-                    <span class="text-sm font-medium leading-none">openai</span>
-                    <span class="text-xs text-muted-foreground">/chat/completions</span>
-                  </div>
-                  <div class="flex items-center gap-2.5 pl-7">
-                    <Checkbox v-model="editResponses" :disabled="!editFmtOpenai" :aria-label="t('sources.responses')" />
-                    <span class="text-sm leading-none" :class="editFmtOpenai ? '' : 'text-muted-foreground'">{{ t("sources.responses") }}</span>
-                    <span class="text-xs text-muted-foreground">/responses</span>
-                  </div>
-                </div>
-                <Separator />
-                <div class="flex items-center gap-2.5">
-                  <Checkbox
-                    :model-value="editFmtAnthropic"
-                    :disabled="editFmtAnthropic && !editFmtOpenai"
-                    aria-label="anthropic"
-                    @update:model-value="toggleFmt('anthropic')"
-                  />
-                  <span class="text-sm font-medium leading-none">anthropic</span>
-                  <span class="text-xs text-muted-foreground">/messages</span>
-                </div>
+            <!-- base URLs, one line per enabled format -->
+            <div class="min-w-0 flex-1 space-y-1">
+              <div v-if="p.formats.includes('openai')" class="truncate font-mono text-xs text-muted-foreground">
+                <span class="opacity-60">openai ·</span> {{ p.baseUrlOpenai }}
+              </div>
+              <div v-if="p.formats.includes('anthropic')" class="truncate font-mono text-xs text-muted-foreground">
+                <span class="opacity-60">anthropic ·</span> {{ p.baseUrlAnthropic }}
               </div>
             </div>
-            <div v-if="editFmtOpenai" class="space-y-1.5">
-              <label class="text-xs font-medium text-muted-foreground">{{ t("sources.urlLabelOpenai") }}</label>
-              <Input v-model="editBaseUrlOpenai" :placeholder="t('sources.urlPhOpenai')" autocomplete="off" aria-label="openai base url" />
-              <p class="text-xs text-muted-foreground">{{ t("sources.urlHintOpenai") }}</p>
-            </div>
-            <div v-if="editFmtAnthropic" class="space-y-1.5">
-              <label class="text-xs font-medium text-muted-foreground">{{ t("sources.urlLabelAnthropic") }}</label>
-              <Input v-model="editBaseUrlAnthropic" :placeholder="t('sources.urlPhAnthropic')" autocomplete="off" aria-label="anthropic base url" />
-              <p class="text-xs text-muted-foreground">{{ t("sources.urlHintAnthropic") }}</p>
-            </div>
-            <div class="space-y-1.5">
-              <div class="flex items-center justify-between">
-                <label class="text-xs font-medium text-muted-foreground">{{ t("sources.keyLabel") }}</label>
-                <span v-if="p.apiKey" class="text-xs text-muted-foreground">{{ t("sources.currentKeyLabel") }}: {{ p.apiKey }}</span>
-              </div>
-              <Input v-model="editKey" type="password" :placeholder="t('sources.keyPhEdit')" autocomplete="new-password" aria-label="api key" />
-            </div>
-            <div class="space-y-1.5">
-              <label class="text-xs font-medium text-muted-foreground">{{ t("sources.rpmLabel") }}</label>
-              <Input v-model="editRpm" type="number" min="0" inputmode="numeric" :placeholder="t('sources.rpmPh')" aria-label="rpm" />
-              <p class="text-xs text-muted-foreground">{{ t("sources.rpmHint") }}</p>
-            </div>
-            <div class="flex justify-end gap-2">
-              <Button variant="ghost" size="sm" @click="cancelEdit">{{ t("sources.cancel") }}</Button>
-              <Button size="sm" :disabled="saving" @click="saveEdit(p)">
-                <Loader2 v-if="saving" class="h-4 w-4 animate-spin" />{{ t("sources.saveBtn") }}
+
+            <!-- actions -->
+            <div class="flex items-center gap-1 border-t pt-3" @click.stop>
+              <Button variant="ghost" size="sm" class="h-7 gap-1.5 px-2 text-xs" :disabled="refreshing[p.id]" @click="refresh(p)">
+                <Loader2 v-if="refreshing[p.id]" class="h-3.5 w-3.5 animate-spin" />
+                <RefreshCw v-else class="h-3.5 w-3.5" />{{ t("sources.refreshModels") }}
               </Button>
+              <Button variant="ghost" size="sm" class="h-7 gap-1.5 px-2 text-xs" @click="openEdit(p)">
+                <Pencil class="h-3.5 w-3.5" />{{ t("sources.editLabel") }}
+              </Button>
+              <div class="ml-auto">
+                <DropdownMenu>
+                  <DropdownMenuTrigger>
+                    <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground" :aria-label="t('sources.moreActions')">
+                      <MoreHorizontal class="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem class="text-destructive focus:bg-destructive/10 focus:text-destructive" @select="confirmTarget = p; confirmOpen = true">
+                      <Trash2 />
+                      {{ t("sources.deleteLabel") }}
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
             </div>
           </div>
-        </div>
-
-        <!-- base-url help -->
-        <div class="space-y-1 pt-1">
-          <button
-            type="button"
-            class="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
-            @click="showBaseHelp = !showBaseHelp"
-          >
-            <Info class="h-3.5 w-3.5" />
-            {{ t("sources.baseHelpToggle") }}
-            <ChevronDown class="h-3.5 w-3.5 transition-transform" :class="{ 'rotate-180': showBaseHelp }" />
-          </button>
-          <div v-if="showBaseHelp" class="space-y-1.5 rounded-md border bg-muted/30 p-3 text-xs leading-relaxed text-muted-foreground">
-            <p>{{ t("sources.baseHelpSplit") }}</p>
-            <p><span class="font-medium text-foreground">openai</span> — {{ t("sources.baseHelpOpenai") }}</p>
-            <p><span class="font-medium text-foreground">anthropic</span> — {{ t("sources.baseHelpAnthropic") }}</p>
-          </div>
-        </div>
+        </Card>
       </div>
     </template>
+
+    <SourceDialog v-model:open="dialogOpen" :provider="editing" @saved="onSaved" />
 
     <ConfirmDialog
       v-model:open="confirmOpen"
