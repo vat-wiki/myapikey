@@ -1,35 +1,30 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { ref, onMounted } from "vue";
 import { useI18n } from "vue-i18n";
 import { req, type ProviderPublic } from "@/api";
 import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Separator } from "@/components/ui/separator";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
-import { Plus, Trash2, Loader2, Pencil, RefreshCw, ServerCog, MoreHorizontal, Info, ChevronDown } from "lucide-vue-next";
+import { Plus, Trash2, Loader2, Pencil, RefreshCw, ServerCog, MoreHorizontal, ChevronDown, Info } from "lucide-vue-next";
 import ConfirmDialog from "@/ConfirmDialog.vue";
 import NewSourceForm from "@/NewSourceForm.vue";
 
 const { t } = useI18n();
 
-const open = defineModel<boolean>("open", { default: false });
-const emit = defineEmits<{ changed: [] }>();
-
 const providers = ref<ProviderPublic[]>([]);
 const loading = ref(false);
 const err = ref("");
 
-// --- add form (shared component; driven via its exposed reset/validate/payload) ---
 const newForm = ref<InstanceType<typeof NewSourceForm> | null>(null);
 const adding = ref(false);
 const showAdd = ref(false);
 const showBaseHelp = ref(false);
 
-// --- edit state (inline on a card) ---
 const editingId = ref<string | null>(null);
 const editName = ref("");
 const editBaseUrlOpenai = ref("");
@@ -60,11 +55,8 @@ async function load() {
   }
 }
 
-watch(open, (o) => {
-  if (o) load();
-});
+onMounted(load);
 
-/** Toggle an edit-form format button, but never let both be turned off. */
 function toggleFmt(which: "openai" | "anthropic") {
   if (which === "openai") {
     if (editFmtOpenai.value && !editFmtAnthropic.value) return;
@@ -92,7 +84,6 @@ async function add() {
     newForm.value?.reset();
     showAdd.value = false;
     toast(t("sources.added"), "success");
-    emit("changed");
   } catch (e) {
     toast((e as Error).message, "error");
   } finally {
@@ -105,7 +96,7 @@ function startEdit(p: ProviderPublic) {
   editName.value = p.name;
   editBaseUrlOpenai.value = p.baseUrlOpenai;
   editBaseUrlAnthropic.value = p.baseUrlAnthropic;
-  editKey.value = ""; // blank = keep current (we only hold the masked key)
+  editKey.value = "";
   editRpm.value = p.rpm ? String(p.rpm) : "";
   editFmtOpenai.value = p.formats.includes("openai");
   editFmtAnthropic.value = p.formats.includes("anthropic");
@@ -140,12 +131,11 @@ async function saveEdit(p: ProviderPublic) {
       supportsResponses: editFmtOpenai.value && editResponses.value,
       rpm: Number(editRpm.value) || 0,
     };
-    if (editKey.value) body.apiKey = editKey.value; // omit → server keeps existing
+    if (editKey.value) body.apiKey = editKey.value;
     const r = await req<{ provider: ProviderPublic }>("PUT", `/admin/providers/${p.id}`, body);
     providers.value = providers.value.map((x) => (x.id === p.id ? r.provider : x));
     editingId.value = null;
     toast(t("sources.updated"), "success");
-    emit("changed");
   } catch (e) {
     toast((e as Error).message, "error");
   } finally {
@@ -161,17 +151,11 @@ async function refresh(p: ProviderPublic) {
       x.id === p.id ? { ...x, discoveredModels: r.models } : x,
     );
     toast(t("sources.refreshDone", { name: p.name }), r.models.length ? "success" : "default");
-    emit("changed");
   } catch (e) {
     toast((e as Error).message, "error");
   } finally {
     refreshing.value[p.id] = false;
   }
-}
-
-function askRemove(p: ProviderPublic) {
-  confirmTarget.value = p;
-  confirmOpen.value = true;
 }
 
 async function doRemove() {
@@ -182,7 +166,6 @@ async function doRemove() {
     await req("DELETE", `/admin/providers/${p.id}`);
     providers.value = providers.value.filter((x) => x.id !== p.id);
     toast(t("sources.removed", { name: p.name }), "success");
-    emit("changed");
     confirmOpen.value = false;
   } catch (e) {
     toast((e as Error).message, "error");
@@ -194,9 +177,6 @@ async function doRemove() {
 function discCount(p: ProviderPublic): number {
   return p.discoveredModels?.length ?? 0;
 }
-/** Discovery state for the source badge. Distinguishing "empty" from "never"
- *  matters: a source with no /models endpoint (e.g. Ark's coding-plan surface)
- *  is always empty after a scan, so labeling that "Not scanned" is misleading. */
 function discState(p: ProviderPublic): "never" | "empty" | "found" {
   if (discCount(p) > 0) return "found";
   return p.discoveredAt ? "empty" : "never";
@@ -216,73 +196,46 @@ function discTitle(p: ProviderPublic): string {
 </script>
 
 <template>
-  <Dialog v-model:open="open">
-    <DialogContent class="max-w-xl">
-      <div class="flex shrink-0 items-center gap-2 pr-8">
-        <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/15 text-primary">
-          <ServerCog class="h-4 w-4" />
-        </span>
-        <div class="min-w-0">
-          <DialogTitle class="text-base">{{ t("sources.manage") }}</DialogTitle>
-          <DialogDescription>{{ t("sources.subtitle") }}</DialogDescription>
-        </div>
+  <div class="space-y-4">
+    <!-- page header -->
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div class="flex items-center gap-2">
+        <ServerCog class="h-4 w-4 text-primary" />
+        <span class="text-base font-semibold">{{ t("sources.pageTitle") }}</span>
+        <span class="text-sm text-muted-foreground">{{ t("sources.pageDesc") }}</span>
       </div>
-
-      <div class="min-h-0 flex-1 space-y-4 overflow-y-auto px-1 py-1.5">
-      <p v-if="loading" class="py-4 text-center text-sm text-muted-foreground">{{ t("common.loading") }}</p>
-      <p v-else-if="err" class="py-4 text-center text-sm text-destructive">{{ err }}</p>
-
-      <!-- Why per-format bases? Collapsed by default so it doesn't crowd the form. -->
-      <div class="space-y-1">
-        <button
-          type="button"
-          class="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
-          @click="showBaseHelp = !showBaseHelp"
-        >
-          <Info class="h-3.5 w-3.5" />
-          {{ t("sources.baseHelpToggle") }}
-          <ChevronDown class="h-3.5 w-3.5 transition-transform" :class="{ 'rotate-180': showBaseHelp }" />
-        </button>
-        <div v-if="showBaseHelp" class="space-y-1.5 rounded-md border bg-muted/30 p-3 text-xs leading-relaxed text-muted-foreground">
-          <p>{{ t("sources.baseHelpSplit") }}</p>
-          <p><span class="font-medium text-foreground">openai</span> — {{ t("sources.baseHelpOpenai") }}</p>
-          <p><span class="font-medium text-foreground">anthropic</span> — {{ t("sources.baseHelpAnthropic") }}</p>
-        </div>
-      </div>
-
-      <!-- Add: a collapsed button, or the form when opened / when there are no sources yet -->
-      <Button
-        v-if="!showAdd && providers.length"
-        variant="outline"
-        class="w-full justify-center"
-        @click="showAdd = true"
-      >
+      <Button v-if="providers.length && !showAdd" size="sm" @click="showAdd = true">
         <Plus class="h-4 w-4" />{{ t("sources.add") }}
       </Button>
-      <div v-else class="space-y-3 rounded-lg border bg-muted/30 p-4">
-        <NewSourceForm ref="newForm" />
-        <div class="flex justify-end gap-2">
-          <Button v-if="providers.length" variant="ghost" size="sm" @click="showAdd = false">{{ t("sources.cancel") }}</Button>
-          <Button size="sm" :disabled="adding" @click="add">
-            <Loader2 v-if="adding" class="h-4 w-4 animate-spin" />
-            <Plus v-else class="h-4 w-4" />{{ t("sources.addBtn") }}
-          </Button>
-        </div>
-      </div>
+    </div>
 
-      <!-- Source list (compact rows) -->
+    <p v-if="loading" class="py-8 text-center text-sm text-muted-foreground">{{ t("common.loading") }}</p>
+    <p v-else-if="err" class="py-8 text-center text-sm text-destructive">{{ err }}</p>
+
+    <template v-else>
+      <!-- add form: open by default when there are no sources yet -->
+      <Card v-if="showAdd || !providers.length">
+        <CardContent class="space-y-3 pt-4">
+          <NewSourceForm ref="newForm" />
+          <div class="flex justify-end gap-2">
+            <Button v-if="providers.length" variant="ghost" size="sm" @click="showAdd = false">{{ t("sources.cancel") }}</Button>
+            <Button size="sm" :disabled="adding" @click="add">
+              <Loader2 v-if="adding" class="h-4 w-4 animate-spin" />
+              <Plus v-else class="h-4 w-4" />{{ t("sources.addBtn") }}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
       <div v-if="providers.length" class="space-y-2">
-        <div
-          v-for="p in providers"
-          :key="p.id"
-          class="rounded-lg border p-3"
-        >
+        <div v-for="p in providers" :key="p.id" class="rounded-lg border border-border/60 bg-card p-3">
           <!-- read-only -->
           <div v-if="editingId !== p.id" class="flex items-center gap-3">
             <div class="min-w-0 flex-1">
               <div class="flex items-center gap-2">
                 <span class="truncate font-medium">{{ p.name }}</span>
                 <Badge v-for="f in p.formats" :key="f" variant="secondary">{{ f }}</Badge>
+                <Badge v-if="p.supportsResponses" variant="secondary">responses</Badge>
                 <Badge v-if="p.rpm" variant="outline" :title="t('sources.rpmBadgeHint')">{{ t("sources.rpmBadge", { n: p.rpm }) }}</Badge>
                 <Badge variant="muted" :title="discTitle(p)">{{ discLabel(p) }}</Badge>
               </div>
@@ -306,7 +259,7 @@ function discTitle(p: ProviderPublic): string {
                   {{ t("sources.editLabel") }}
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem class="text-destructive focus:bg-destructive/10 focus:text-destructive" @select="askRemove(p)">
+                <DropdownMenuItem class="text-destructive focus:bg-destructive/10 focus:text-destructive" @select="confirmTarget = p; confirmOpen = true">
                   <Trash2 />
                   {{ t("sources.deleteLabel") }}
                 </DropdownMenuItem>
@@ -383,18 +336,35 @@ function discTitle(p: ProviderPublic): string {
             </div>
           </div>
         </div>
-      </div>
-      </div>
-    </DialogContent>
-  </Dialog>
 
-  <ConfirmDialog
-    v-model:open="confirmOpen"
-    variant="destructive"
-    :title="t('sources.remove')"
-    :description="confirmTarget ? t('sources.confirmRemove', { name: confirmTarget.name }) : ''"
-    :confirm-text="t('sources.remove')"
-    :loading="removing"
-    @confirm="doRemove"
-  />
+        <!-- base-url help -->
+        <div class="space-y-1 pt-1">
+          <button
+            type="button"
+            class="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+            @click="showBaseHelp = !showBaseHelp"
+          >
+            <Info class="h-3.5 w-3.5" />
+            {{ t("sources.baseHelpToggle") }}
+            <ChevronDown class="h-3.5 w-3.5 transition-transform" :class="{ 'rotate-180': showBaseHelp }" />
+          </button>
+          <div v-if="showBaseHelp" class="space-y-1.5 rounded-md border bg-muted/30 p-3 text-xs leading-relaxed text-muted-foreground">
+            <p>{{ t("sources.baseHelpSplit") }}</p>
+            <p><span class="font-medium text-foreground">openai</span> — {{ t("sources.baseHelpOpenai") }}</p>
+            <p><span class="font-medium text-foreground">anthropic</span> — {{ t("sources.baseHelpAnthropic") }}</p>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <ConfirmDialog
+      v-model:open="confirmOpen"
+      variant="destructive"
+      :title="t('sources.remove')"
+      :description="confirmTarget ? t('sources.confirmRemove', { name: confirmTarget.name }) : ''"
+      :confirm-text="t('sources.remove')"
+      :loading="removing"
+      @confirm="doRemove"
+    />
+  </div>
 </template>

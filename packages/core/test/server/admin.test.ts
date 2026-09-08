@@ -836,6 +836,135 @@ describe("server/admin", () => {
         m.restore();
       }
     });
+
+    // --- PUT /admin/models/:name (upsert: the web editor's save-once flow) ---
+    describe("upsert (PUT /admin/models/:name)", () => {
+      const dual = () =>
+        makeProvider({ id: "prv_dual", name: "dual", formats: ["openai", "anthropic"] });
+
+      it("creates a model with chains + upstream mappings in one call (201)", async () => {
+        await seedStore(store, { providers: [dual()] });
+        const app = createApp(store);
+        const res = await app.request("/admin/models/my-model", {
+          method: "PUT", headers: H,
+          body: JSON.stringify({
+            openai: { enabled: true, slots: [{ id: "prv_dual", model: "gpt-4o-2024" }] },
+            anthropic: { enabled: true, slots: [{ id: "prv_dual" }] },
+          }),
+        });
+        expect(res.status).toBe(201);
+        const m = (await json<{ model: FlatModel }>(res)).model;
+        expect(m.name).toBe("my-model");
+        expect(m.openai.providers).toEqual([{ id: "prv_dual", name: "dual", model: "gpt-4o-2024" }]);
+        expect(m.anthropic!.enabled).toBe(true);
+        expect(m.anthropic!.providers[0].model).toBeUndefined();
+        // Visible via GET too.
+        expect(find(await modelsOf(app), "my-model")).toBeTruthy();
+      });
+
+      it("replaces the whole chain on update (200) — prior slots and order gone", async () => {
+        const a = dual();
+        const b = makeProvider({ id: "prv_b", name: "bravo", formats: ["openai"] });
+        await seedStore(store, {
+          providers: [a, b],
+          models: { "my-model": makeModel({ openai: fe([{ id: a.id, model: "old" }, { id: b.id }]) }) },
+        });
+        const app = createApp(store);
+        const res = await app.request("/admin/models/my-model", {
+          method: "PUT", headers: H,
+          body: JSON.stringify({
+            openai: { enabled: true, slots: [{ id: "prv_b", model: "new-up" }, { id: "prv_dual" }] },
+          }),
+        });
+        expect(res.status).toBe(200);
+        const m = find(await modelsOf(app), "my-model")!;
+        expect(m.openai.providers).toEqual([
+          { id: "prv_b", name: "bravo", model: "new-up" },
+          { id: "prv_dual", name: "dual" },
+        ]);
+      });
+
+      it("formats absent from the body are left untouched", async () => {
+        await seedStore(store, {
+          providers: [dual()],
+          models: { "my-model": makeModel({ anthropic: fe([{ id: "prv_dual" }]) }) },
+        });
+        const app = createApp(store);
+        const res = await app.request("/admin/models/my-model", {
+          method: "PUT", headers: H,
+          body: JSON.stringify({ openai: { enabled: true, slots: [{ id: "prv_dual" }] } }),
+        });
+        expect(res.status).toBe(200);
+        const m = find(await modelsOf(app), "my-model")!;
+        expect(m.openai.enabled).toBe(true);
+        expect(m.anthropic!.enabled).toBe(true);
+        expect(m.anthropic!.providers).toHaveLength(1);
+      });
+
+      it("rejects an unknown provider and one that doesn't serve the format (400)", async () => {
+        await seedStore(store, { providers: [dual()] });
+        const app = createApp(store);
+        const unknown = await app.request("/admin/models/m", {
+          method: "PUT", headers: H,
+          body: JSON.stringify({ openai: { slots: [{ id: "prv_nope" }] } }),
+        });
+        expect(unknown.status).toBe(400);
+        const wrongFmt = await app.request("/admin/models/m", {
+          method: "PUT", headers: H,
+          body: JSON.stringify({ anthropic: { slots: [{ id: "prv_nope" }] } }),
+        });
+        expect(wrongFmt.status).toBe(400);
+        expect(store.get().models["m"]).toBeUndefined();
+      });
+
+      it("validates + normalizes slot thinking like /thinking does", async () => {
+        await seedStore(store, { providers: [dual()] });
+        const app = createApp(store);
+        const bad = await app.request("/admin/models/m", {
+          method: "PUT", headers: H,
+          body: JSON.stringify({ anthropic: { slots: [{ id: "prv_dual", thinking: "high" }] } }),
+        });
+        expect(bad.status).toBe(400);
+        const ok = await app.request("/admin/models/m", {
+          method: "PUT", headers: H,
+          body: JSON.stringify({ anthropic: { slots: [{ id: "prv_dual", thinking: " 8192 " }] } }),
+        });
+        expect(ok.status).toBe(201); // "m" didn't exist yet → created
+        expect(store.get().models["m"].anthropic.providers[0].thinking).toBe("8192");
+      });
+
+      it("sets and clears paceRpm; empty upstream model → identity (no model key)", async () => {
+        await seedStore(store, { providers: [dual()] });
+        const app = createApp(store);
+        const set = await app.request("/admin/models/m", {
+          method: "PUT", headers: H,
+          body: JSON.stringify({ openai: { enabled: false, slots: [{ id: "prv_dual", model: "  " }] }, paceRpm: 30 }),
+        });
+        expect(set.status).toBe(201);
+        const entry = store.get().models["m"];
+        expect(entry.paceRpm).toBe(30);
+        expect(entry.openai.enabled).toBe(false);
+        expect(entry.openai.providers[0].model).toBeUndefined();
+        const clear = await app.request("/admin/models/m", {
+          method: "PUT", headers: H,
+          body: JSON.stringify({ openai: { enabled: false, slots: [] }, paceRpm: 0 }),
+        });
+        expect(clear.status).toBe(200);
+        expect(store.get().models["m"].paceRpm).toBeUndefined();
+      });
+
+      it("rejects an empty name and one containing '/'", async () => {
+        const app = createApp(store);
+        const empty = await app.request("/admin/models/%20", {
+          method: "PUT", headers: H, body: JSON.stringify({}),
+        });
+        expect(empty.status).toBe(400);
+        const slash = await app.request(`/admin/models/${encodeURIComponent("a/b")}`, {
+          method: "PUT", headers: H, body: JSON.stringify({}),
+        });
+        expect(slash.status).toBe(400);
+      });
+    });
   });
 
   // --- misc ---

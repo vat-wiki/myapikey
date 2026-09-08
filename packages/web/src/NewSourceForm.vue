@@ -5,12 +5,9 @@ import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Separator } from "@/components/ui/separator";
 
-/** The inline "create a source" fields, shared by SourcesDialog's add form and
- *  the two Models dialogs' "new source" modes so the flow reads the same
- *  everywhere. Owns its field state; parents drive it through the exposed
- *  reset() / validate() / payload. With `formatsOnly`, just the wire-format
- *  picker — for flows that need slot selection without creating a source. */
-const props = defineProps<{ formatsOnly?: boolean }>();
+/** The inline "create a source" fields, shared by the Sources page's add form.
+ *  Owns its field state; parents drive it through the exposed
+ *  reset() / validate() / payload. */
 const { t } = useI18n();
 
 const name = ref("");
@@ -59,14 +56,10 @@ function reset() {
   err.value = "";
 }
 
-/** Validate locally; sets the inline error and returns false when invalid.
- *  formatsOnly skips the name/URL/key checks — no source is being created. */
+/** Validate locally; sets the inline error and returns false when invalid. */
 function validate(): boolean {
   if (!formats.value.length) err.value = t("sources.errFormat");
-  else if (props.formatsOnly) {
-    err.value = "";
-    return true;
-  } else if (!name.value.trim() || !apiKey.value) err.value = t("sources.errRequired");
+  else if (!name.value.trim() || !apiKey.value) err.value = t("sources.errRequired");
   else if ((fmtOpenai.value && !baseUrlOpenai.value.trim()) || (fmtAnthropic.value && !baseUrlAnthropic.value.trim()))
     err.value = t("sources.errBaseUrl");
   else {
@@ -81,7 +74,7 @@ defineExpose({ reset, validate, payload });
 
 <template>
   <div class="space-y-3">
-    <div v-if="!formatsOnly" class="space-y-1.5">
+    <div class="space-y-1.5">
       <label class="text-xs font-medium text-muted-foreground">{{ t("sources.nameLabel") }}</label>
       <Input v-model="name" :placeholder="t('sources.namePh')" autocomplete="off" aria-label="name" />
     </div>
@@ -119,17 +112,17 @@ defineExpose({ reset, validate, payload });
       </div>
       <p class="text-xs text-muted-foreground">{{ t("sources.addHint") }}</p>
     </div>
-    <div v-if="!formatsOnly && fmtOpenai" class="space-y-1.5">
+    <div v-if="fmtOpenai" class="space-y-1.5">
       <label class="text-xs font-medium text-muted-foreground">{{ t("sources.urlLabelOpenai") }}</label>
       <Input v-model="baseUrlOpenai" :placeholder="t('sources.urlPhOpenai')" autocomplete="off" aria-label="openai base url" />
       <p class="text-xs text-muted-foreground">{{ t("sources.urlHintOpenai") }}</p>
     </div>
-    <div v-if="!formatsOnly && fmtAnthropic" class="space-y-1.5">
+    <div v-if="fmtAnthropic" class="space-y-1.5">
       <label class="text-xs font-medium text-muted-foreground">{{ t("sources.urlLabelAnthropic") }}</label>
       <Input v-model="baseUrlAnthropic" :placeholder="t('sources.urlPhAnthropic')" autocomplete="off" aria-label="anthropic base url" />
       <p class="text-xs text-muted-foreground">{{ t("sources.urlHintAnthropic") }}</p>
     </div>
-    <div v-if="!formatsOnly" class="space-y-1.5">
+    <div class="space-y-1.5">
       <label class="text-xs font-medium text-muted-foreground">{{ t("sources.keyLabel") }}</label>
       <Input v-model="apiKey" type="password" :placeholder="t('sources.keyPh')" autocomplete="new-password" aria-label="api key" />
     </div>

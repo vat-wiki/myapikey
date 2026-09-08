@@ -4,6 +4,7 @@ import { useI18n } from "vue-i18n";
 import { getCreds, setCreds, clearCreds, req } from "@/api";
 import { setLocale } from "@/i18n";
 import Models from "@/Models.vue";
+import Sources from "@/Sources.vue";
 import Logs from "@/Logs.vue";
 import Stats from "@/Stats.vue";
 import Connect from "@/Connect.vue";
@@ -14,7 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { Sun, Moon, LogOut, Cpu, Activity, BarChart3, Languages, Plug, Loader2, Eye, EyeOff, Settings as SettingsIcon } from "lucide-vue-next";
+import { Sun, Moon, LogOut, Cpu, Activity, BarChart3, Languages, Plug, Loader2, Eye, EyeOff, Settings as SettingsIcon, ServerCog } from "lucide-vue-next";
 import Toaster from "@/components/ui/toast/Toaster.vue";
 
 const { t, locale } = useI18n();
@@ -27,6 +28,7 @@ const checking = ref(true);
 const submitting = ref(false);
 const showPass = ref(false);
 const dark = ref(true);
+const tab = ref("models");
 
 function applyTheme(isDark: boolean) {
   dark.value = isDark;
@@ -164,16 +166,18 @@ onMounted(async () => {
     </header>
 
     <main class="mx-auto max-w-5xl px-4 py-6">
-      <Tabs default-value="connect">
+      <Tabs v-model="tab">
         <TabsList class="mb-2">
-          <TabsTrigger value="connect"><Plug class="h-4 w-4" />{{ t("nav.connect") }}</TabsTrigger>
           <TabsTrigger value="models"><Cpu class="h-4 w-4" />{{ t("nav.models") }}</TabsTrigger>
+          <TabsTrigger value="sources"><ServerCog class="h-4 w-4" />{{ t("nav.sources") }}</TabsTrigger>
+          <TabsTrigger value="connect"><Plug class="h-4 w-4" />{{ t("nav.connect") }}</TabsTrigger>
           <TabsTrigger value="logs"><Activity class="h-4 w-4" />{{ t("nav.logs") }}</TabsTrigger>
           <TabsTrigger value="stats"><BarChart3 class="h-4 w-4" />{{ t("nav.stats") }}</TabsTrigger>
           <TabsTrigger value="settings"><SettingsIcon class="h-4 w-4" />{{ t("nav.settings") }}</TabsTrigger>
         </TabsList>
+        <TabsContent value="models"><Models @goto="tab = $event" /></TabsContent>
+        <TabsContent value="sources"><Sources /></TabsContent>
         <TabsContent value="connect"><Connect /></TabsContent>
-        <TabsContent value="models"><Models /></TabsContent>
         <TabsContent value="logs"><Logs /></TabsContent>
         <TabsContent value="stats"><Stats /></TabsContent>
         <TabsContent value="settings"><Settings /></TabsContent>

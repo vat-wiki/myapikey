@@ -1,6 +1,6 @@
 import { Hono, type MiddlewareHandler } from "hono";
 import { newProviderId, newApiKey, trimBase } from "../shared/config";
-import type { Format, FormatEntry, Provider, RouteKey } from "../shared/types";
+import type { ChainSlot, Format, FormatEntry, ModelEntry, Provider, RouteKey } from "../shared/types";
 import type { Store } from "./store";
 import { shortError, anthropicAuthHeaders } from "./proxy";
 import { networkInterfaces } from "node:os";
@@ -139,6 +139,30 @@ async function refreshDiscovery(store: Store, id: string): Promise<string[]> {
     }
   });
   return failed ? (store.get().providers.find((x) => x.id === id)?.discoveredModels ?? []) : models;
+}
+
+/** One model's public projection (GET /models entries and the upsert response). */
+function projectModel(name: string, e: ModelEntry, byId: Map<string, Provider>) {
+  const proj = (fe: FormatEntry) => ({
+    enabled: fe.enabled,
+    providers: fe.providers.map((s) => ({
+      id: s.id,
+      name: byId.get(s.id)?.name ?? "?",
+      // Upstream model name this slot rewrites the request to (undefined =
+      // send the public model name verbatim). Carried inline on each slot so
+      // a provider can appear more than once with different upstream names.
+      model: s.model,
+      // Default thinking level for this slot (undefined = pure passthrough).
+      thinking: s.thinking,
+    })),
+  });
+  return {
+    name,
+    openai: proj(e.openai),
+    anthropic: proj(e.anthropic),
+    responses: proj(e.responses),
+    paceRpm: e.paceRpm ?? 0,
+  };
 }
 
 export function adminApi(store: Store, auth: MiddlewareHandler, openai: Hono, anthropic: Hono): Hono {
@@ -303,26 +327,7 @@ export function adminApi(store: Store, auth: MiddlewareHandler, openai: Hono, an
   app.get("/models", (c) => {
     const d = store.get();
     const byId = new Map(d.providers.map((p) => [p.id, p]));
-    const proj = (fe: FormatEntry) => ({
-      enabled: fe.enabled,
-      providers: fe.providers.map((s) => ({
-        id: s.id,
-        name: byId.get(s.id)?.name ?? "?",
-        // Upstream model name this slot rewrites the request to (undefined =
-        // send the public model name verbatim). Carried inline on each slot so
-        // a provider can appear more than once with different upstream names.
-        model: s.model,
-        // Default thinking level for this slot (undefined = pure passthrough).
-        thinking: s.thinking,
-      })),
-    });
-    const models = Object.entries(d.models).map(([name, e]) => ({
-      name,
-      openai: proj(e.openai),
-      anthropic: proj(e.anthropic),
-      responses: proj(e.responses),
-      paceRpm: e.paceRpm ?? 0,
-    }));
+    const models = Object.entries(d.models).map(([name, e]) => projectModel(name, e, byId));
     return c.json({ models });
   });
 
@@ -357,6 +362,77 @@ export function adminApi(store: Store, auth: MiddlewareHandler, openai: Hono, an
       fe.enabled = true;
     });
     return c.json({ ok: true }, 201);
+  });
+
+  // Upsert a model's WHOLE routing config in one call — the "name it, build its
+  // chains, save once" flow the web editor is built around. Each format key
+  // present in the body REPLACES that FormatEntry wholesale; keys absent from
+  // the body are left untouched (a fresh entry seeds them disabled + empty).
+  // Every slot's provider must exist and speak that slot's format (responses
+  // additionally requires supportsResponses), mirroring the granular endpoints.
+  // The response carries the projected model (GET /models shape) so clients can
+  // update in place without a refetch.
+  app.put("/models/:name", async (c) => {
+    const name = (c.req.param("name") ?? "").trim();
+    if (!name) return c.json({ error: { message: "name is required" } }, 400);
+    // Names live in URL path params on every granular endpoint — a "/" would
+    // make those routes unreachable for this model.
+    if (name.includes("/")) return c.json({ error: { message: "model name must not contain '/'" } }, 400);
+    const body = await readJson<{
+      openai?: { enabled?: boolean; slots?: unknown };
+      anthropic?: { enabled?: boolean; slots?: unknown };
+      responses?: { enabled?: boolean; slots?: unknown };
+      paceRpm?: number;
+    }>(c.req.raw);
+    if (!body) return c.json({ error: { message: "body required" } }, 400);
+
+    const cfg = store.get();
+    const existed = !!cfg.models[name];
+    // Parse + validate every provided format BEFORE writing: an invalid slot
+    // anywhere must not leave a half-replaced config behind.
+    const parsed: Partial<Record<RouteKey, FormatEntry>> = {};
+    for (const key of ["openai", "anthropic", "responses"] as RouteKey[]) {
+      const raw = body[key];
+      if (!raw) continue;
+      const chain: ChainSlot[] = [];
+      for (const s of Array.isArray(raw.slots) ? raw.slots : []) {
+        const slot = s as { id?: unknown; model?: unknown; thinking?: unknown };
+        const pid = typeof slot?.id === "string" ? slot.id : "";
+        const p = cfg.providers.find((x) => x.id === pid);
+        if (!p) return c.json({ error: { message: `provider not found: ${pid || "(empty)"}` } }, 400);
+        if (!providerSpeaks(p, key))
+          return c.json({ error: { message: `provider ${p.name} does not serve ${key}` } }, 400);
+        const model = typeof slot.model === "string" ? slot.model.trim() : "";
+        const thinkRaw = slot.thinking === undefined || slot.thinking === null ? "" : String(slot.thinking).trim();
+        if (thinkRaw && key === "anthropic" && (!/^\d+$/.test(thinkRaw) || Number(thinkRaw) < 1))
+          return c.json({ error: { message: "anthropic thinking default must be a positive integer (thinking budget tokens, e.g. 8192)" } }, 400);
+        if (thinkRaw && key !== "anthropic" && thinkRaw.length > 32)
+          return c.json({ error: { message: "thinking default too long (max 32 chars)" } }, 400);
+        const cs: ChainSlot = { id: pid };
+        if (model) cs.model = model;
+        if (thinkRaw) cs.thinking = key === "anthropic" ? String(Number(thinkRaw)) : thinkRaw;
+        chain.push(cs);
+      }
+      parsed[key] = { enabled: raw.enabled !== false, providers: chain };
+    }
+    const pace = body.paceRpm !== undefined ? coerceRpm(body.paceRpm) : undefined;
+
+    await store.update((d) => {
+      const entry = (d.models[name] ??= {
+        openai: { enabled: false, providers: [] },
+        anthropic: { enabled: false, providers: [] },
+        responses: { enabled: false, providers: [] },
+      });
+      for (const key of ["openai", "anthropic", "responses"] as RouteKey[]) {
+        if (parsed[key]) entry[key] = parsed[key]!;
+      }
+      if (body.paceRpm !== undefined) {
+        if (pace) entry.paceRpm = pace;
+        else delete entry.paceRpm;
+      }
+    });
+    const byId = new Map(store.get().providers.map((p) => [p.id, p]));
+    return c.json({ model: projectModel(name, store.get().models[name], byId) }, existed ? 200 : 201);
   });
 
   // Rename a model - changes the ROUTING KEY, the name clients request. The
