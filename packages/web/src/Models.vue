@@ -15,7 +15,7 @@ import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/compone
 import { Label } from "@/components/ui/label";
 import {
   Search, Plus, Loader2, Copy, Zap, Gauge, MoreHorizontal, Pencil, Trash2,
-  Cpu, ServerCog, ArrowRight, TriangleAlert,
+  Cpu, ServerCog, TriangleAlert,
 } from "lucide-vue-next";
 import ModelEditor from "@/ModelEditor.vue";
 import ConfirmDialog from "@/ConfirmDialog.vue";
@@ -142,14 +142,14 @@ function hasAnyRoute(m: ModelView): boolean {
 /** One-line chain summary under the name: per enabled route, its slot list.
  *  When every enabled route shares the same chain, show it once. */
 const chain = (c: { id: string; name: string; model?: string; thinking?: string }[]) =>
-  c.length ? c.map((s) => (s.model ? `${s.name}→${s.model}` : s.name)).join(" → ") : t("models.unrouted");
-function summary(m: ModelView): string {
-  const fmts = enabledFormats(m);
-  if (!fmts.length) return t("models.unroutedHint");
-  const lines = fmts.map((f) => chain(m[f].providers));
-  const uniq = [...new Set(lines)];
-  return uniq.length === 1 ? lines[0] : fmts.map((f, i) => `${t(FMT_META[f].label)}: ${lines[i]}`).join(" · ");
-}
+  c.length ? c.map((s) => (s.model ? `${s.name} → ${s.model}` : s.name)).join(" → ") : t("models.unrouted");
+/** Chains to render under the name, tagged with their format (for the color
+ *  dot). Collapsed to a single entry when every enabled route shares a chain —
+ *  the row then reads as one plain flow instead of per-protocol repetition. */
+const chainLines = (m: ModelView): { f: Fmt; text: string }[] => {
+  const lines = enabledFormats(m).map((f) => ({ f, text: chain(m[f].providers) }));
+  return lines.length > 1 && new Set(lines.map((l) => l.text)).size === 1 ? [lines[0]] : lines;
+};
 
 /** Chip state: on (route enabled), off (chain exists but route disabled),
  *  none (no chain to enable — must be configured in the editor). */
@@ -334,34 +334,40 @@ async function copyName(name: string) {
                 <TriangleAlert class="h-3 w-3" />{{ t("models.delisted") }}
               </Badge>
             </div>
-            <div class="mt-0.5 flex items-center gap-1 truncate text-xs text-muted-foreground">
-              <template v-if="enabledFormats(m).length">
-                <template v-for="(f, fi) in enabledFormats(m)" :key="f">
-                  <span v-if="fi > 0" class="text-border">|</span>
-                  <span class="shrink-0" :class="FMT_ACCENT[f].text">{{ t(FMT_META[f].label) }}</span>
-                  <ArrowRight class="h-3 w-3 shrink-0 opacity-50" />
-                  <span class="truncate">{{ chain(m[f].providers) }}</span>
+            <div class="mt-0.5 flex items-center gap-2 truncate text-xs text-muted-foreground">
+              <template v-if="chainLines(m).length">
+                <template v-for="(l, i) in chainLines(m)" :key="l.f">
+                  <span v-if="i > 0" class="text-border">·</span>
+                  <span class="inline-flex min-w-0 items-center gap-1.5">
+                    <span
+                      v-if="chainLines(m).length > 1"
+                      class="h-1.5 w-1.5 shrink-0 rounded-full"
+                      :class="FMT_ACCENT[l.f].solid"
+                      :title="t(FMT_META[l.f].label)"
+                    />
+                    <span class="truncate">{{ l.text }}</span>
+                  </span>
                 </template>
               </template>
               <span v-else>{{ t("models.unroutedHint") }}</span>
             </div>
           </div>
 
-          <!-- per-format quick toggles -->
-          <div class="flex shrink-0 items-center gap-1.5" @click.stop>
-            <button
-              v-for="f in FORMATS"
-              :key="f"
-              type="button"
-              :disabled="chipState(m, f) === 'none'"
-              :title="chipTitle(m, f)"
-              :aria-label="chipTitle(m, f)"
-              class="inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-medium transition-colors disabled:cursor-not-allowed"
-              :class="chipClass(m, f)"
-              @click="toggleFmt(m, f)"
-            >
-              {{ t(FMT_META[f].label) }}
-            </button>
+          <!-- per-format quick toggles (only the actionable ones) -->
+          <div v-if="FORMATS.some((f) => chipState(m, f) !== 'none')" class="flex shrink-0 items-center gap-1.5" @click.stop>
+            <template v-for="f in FORMATS" :key="f">
+              <button
+                v-if="chipState(m, f) !== 'none'"
+                type="button"
+                :title="chipTitle(m, f)"
+                :aria-label="chipTitle(m, f)"
+                class="inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-medium transition-colors"
+                :class="chipClass(m, f)"
+                @click="toggleFmt(m, f)"
+              >
+                {{ t(FMT_META[f].label) }}
+              </button>
+            </template>
           </div>
 
           <div class="shrink-0" @click.stop>
