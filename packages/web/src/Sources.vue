@@ -1,15 +1,19 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
 import { useI18n } from "vue-i18n";
-import { req, type ModelView, type ProviderPublic } from "@/api";
+import { req, type ModelView, type ProviderPublic, type ProviderTestResult } from "@/api";
 import type { Fmt } from "@/lib/format";
 import { FMT_ACCENT } from "@/lib/format";
 import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
-import { Plus, Trash2, Loader2, Pencil, RefreshCw, ServerCog, MoreHorizontal } from "lucide-vue-next";
+import { Plus, Trash2, Loader2, Pencil, RefreshCw, ServerCog, MoreHorizontal, Zap, LayoutGrid, Table2 } from "lucide-vue-next";
 import ConfirmDialog from "@/ConfirmDialog.vue";
 import SourceDialog from "@/SourceDialog.vue";
 
@@ -23,6 +27,20 @@ const providers = ref<ProviderPublic[]>([]);
 const hasModels = ref(true);
 const loading = ref(false);
 const err = ref("");
+
+// --- card / table view ---
+
+type ViewMode = "cards" | "table";
+const VIEW_KEY = "myapikey.view.sources";
+const view = ref<ViewMode>(localStorage.getItem(VIEW_KEY) === "table" ? "table" : "cards");
+function setView(v: ViewMode) {
+  view.value = v;
+  try {
+    localStorage.setItem(VIEW_KEY, v);
+  } catch {
+    /* storage unavailable — keep the in-memory choice */
+  }
+}
 
 // --- create / edit dialog ---
 
@@ -67,6 +85,58 @@ async function refresh(p: ProviderPublic) {
 const confirmTarget = ref<ProviderPublic | null>(null);
 const confirmOpen = ref(false);
 const removing = ref(false);
+
+// --- source test: a direct per-protocol ping, no model routing involved ---
+
+const testOpen = ref(false);
+const testTarget = ref<ProviderPublic | null>(null);
+const testModelName = ref("");
+const testFormats = ref<Record<string, boolean>>({});
+const testRunning = ref(false);
+const testResults = ref<ProviderTestResult[] | null>(null);
+
+/** Every protocol this source can serve (responses only when flagged). */
+function testFormatList(p: ProviderPublic): string[] {
+  return [...p.formats, ...(p.supportsResponses ? ["responses"] : [])];
+}
+
+function openTest(p: ProviderPublic) {
+  testTarget.value = p;
+  testModelName.value = p.discoveredModels?.[0] ?? "";
+  testFormats.value = Object.fromEntries(testFormatList(p).map((f) => [f, true]));
+  testResults.value = null;
+  testOpen.value = true;
+}
+
+async function runTest() {
+  const p = testTarget.value;
+  const model = testModelName.value.trim();
+  if (!p || !model || testRunning.value) return;
+  const all = testFormatList(p);
+  const fmts = all.filter((f) => testFormats.value[f]);
+  if (!fmts.length) return;
+  testRunning.value = true;
+  testResults.value = null;
+  try {
+    // Narrowed protocol selection travels as repeatable ?format= params.
+    const q = fmts.length < all.length ? fmts.map((f) => `&format=${f}`).join("") : "";
+    const r = await req<{ results: ProviderTestResult[] }>(
+      "POST",
+      `/admin/providers/${p.id}/test?model=${encodeURIComponent(model)}${q}`,
+    );
+    testResults.value = r.results;
+  } catch (e) {
+    toast((e as Error).message, "error");
+  } finally {
+    testRunning.value = false;
+  }
+}
+
+function testChipClass(on: boolean, f: string): string {
+  if (on && f in FMT_ACCENT) return `border-transparent ${FMT_ACCENT[f as Fmt].solid} text-white shadow-sm`;
+  if (on) return "border-transparent bg-primary text-primary-foreground shadow-sm";
+  return "border-input text-muted-foreground hover:bg-accent hover:text-accent-foreground";
+}
 
 async function doRemove() {
   const p = confirmTarget.value;
@@ -139,9 +209,25 @@ onMounted(load);
         <span class="text-base font-semibold">{{ t("sources.pageTitle") }}</span>
         <span class="text-sm text-muted-foreground">{{ t("sources.pageDesc") }}</span>
       </div>
-      <Button v-if="providers.length" size="sm" @click="openCreate">
-        <Plus class="h-4 w-4" />{{ t("sources.add") }}
-      </Button>
+      <div v-if="providers.length" class="flex items-center gap-2">
+        <div class="flex items-center rounded-md border p-0.5">
+          <Button
+            variant="ghost" size="icon" class="h-6 w-6"
+            :class="view === 'cards' ? 'bg-accent text-accent-foreground' : 'text-muted-foreground'"
+            :title="t('common.viewCards')" :aria-label="t('common.viewCards')"
+            @click="setView('cards')"
+          ><LayoutGrid class="h-3.5 w-3.5" /></Button>
+          <Button
+            variant="ghost" size="icon" class="h-6 w-6"
+            :class="view === 'table' ? 'bg-accent text-accent-foreground' : 'text-muted-foreground'"
+            :title="t('common.viewTable')" :aria-label="t('common.viewTable')"
+            @click="setView('table')"
+          ><Table2 class="h-3.5 w-3.5" /></Button>
+        </div>
+        <Button size="sm" @click="openCreate">
+          <Plus class="h-4 w-4" />{{ t("sources.add") }}
+        </Button>
+      </div>
     </div>
 
     <p v-if="loading" class="py-8 text-center text-sm text-muted-foreground">{{ t("common.loading") }}</p>
@@ -171,7 +257,7 @@ onMounted(load);
       </div>
 
       <!-- source cards -->
-      <div class="grid items-stretch gap-3 md:grid-cols-2">
+      <div v-if="view === 'cards'" class="grid items-stretch gap-3 md:grid-cols-2">
         <Card
           v-for="p in providers"
           :key="p.id"
@@ -206,6 +292,9 @@ onMounted(load);
 
             <!-- actions -->
             <div class="flex items-center gap-1 border-t pt-3" @click.stop>
+              <Button variant="ghost" size="sm" class="h-7 gap-1.5 px-2 text-xs" @click="openTest(p)">
+                <Zap class="h-3.5 w-3.5" />{{ t("sources.testBtn") }}
+              </Button>
               <Button variant="ghost" size="sm" class="h-7 gap-1.5 px-2 text-xs" :disabled="refreshing[p.id]" @click="refresh(p)">
                 <Loader2 v-if="refreshing[p.id]" class="h-3.5 w-3.5 animate-spin" />
                 <RefreshCw v-else class="h-3.5 w-3.5" />{{ t("sources.refreshModels") }}
@@ -232,9 +321,122 @@ onMounted(load);
           </div>
         </Card>
       </div>
+
+      <!-- source table -->
+      <div v-else class="overflow-hidden rounded-lg border">
+        <Table>
+          <TableHeader>
+            <TableRow class="hover:bg-transparent">
+              <TableHead>{{ t("sources.colName") }}</TableHead>
+              <TableHead>{{ t("sources.colFormats") }}</TableHead>
+              <TableHead>{{ t("sources.colBaseUrl") }}</TableHead>
+              <TableHead>{{ t("sources.colRpm") }}</TableHead>
+              <TableHead>{{ t("sources.colDiscovered") }}</TableHead>
+              <TableHead class="w-[168px] text-right">{{ t("sources.colActions") }}</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            <TableRow v-for="p in providers" :key="p.id" class="cursor-pointer" @click="openEdit(p)">
+              <TableCell class="max-w-[160px] truncate font-medium" :title="p.name">{{ p.name }}</TableCell>
+              <TableCell>
+                <div class="flex flex-wrap gap-1">
+                  <Badge v-for="f in p.formats" :key="f" variant="outline" :class="fmtBadgeClass(f)">{{ f }}</Badge>
+                  <Badge v-if="p.supportsResponses" variant="outline" :class="FMT_ACCENT.responses.badge">responses</Badge>
+                </div>
+              </TableCell>
+              <TableCell>
+                <div class="max-w-[300px] space-y-0.5 font-mono text-xs text-muted-foreground">
+                  <div v-if="p.formats.includes('openai')" class="truncate" :title="p.baseUrlOpenai">
+                    <span class="opacity-60">openai · </span>{{ p.baseUrlOpenai }}
+                  </div>
+                  <div v-if="p.formats.includes('anthropic')" class="truncate" :title="p.baseUrlAnthropic">
+                    <span class="opacity-60">anthropic · </span>{{ p.baseUrlAnthropic }}
+                  </div>
+                </div>
+              </TableCell>
+              <TableCell class="whitespace-nowrap text-xs text-muted-foreground">
+                <span v-if="p.rpm" :title="t('sources.rpmBadgeHint')" class="font-mono">{{ t("sources.rpmBadge", { n: p.rpm }) }}</span>
+                <span v-else>—</span>
+              </TableCell>
+              <TableCell>
+                <Badge variant="muted" :title="discTitle(p)">{{ discLabel(p) }}</Badge>
+              </TableCell>
+              <TableCell @click.stop>
+                <div class="flex items-center justify-end gap-0.5">
+                  <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground" :title="t('sources.testBtn')" :aria-label="t('sources.testBtn')" @click="openTest(p)">
+                    <Zap class="h-3.5 w-3.5" />
+                  </Button>
+                  <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground" :disabled="refreshing[p.id]" :title="t('sources.refreshModels')" :aria-label="t('sources.refreshModels')" @click="refresh(p)">
+                    <Loader2 v-if="refreshing[p.id]" class="h-3.5 w-3.5 animate-spin" />
+                    <RefreshCw v-else class="h-3.5 w-3.5" />
+                  </Button>
+                  <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground" :title="t('sources.editLabel')" :aria-label="t('sources.editLabel')" @click="openEdit(p)">
+                    <Pencil class="h-3.5 w-3.5" />
+                  </Button>
+                  <Button variant="ghost" size="icon" class="h-7 w-7 text-destructive hover:text-destructive" :title="t('sources.deleteLabel')" :aria-label="t('sources.deleteLabel')" @click="confirmTarget = p; confirmOpen = true">
+                    <Trash2 class="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              </TableCell>
+            </TableRow>
+          </TableBody>
+        </Table>
+      </div>
     </template>
 
     <SourceDialog v-model:open="dialogOpen" :provider="editing" @saved="onSaved" />
+
+    <!-- source test: model name + per-protocol toggles, results inline -->
+    <Dialog v-model:open="testOpen">
+      <DialogContent class="max-w-md">
+        <DialogTitle class="text-base">{{ t("sources.testTitle") }}</DialogTitle>
+        <DialogDescription>{{ t("sources.testDesc") }}</DialogDescription>
+        <div class="space-y-3">
+          <div class="space-y-1.5">
+            <Label for="source-test-model">{{ t("sources.testModelLabel") }}</Label>
+            <Input
+              id="source-test-model"
+              v-model="testModelName"
+              class="font-mono"
+              :placeholder="t('sources.testModelPh')"
+              spellcheck="false"
+              autocomplete="off"
+              @keydown.enter="runTest"
+            />
+            <p class="text-xs text-muted-foreground">{{ t("sources.testModelHint") }}</p>
+          </div>
+          <div v-if="testTarget" class="space-y-1.5">
+            <Label>{{ t("sources.formats") }}</Label>
+            <div class="flex flex-wrap gap-1.5">
+              <button
+                v-for="f in testFormatList(testTarget)"
+                :key="f"
+                type="button"
+                class="inline-flex items-center rounded-md border px-2 py-0.5 font-mono text-xs font-medium transition-colors"
+                :class="testChipClass(!!testFormats[f], f)"
+                @click="testFormats[f] = !testFormats[f]"
+              >{{ f }}</button>
+            </div>
+          </div>
+          <div v-if="testResults" class="space-y-1.5 rounded-md border bg-muted/30 p-2.5">
+            <div v-for="r in testResults" :key="r.format" class="flex min-w-0 items-center gap-2 text-xs">
+              <Badge variant="outline" :class="fmtBadgeClass(r.format)">{{ r.format }}</Badge>
+              <Badge v-if="r.ok" variant="success" class="shrink-0">{{ t("models.probeOk") }}</Badge>
+              <Badge v-else variant="destructive" class="shrink-0">{{ t("models.probeFail") }} · {{ r.status || "?" }}</Badge>
+              <span class="shrink-0 tabular-nums text-muted-foreground">{{ r.ms }} ms</span>
+              <span v-if="r.error" class="min-w-0 truncate text-destructive" :title="r.error">{{ r.error }}</span>
+            </div>
+          </div>
+        </div>
+        <div class="flex justify-end gap-2">
+          <Button variant="outline" :disabled="testRunning" @click="testOpen = false">{{ t("common.cancel") }}</Button>
+          <Button :disabled="testRunning || !testModelName.trim()" @click="runTest">
+            <Loader2 v-if="testRunning" class="h-4 w-4 animate-spin" />
+            <Zap v-else class="h-4 w-4" />{{ t("sources.testRun") }}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
 
     <ConfirmDialog
       v-model:open="confirmOpen"

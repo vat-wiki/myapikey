@@ -2,7 +2,7 @@ import { Hono, type MiddlewareHandler } from "hono";
 import { newProviderId, newApiKey, trimBase } from "../shared/config";
 import type { ChainSlot, Format, FormatEntry, ModelEntry, Provider, RouteKey } from "../shared/types";
 import type { Store } from "./store";
-import { shortError, anthropicAuthHeaders } from "./proxy";
+import { shortError, anthropicAuthHeaders, upstreamTarget, upstreamHeaders } from "./proxy";
 import { networkInterfaces } from "node:os";
 
 /** Best-effort LAN IPv4 of this host — the address an agent on another machine
@@ -321,6 +321,56 @@ export function adminApi(store: Store, auth: MiddlewareHandler, openai: Hono, an
     } catch (e) {
       return c.json({ error: { message: `discovery failed: ${(e as Error).message}`, models: [] } }, 502);
     }
+  });
+
+  // Test a SOURCE directly: one minimal ping per selected protocol, straight to
+  // the upstream with this source's own key + base URL. Unlike the model tests
+  // (which loop back through dispatch) this needs no routing config, so an
+  // unrouted source can be checked too — and it takes no routing side-effects
+  // (no logs, no circuit, no pacing). ?model= is the upstream name sent
+  // verbatim; ?format= (repeatable) narrows the protocols, defaulting to every
+  // one the source supports (responses only when supportsResponses).
+  app.post("/providers/:id/test", async (c) => {
+    const p = store.get().providers.find((x) => x.id === c.req.param("id"));
+    if (!p) return c.json({ error: { message: "provider not found" } }, 404);
+    const model = (c.req.query("model") ?? "").trim();
+    if (!model) return c.json({ error: { message: "?model= (upstream model name) is required" } }, 400);
+    const wanted = (c.req.queries("format") ?? []).filter(
+      (f): f is RouteKey => f === "openai" || f === "anthropic" || f === "responses",
+    );
+    const formats: RouteKey[] = wanted.length
+      ? wanted
+      : [...p.formats, ...(p.supportsResponses ? ["responses" as const] : [])];
+    const results = await Promise.all(
+      formats.map(async (format) => {
+        if (format === "responses" ? !p.supportsResponses : !p.formats.includes(format as Format)) {
+          return { format, ok: false, status: 0, ms: 0, error: "source does not speak this format" };
+        }
+        const start = Date.now();
+        try {
+          // /responses takes `input`, not `messages` (same probe bodies as the
+          // model tests); max_tokens: 1 keeps the ping cheap.
+          const body =
+            format === "responses"
+              ? { model, input: "ping", stream: false }
+              : { model, messages: [{ role: "user", content: "ping" }], max_tokens: 1, stream: false };
+          const res = await fetch(upstreamTarget(p, format).url, {
+            method: "POST",
+            headers: upstreamHeaders(p, format === "responses" ? "openai" : format),
+            body: JSON.stringify(body),
+          });
+          const ms = Date.now() - start;
+          // Drain so the connection is released; the text feeds the error line.
+          const txt = await res.text().catch(() => "");
+          return res.ok
+            ? { format, ok: true, status: res.status, ms }
+            : { format, ok: false, status: res.status, ms, error: shortError(txt) || `HTTP ${res.status}` };
+        } catch (e) {
+          return { format, ok: false, status: 0, ms: Date.now() - start, error: `network error: ${(e as Error).message}` };
+        }
+      }),
+    );
+    return c.json({ results });
   });
 
   // --- models ---

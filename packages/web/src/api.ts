@@ -52,6 +52,16 @@ export async function req<T = unknown>(method: string, path: string, body?: unkn
   return json as T;
 }
 
+/** One protocol row of a source-level test (POST /admin/providers/:id/test):
+ *  a minimal ping sent straight to the source (no model routing involved). */
+export interface ProviderTestResult {
+  format: string;
+  ok: boolean;
+  status: number;
+  ms: number;
+  error?: string;
+}
+
 export interface ProviderPublic {
   id: string;
   name: string;

@@ -317,6 +317,87 @@ describe("server/admin", () => {
         fail.restore();
       }
     });
+
+    it("POST /admin/providers/:id/test pings each supported protocol DIRECTLY (no routing, no logs)", async () => {
+      const a = makeProvider({ name: "alpha", formats: ["openai", "anthropic"], baseUrlOpenai: "https://a.up.test/v1", baseUrlAnthropic: "https://a.up.test", apiKey: "sk-a" });
+      await seedStore(store, { providers: [a], apiKey: "sk-test" });
+      const m = mockFetch([
+        { match: "/chat/completions", response: { status: 200, body: { choices: [] } } },
+        { match: "/messages", response: { status: 200, body: { content: [] } } },
+      ]);
+      try {
+        const res = await createApp(store).request(`/admin/providers/${a.id}/test?model=gpt-x`, { method: "POST", headers: H_GET });
+        expect(res.status).toBe(200);
+        const results = (await json<{ results: { format: string; ok: boolean; status: number; ms: number }[] }>(res)).results;
+        // One row per supported format, both ok.
+        expect(results.map((r) => r.format).sort()).toEqual(["anthropic", "openai"]);
+        expect(results.every((r) => r.ok && r.status === 200)).toBe(true);
+        // Both upstreams were hit (openai base + /chat/completions, anthropic base + /v1/messages).
+        expect(m.calls.some((c) => c.url === "https://a.up.test/v1/chat/completions")).toBe(true);
+        expect(m.calls.some((c) => c.url === "https://a.up.test/v1/messages")).toBe(true);
+        // A source test bypasses dispatch entirely — it must leave no log rows
+        // (unlike the model tests, which loop back through the proxy and log).
+        expect(store.getLogs()).toEqual([]);
+        // And no circuit side-effects.
+        expect(store.circuitState().every((p) => p.fails === 0)).toBe(true);
+      } finally {
+        m.restore();
+      }
+    });
+
+    it("POST /admin/providers/:id/test surfaces the real upstream failure (401) without circuit impact", async () => {
+      const a = makeProvider({ formats: ["openai"], baseUrlOpenai: "https://a.up.test/v1", apiKey: "sk-a" });
+      await seedStore(store, { providers: [a], apiKey: "sk-test" });
+      const m = mockFetch([{ match: "/chat/completions", response: { status: 401, body: { error: { message: "bad key" } } } }]);
+      try {
+        const res = await createApp(store).request(`/admin/providers/${a.id}/test?model=gpt-x`, { method: "POST", headers: H_GET });
+        expect(res.status).toBe(200);
+        const r = (await json<{ results: { ok: boolean; status: number; error?: string }[] }>(res)).results[0];
+        expect(r.ok).toBe(false);
+        expect(r.status).toBe(401);
+        expect(r.error).toBe("bad key");
+        expect(store.circuitState().every((p) => p.fails === 0)).toBe(true);
+      } finally {
+        m.restore();
+      }
+    });
+
+    it("POST /admin/providers/:id/test → 404 unknown source, 400 without ?model", async () => {
+      const res = await createApp(store).request("/admin/providers/prv_nope/test?model=x", { method: "POST", headers: H_GET });
+      expect(res.status).toBe(404);
+      const a = makeProvider({ formats: ["openai"] });
+      await seedStore(store, { providers: [a] });
+      const noModel = await createApp(store).request(`/admin/providers/${a.id}/test`, { method: "POST", headers: H_GET });
+      expect(noModel.status).toBe(400);
+    });
+
+    it("POST /admin/providers/:id/test honors ?format= filter and supportsResponses", async () => {
+      const a = makeProvider({
+        formats: ["openai", "anthropic"], supportsResponses: true,
+        baseUrlOpenai: "https://a.up.test/v1", baseUrlAnthropic: "https://a.up.test",
+      });
+      await seedStore(store, { providers: [a] });
+      const m = mockFetch([{ match: "/responses", response: { status: 200, body: { ok: true } } }]);
+      try {
+        // Asking only for responses must hit /responses and nothing else.
+        const res = await createApp(store).request(`/admin/providers/${a.id}/test?model=gpt-x&format=responses`, { method: "POST", headers: H_GET });
+        const results = (await json<{ results: { format: string; ok: boolean }[] }>(res)).results;
+        expect(results).toHaveLength(1);
+        expect(results[0].format).toBe("responses");
+        expect(results[0].ok).toBe(true);
+        expect(m.calls.some((c) => c.url === "https://a.up.test/v1/responses")).toBe(true);
+        expect(m.calls.some((c) => c.url.includes("/chat/completions") || c.url.includes("/messages"))).toBe(false);
+      } finally {
+        m.restore();
+      }
+      // A source without supportsResponses rejects the responses ping per-row.
+      const b = makeProvider({ formats: ["openai"] });
+      await seedStore(store, { providers: [b] });
+      const res2 = await createApp(store).request(`/admin/providers/${b.id}/test?model=gpt-x&format=responses`, { method: "POST", headers: H_GET });
+      const r2 = (await json<{ results: { ok: boolean; error?: string }[] }>(res2)).results[0];
+      expect(r2.ok).toBe(false);
+      expect(r2.error).toBeTruthy();
+    });
   });
 
   // --- models ---

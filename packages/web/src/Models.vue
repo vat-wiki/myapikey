@@ -13,15 +13,30 @@ import { Card, CardContent } from "@/components/ui/card";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
 import {
   Search, Plus, Loader2, Copy, Zap, Gauge, MoreHorizontal, Pencil, Trash2,
-  Cpu, ServerCog, TriangleAlert, ArrowRight, Brain, Check,
+  Cpu, ServerCog, TriangleAlert, ArrowRight, Brain, Check, LayoutGrid, Table2,
 } from "lucide-vue-next";
 import ModelEditor from "@/ModelEditor.vue";
 import ConfirmDialog from "@/ConfirmDialog.vue";
 
 const emit = defineEmits<{ goto: [string] }>();
 const { t } = useI18n();
+
+// --- card / table view ---
+
+type ViewMode = "cards" | "table";
+const VIEW_KEY = "myapikey.view.models";
+const view = ref<ViewMode>(localStorage.getItem(VIEW_KEY) === "table" ? "table" : "cards");
+function setView(v: ViewMode) {
+  view.value = v;
+  try {
+    localStorage.setItem(VIEW_KEY, v);
+  } catch {
+    /* storage unavailable — keep the in-memory choice */
+  }
+}
 
 const FORMATS: Fmt[] = ["openai", "anthropic", "responses"];
 const FMT_META: Record<Fmt, { label: string; endpoint: string }> = {
@@ -311,16 +326,30 @@ async function copyName(name: string) {
 
 <template>
   <div class="space-y-4">
-    <!-- toolbar -->
-    <div class="flex flex-wrap items-center gap-2">
-      <div class="relative min-w-[180px] flex-1">
-        <Search class="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-        <Input v-model="query" :placeholder="t('models.searchPh')" class="pl-8" />
-      </div>
-      <Button @click="openCreate()">
-        <Plus class="h-4 w-4" />{{ t("models.newModel") }}
-      </Button>
+  <!-- toolbar -->
+  <div class="flex flex-wrap items-center gap-2">
+    <div class="relative min-w-[180px] flex-1">
+      <Search class="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+      <Input v-model="query" :placeholder="t('models.searchPh')" class="pl-8" />
     </div>
+    <div class="flex items-center rounded-md border p-0.5">
+      <Button
+        variant="ghost" size="icon" class="h-6 w-6"
+        :class="view === 'cards' ? 'bg-accent text-accent-foreground' : 'text-muted-foreground'"
+        :title="t('common.viewCards')" :aria-label="t('common.viewCards')"
+        @click="setView('cards')"
+      ><LayoutGrid class="h-3.5 w-3.5" /></Button>
+      <Button
+        variant="ghost" size="icon" class="h-6 w-6"
+        :class="view === 'table' ? 'bg-accent text-accent-foreground' : 'text-muted-foreground'"
+        :title="t('common.viewTable')" :aria-label="t('common.viewTable')"
+        @click="setView('table')"
+      ><Table2 class="h-3.5 w-3.5" /></Button>
+    </div>
+    <Button @click="openCreate()">
+      <Plus class="h-4 w-4" />{{ t("models.newModel") }}
+    </Button>
+  </div>
 
     <p v-if="loading" class="py-8 text-center text-sm text-muted-foreground">{{ t("common.loading") }}</p>
     <p v-else-if="err" class="py-8 text-center text-sm text-destructive">{{ err }}</p>
@@ -360,7 +389,7 @@ async function copyName(name: string) {
     <p v-else-if="!filtered.length" class="py-8 text-center text-sm text-muted-foreground">{{ t("models.noMatch") }}</p>
 
     <!-- model cards -->
-    <div v-else class="grid items-stretch gap-3 md:grid-cols-2">
+    <div v-else-if="view === 'cards'" class="grid items-stretch gap-3 md:grid-cols-2">
       <Card
         v-for="m in filtered"
         :key="m.name"
@@ -508,6 +537,135 @@ async function copyName(name: string) {
           </div>
         </div>
       </Card>
+    </div>
+
+    <!-- model table -->
+    <div v-else class="overflow-hidden rounded-lg border">
+      <Table>
+        <TableHeader>
+          <TableRow class="hover:bg-transparent">
+            <TableHead>{{ t("models.colName") }}</TableHead>
+            <TableHead>{{ t("models.colFormats") }}</TableHead>
+            <TableHead>{{ t("models.colChain") }}</TableHead>
+            <TableHead>{{ t("models.colPace") }}</TableHead>
+            <TableHead class="w-[128px] text-right">{{ t("models.colActions") }}</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          <TableRow v-for="m in filtered" :key="m.name" class="cursor-pointer" @click="openEditor(m)">
+            <TableCell>
+              <div class="space-y-1">
+                <span class="font-mono text-sm font-medium">{{ m.name }}</span>
+                <div v-if="m.paceRpm || rowProbe(m) || isStaleAny(m)" class="flex flex-wrap items-center gap-1">
+                  <Badge v-if="m.paceRpm" variant="outline" class="gap-1" :title="t('models.paceBadgeHint', { n: m.paceRpm, s: Math.max(1, Math.round(60 / m.paceRpm)) })">
+                    <Gauge class="h-3 w-3" />{{ t("models.paceBadge", { n: m.paceRpm }) }}
+                  </Badge>
+                  <Badge v-if="rowProbe(m)?.state === 'ok'" variant="success" :title="t('models.probeOkHint', { name: rowProbe(m)?.provider ?? '' })">{{ t("models.probeOk") }}</Badge>
+                  <Badge v-else-if="rowProbe(m)?.state === 'fail'" variant="destructive" :title="rowProbe(m)?.error || t('models.probeFailHint')">{{ t("models.probeFail") }} · {{ rowProbe(m)?.status || '?' }}</Badge>
+                  <Badge v-else-if="isStaleAny(m)" variant="secondary" class="gap-1" :title="t('models.delistedHint')">
+                    <TriangleAlert class="h-3 w-3" />{{ t("models.delisted") }}
+                  </Badge>
+                </div>
+              </div>
+            </TableCell>
+            <TableCell @click.stop>
+              <div class="flex flex-wrap items-center gap-1.5">
+                <template v-for="f in FORMATS" :key="f">
+                  <button
+                    v-if="chipState(m, f) !== 'none'"
+                    type="button"
+                    :title="chipTitle(m, f)"
+                    :aria-label="chipTitle(m, f)"
+                    class="inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-medium transition-colors"
+                    :class="chipClass(m, f)"
+                    @click="toggleFmt(m, f)"
+                  >
+                    {{ t(FMT_META[f].label) }}
+                  </button>
+                </template>
+              </div>
+            </TableCell>
+            <TableCell>
+              <div v-if="chainLines(m).length" class="min-w-0 space-y-1">
+                <div
+                  v-for="line in chainLines(m)"
+                  :key="line.key"
+                  class="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs"
+                  :class="{ 'opacity-60': !line.enabled }"
+                >
+                  <template v-if="chainLines(m).length > 1">
+                    <span
+                      v-for="f in line.fs"
+                      :key="f"
+                      class="h-1.5 w-1.5 shrink-0 rounded-full"
+                      :class="FMT_ACCENT[f].solid"
+                      :title="t(FMT_META[f].label)"
+                    />
+                  </template>
+                  <template v-for="(s, si) in line.slots" :key="si">
+                    <span v-if="si" class="text-muted-foreground/50">·</span>
+                    <span class="font-medium">{{ s.name }}</span>
+                    <template v-if="s.model">
+                      <ArrowRight class="h-3 w-3 shrink-0 text-muted-foreground/50" />
+                      <span class="font-mono text-muted-foreground" :title="s.model">{{ s.model }}</span>
+                    </template>
+                    <span
+                      v-if="s.thinking"
+                      class="inline-flex shrink-0 items-center gap-0.5 rounded bg-muted px-1 py-px font-mono text-[10px] text-muted-foreground"
+                      :title="t('models.editor.thinkingLabel')"
+                    >
+                      <Brain class="h-2.5 w-2.5" />{{ s.thinking }}
+                    </span>
+                  </template>
+                  <span v-if="!line.enabled" class="text-muted-foreground">· {{ t("models.routeDisabled") }}</span>
+                </div>
+              </div>
+              <span v-else class="text-xs text-muted-foreground">{{ t("models.unroutedHint") }}</span>
+            </TableCell>
+            <TableCell class="whitespace-nowrap">
+              <Badge v-if="m.paceRpm" variant="outline" class="gap-1" :title="t('models.paceBadgeHint', { n: m.paceRpm, s: Math.max(1, Math.round(60 / m.paceRpm)) })">
+                <Gauge class="h-3 w-3" />{{ t("models.paceBadge", { n: m.paceRpm }) }}
+              </Badge>
+              <span v-else class="text-xs text-muted-foreground">—</span>
+            </TableCell>
+            <TableCell @click.stop>
+              <div class="flex items-center justify-end gap-0.5">
+                <Button
+                  variant="ghost" size="icon"
+                  class="h-7 w-7 text-muted-foreground"
+                  :disabled="!enabledFormats(m).length || !!rowProbe(m) && rowProbe(m)!.state === 'testing'"
+                  :title="t('models.testModel')" :aria-label="t('models.testModel')"
+                  @click="testModel(m)"
+                >
+                  <Loader2 v-if="rowProbe(m)?.state === 'testing'" class="h-3.5 w-3.5 animate-spin" />
+                  <Zap v-else class="h-3.5 w-3.5" />
+                </Button>
+                <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground" :title="t('models.edit')" :aria-label="t('models.edit')" @click="openEditor(m)">
+                  <Pencil class="h-3.5 w-3.5" />
+                </Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger>
+                    <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground" :aria-label="t('models.moreActions')">
+                      <MoreHorizontal class="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem @select="askRename(m)">
+                      <Pencil />
+                      {{ t("models.renameModel") }}
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem class="text-destructive focus:bg-destructive/10 focus:text-destructive" @select="confirmTarget = m; confirmOpen = true">
+                      <Trash2 />
+                      {{ t("models.removeModel") }}
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            </TableCell>
+          </TableRow>
+        </TableBody>
+      </Table>
     </div>
 
     <ModelEditor

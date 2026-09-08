@@ -219,7 +219,8 @@ export function anthropicAuthHeaders(apiKey: string, version: string): Record<st
   return { "x-api-key": apiKey, authorization: `Bearer ${apiKey}`, "anthropic-version": version };
 }
 
-function upstreamHeaders(provider: Provider, format: Format, clientVersion?: string): Record<string, string> {
+/** Exported for the admin source-test (direct upstream ping, no routing). */
+export function upstreamHeaders(provider: Provider, format: Format, clientVersion?: string): Record<string, string> {
   const h: Record<string, string> = { "content-type": "application/json" };
   if (format === "openai") h.authorization = `Bearer ${provider.apiKey}`;
   else Object.assign(h, anthropicAuthHeaders(provider.apiKey, clientVersion || "2023-06-01"));
@@ -228,8 +229,9 @@ function upstreamHeaders(provider: Provider, format: Format, clientVersion?: str
 
 /** Resolve the upstream URL + wire format for a routing slot. The OpenAI base
  *  includes the version segment (we append the bare resource); the Anthropic
- *  base excludes /v1 (we append v1/messages). /responses reuses the OpenAI base. */
-function upstreamTarget(p: Provider, key: RouteKey): { url: string; wire: Format } {
+ *  base excludes /v1 (we append v1/messages). /responses reuses the OpenAI base.
+ *  Exported for the admin source-test (direct upstream ping, no routing). */
+export function upstreamTarget(p: Provider, key: RouteKey): { url: string; wire: Format } {
   if (key === "anthropic") {
     return { url: `${trimBase(p.baseUrlAnthropic)}/v1/messages`, wire: "anthropic" };
   }
