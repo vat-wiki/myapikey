@@ -238,6 +238,12 @@ const FMT_META: Record<Fmt, { label: string; endpoint: string }> = {
 <template>
   <Dialog v-model:open="open">
     <DialogContent class="max-w-2xl">
+      <datalist id="thinking-words">
+        <option value="low"></option>
+        <option value="medium"></option>
+        <option value="high"></option>
+        <option value="xhigh"></option>
+      </datalist>
       <div class="flex shrink-0 items-center gap-2 pr-8">
         <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/15 text-primary">
           <ServerCog class="h-4 w-4" />
@@ -262,6 +268,7 @@ const FMT_META: Record<Fmt, { label: string; endpoint: string }> = {
             autocomplete="off"
           />
           <p v-if="nameErr" class="text-xs text-destructive">{{ nameErr }}</p>
+          <p v-else-if="model" class="text-xs text-muted-foreground">{{ t("models.editor.nameEditHint") }}</p>
           <p v-else class="text-xs text-muted-foreground">{{ t("models.editor.nameHint") }}</p>
         </div>
 
@@ -309,6 +316,7 @@ const FMT_META: Record<Fmt, { label: string; endpoint: string }> = {
                       :placeholder="t('models.editor.thinkingPh')"
                       class="h-8 pl-7 font-mono text-xs"
                       spellcheck="false"
+                      list="thinking-words"
                       :aria-label="t('models.editor.thinkingLabel')"
                     />
                   </div>
@@ -378,7 +386,13 @@ const FMT_META: Record<Fmt, { label: string; endpoint: string }> = {
                 </div>
                 <div class="relative w-28 shrink-0">
                   <Brain class="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/70" />
-                  <Input v-model="s.thinking" :placeholder="t('models.editor.thinkingPh')" class="h-8 pl-7 font-mono text-xs" spellcheck="false" />
+                  <Input
+                    v-model="s.thinking"
+                    :placeholder="f === 'anthropic' ? t('models.editor.thinkingPhBudget') : t('models.editor.thinkingPh')"
+                    class="h-8 pl-7 font-mono text-xs"
+                    spellcheck="false"
+                    :list="f === 'anthropic' ? undefined : 'thinking-words'"
+                  />
                 </div>
                 <div class="flex shrink-0 items-center">
                   <Button variant="ghost" size="icon" class="h-7 w-7" :disabled="i === 0" :aria-label="t('models.moveUpAria')" @click="moveSlot(f, i, -1)">

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
 import { useI18n } from "vue-i18n";
-import { req, type ProviderPublic } from "@/api";
+import { req, type ModelView, type ProviderPublic } from "@/api";
 import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,7 +16,12 @@ import NewSourceForm from "@/NewSourceForm.vue";
 
 const { t } = useI18n();
 
+const emit = defineEmits<{ goto: [string] }>();
+
 const providers = ref<ProviderPublic[]>([]);
+/** Whether at least one model exists — drives the "now create a model" nudge
+ *  shown to someone who just finished the first-run source setup. */
+const hasModels = ref(true);
 const loading = ref(false);
 const err = ref("");
 
@@ -46,8 +51,12 @@ async function load() {
   loading.value = true;
   err.value = "";
   try {
-    const r = await req<{ providers: ProviderPublic[] }>("GET", "/admin/providers");
-    providers.value = r.providers;
+    const [pr, mr] = await Promise.all([
+      req<{ providers: ProviderPublic[] }>("GET", "/admin/providers"),
+      req<{ models: ModelView[] }>("GET", "/admin/models").catch(() => null),
+    ]);
+    providers.value = pr.providers;
+    hasModels.value = !!mr?.models.length;
   } catch (e) {
     err.value = (e as Error).message;
   } finally {
@@ -226,6 +235,12 @@ function discTitle(p: ProviderPublic): string {
           </div>
         </CardContent>
       </Card>
+
+      <!-- first-run nudge: a source alone isn't callable — point at the next step -->
+      <div v-if="providers.length && !hasModels" class="flex flex-wrap items-center gap-3 rounded-lg border border-primary/40 bg-primary/5 px-3 py-2.5">
+        <p class="min-w-0 flex-1 text-sm">{{ t("sources.nextHint") }}</p>
+        <Button size="sm" @click="emit('goto', 'models')">{{ t("sources.nextCta") }}</Button>
+      </div>
 
       <div v-if="providers.length" class="space-y-2">
         <div v-for="p in providers" :key="p.id" class="rounded-lg border border-border/60 bg-card p-3">

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
 import { useI18n } from "vue-i18n";
-import { req } from "@/api";
+import { req, type ModelView } from "@/api";
 import { FMT_ACCENT, type Fmt } from "@/lib/format";
 import { toast } from "@/lib/toast";
 import { copyText } from "@/lib/clipboard";
@@ -28,6 +28,9 @@ const apiKey = ref<string | null>(null);
 const lanIp = ref<string | null>(null);
 const copied = ref("");
 const showKey = ref(false);
+/** Existing models, so the curl snippets can name a real model instead of the
+ *  "<model>" placeholder — copy, paste, run, no editing. */
+const models = ref<ModelView[]>([]);
 
 // An agent runs on another machine, so localhost is useless to it: when the UI
 // was opened via localhost, show the host's LAN IP instead. If the user already
@@ -49,6 +52,12 @@ const baseUrlAnthropic = computed(() => `${baseUrl.value}/anthropic`);
 async function load() {
   apiKey.value = (await req<{ apiKey: string }>("GET", "/admin/api-key")).apiKey;
   lanIp.value = (await req<{ lanIp: string | null }>("GET", "/admin/connection")).lanIp;
+  models.value = (await req<{ models: ModelView[] }>("GET", "/admin/models").catch(() => ({ models: [] }))).models;
+}
+
+/** First model enabled for a routing family — the snippet's example model. */
+function exampleModel(f: Fmt): string {
+  return models.value.find((m) => m[f].enabled)?.name || "<model>";
 }
 
 async function copy(key: string, text: string) {
@@ -77,17 +86,17 @@ const snippets = computed(() => [
   {
     key: "curl",
     title: t("connect.curlTitle"),
-    text: `curl ${baseUrlOpenai.value}/chat/completions \\\n  -H "Authorization: Bearer ${apiKey.value ?? ""}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"<model>","messages":[{"role":"user","content":"hi"}]}'`,
+    text: `curl ${baseUrlOpenai.value}/chat/completions \\\n  -H "Authorization: Bearer ${apiKey.value ?? ""}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"${exampleModel("openai")}","messages":[{"role":"user","content":"hi"}]}'`,
   },
   {
     key: "curl-anthropic",
     title: t("connect.curlAnthropicTitle"),
-    text: `curl ${baseUrlAnthropic.value}/v1/messages \\\n  -H "Authorization: Bearer ${apiKey.value ?? ""}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"<model>","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'`,
+    text: `curl ${baseUrlAnthropic.value}/v1/messages \\\n  -H "Authorization: Bearer ${apiKey.value ?? ""}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"${exampleModel("anthropic")}","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'`,
   },
   {
     key: "responses",
     title: t("connect.responsesTitle"),
-    text: `curl ${baseUrlOpenai.value}/responses \\\n  -H "Authorization: Bearer ${apiKey.value ?? ""}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"<model>","input":"hi"}'`,
+    text: `curl ${baseUrlOpenai.value}/responses \\\n  -H "Authorization: Bearer ${apiKey.value ?? ""}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"${exampleModel("responses")}","input":"hi"}'`,
   },
 ]);
 

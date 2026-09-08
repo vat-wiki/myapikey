@@ -133,6 +133,8 @@ export default {
     errBaseUrl: "Enter a Base URL for each selected format",
     errFormat: "Select at least one format",
     confirmRemove: "Remove source \"{name}\"? It will be detached from all models.",
+    nextHint: "A model is the name your agents actually call — route it to your sources and the gateway handles the rest.",
+    nextCta: "Create your first model",
   },
   models: {
     searchPh: "Search models…",
@@ -191,6 +193,8 @@ export default {
       upstreamPh: "Upstream model",
       thinkingLabel: "Thinking level",
       thinkingPh: "Thinking level (optional)",
+      thinkingPhBudget: "Budget tokens (e.g. 8192)",
+      nameEditHint: "Renaming is done from the model list: More actions → Rename.",
       errThinkingBudget: "The Anthropic route needs a thinking budget in tokens (e.g. 8192); use \"Configure per protocol\" when the two protocols need different values.",
       landsOn: "Lands on",
       landsNone: "This source supports no protocol",

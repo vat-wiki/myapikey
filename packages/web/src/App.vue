@@ -176,7 +176,7 @@ onMounted(async () => {
           <TabsTrigger value="settings"><SettingsIcon class="h-4 w-4" />{{ t("nav.settings") }}</TabsTrigger>
         </TabsList>
         <TabsContent value="models"><Models @goto="tab = $event" /></TabsContent>
-        <TabsContent value="sources"><Sources /></TabsContent>
+        <TabsContent value="sources"><Sources @goto="tab = $event" /></TabsContent>
         <TabsContent value="connect"><Connect /></TabsContent>
         <TabsContent value="logs"><Logs /></TabsContent>
         <TabsContent value="stats"><Stats /></TabsContent>

@@ -133,6 +133,8 @@ export default {
     errBaseUrl: "请为已选的每种格式填写 Base URL",
     errFormat: "请至少选择一种格式",
     confirmRemove: "确定移除来源「{name}」?它将从所有模型中解除关联。",
+    nextHint: "模型才是 agent 实际调用的名字——把它路由到来源,剩下的交给网关。",
+    nextCta: "创建第一个模型",
   },
   models: {
     searchPh: "搜索模型…",
