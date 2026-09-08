@@ -113,8 +113,10 @@ export interface CircuitProvider {
   rpmUsed: number;
 }
 
-/** Token usage for one call. `estimated` marks local-tokenizer approximations
- *  (OpenAI chat streams where the upstream omitted usage) — rendered with ≈. */
+/** Token usage for one call. `input` is UNCACHED prompt tokens (cache hits are
+ *  reported separately, even on wires where the upstream folds them into
+ *  prompt_tokens). `estimated` marks local-tokenizer approximations (OpenAI
+ *  chat streams where the upstream omitted usage) — rendered with ≈. */
 export interface Usage {
   input: number;
   output: number;
@@ -134,9 +136,10 @@ export interface StatBucket {
   avgMs: number;
   inputTokens: number;
   outputTokens: number;
-  /** Prompt-cache read hits (Anthropic/Ark cache_read_input_tokens). */
+  /** Prompt-cache read hits (Anthropic `cache_read_input_tokens`; OpenAI-family
+   *  `prompt_tokens_details.cached_tokens` / DeepSeek `prompt_cache_hit_tokens`). */
   cacheRead: number;
-  /** Prompt-cache creation/write tokens (cache_creation_input_tokens). */
+  /** Prompt-cache creation/write tokens (Anthropic `cache_creation_input_tokens`). */
   cacheCreation: number;
   /** cacheRead / (inputTokens + cacheRead + cacheCreation). 0 when none. */
   cacheHitRate: number;

@@ -70,10 +70,19 @@ type UsageFields = Partial<Pick<Usage, "input" | "output" | "cacheRead" | "cache
  *    `message_delta.usage.output_tokens` (output); a non-streaming Message
  *    carries `usage` directly (both).
  *  - openai chat: only the final chunk (with stream_options.include_usage) has
- *    `usage` (prompt/completion tokens); the non-streaming body has it too.
+ *    `usage` (prompt/completion tokens + `prompt_tokens_details.cached_tokens`
+ *    / DeepSeek's `prompt_cache_hit_tokens` for cache hits); the non-streaming
+ *    body has it too.
  *  - responses: `response.usage` on response.completed/in-progress, or top-level
  *    `usage` on a non-streaming Response. Accepts both the `*_tokens` and bare
- *    `input`/`output` spellings the API has used over time. */
+ *    `input`/`output` spellings the API has used over time, plus
+ *    `input_tokens_details.cached_tokens` for cache hits.
+ *
+ *  Cache-hit fields (`cacheRead` etc.) are captured on every wire that reports
+ *  them. On the OpenAI-family wires the reported `input`/`prompt_tokens`
+ *  INCLUDES the cached subset, so it is subtracted here — `Usage.input` means
+ *  UNCACHED prompt tokens on every wire (Anthropic's native semantics), which
+ *  is what the store's cache-hit-rate formula assumes. */
 function extractUsage(obj: any, key: RouteKey): UsageFields | null {
   if (!obj || typeof obj !== "object") return null;
 
@@ -94,13 +103,31 @@ function extractUsage(obj: any, key: RouteKey): UsageFields | null {
     if (u) {
       const input = num(u.input_tokens) ?? num(u.input);
       const output = num(u.output_tokens) ?? num(u.output);
-      if (typeof input === "number" || typeof output === "number") return { input, output };
+      // OpenAI Responses reports cache hits inside `input_tokens_details` — a
+      // SUBSET of input_tokens (like chat/completions, unlike Anthropic where
+      // input_tokens excludes cache), so subtract to keep Usage.input = uncached.
+      const details = u.input_tokens_details as { cached_tokens?: unknown } | undefined;
+      const cached = num(details?.cached_tokens) ?? 0;
+      if (typeof input === "number" || typeof output === "number") {
+        return { input: input === undefined ? undefined : input - cached, output, cacheRead: cached > 0 ? cached : undefined };
+      }
     }
     return null;
   }
-  // openai /chat/completions
+  // openai /chat/completions (also its OpenAI-compatible clones)
   if (obj.usage) {
-    return { input: num(obj.usage.prompt_tokens), output: num(obj.usage.completion_tokens) };
+    const input = num(obj.usage.prompt_tokens);
+    const output = num(obj.usage.completion_tokens);
+    // Prompt-cache hits on this wire: `prompt_tokens_details.cached_tokens`
+    // (OpenAI, Ark, Qwen, GLM, …) or DeepSeek's `prompt_cache_hit_tokens`.
+    // Both spell the cached tokens as a SUBSET of prompt_tokens (cached +
+    // uncached = prompt), so — unlike Anthropic's separate counters — the hit
+    // part is subtracted from input. That keeps Usage.input = UNCACHED prompt
+    // tokens on every wire, which is what the stats hit-rate formula
+    // (cacheRead / (input + cacheRead + cacheCreation)) assumes.
+    const details = obj.usage.prompt_tokens_details as { cached_tokens?: unknown } | undefined;
+    const cached = num(details?.cached_tokens) ?? num(obj.usage.prompt_cache_hit_tokens) ?? 0;
+    return { input: input === undefined ? undefined : input - cached, output, cacheRead: cached > 0 ? cached : undefined };
   }
   return null;
 }

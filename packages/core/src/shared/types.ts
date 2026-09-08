@@ -118,8 +118,13 @@ export interface GateConfig {
  *  streams where the upstream omits usage (most agents don't set
  *  stream_options.include_usage), `estimated` is set and input/output come from
  *  a local tokenizer approximation (gpt-tokenizer, o200k_base) instead — the UI
- *  renders those with a ≈ marker. cacheRead/cacheCreation (prompt-caching hits,
- *  Anthropic-only) are surfaced separately from `input`. */
+ *  renders those with a ≈ marker. cacheRead/cacheCreation (prompt-cache hit /
+ *  write tokens) are surfaced separately from `input`, which always means
+ *  UNCACHED prompt tokens: Anthropic reports them that way natively, while on
+ *  the OpenAI-family wires the cached subset (chat `prompt_tokens_details.
+ *  cached_tokens`, DeepSeek `prompt_cache_hit_tokens`, /responses
+ *  `input_tokens_details.cached_tokens`) arrives INCLUDED in prompt_tokens /
+ *  input_tokens and is subtracted at capture time to match. */
 export interface Usage {
   input: number;
   output: number;
