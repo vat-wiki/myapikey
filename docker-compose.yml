@@ -1,0 +1,17 @@
+services:
+  myapikey:
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-dev}
+        NPM_CONFIG_REGISTRY: ${NPM_CONFIG_REGISTRY:-}
+    image: myapikey:${VERSION:-latest}
+    container_name: myapikey
+    ports:
+      - "7800:7800"
+    volumes:
+      - myapikey-data:/data
+    restart: unless-stopped
+
+volumes:
+  myapikey-data:
