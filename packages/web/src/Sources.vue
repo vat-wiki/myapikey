@@ -3,7 +3,7 @@ import { ref, computed, onMounted } from "vue";
 import { useI18n } from "vue-i18n";
 import { req, type ModelView, type ProviderPublic, type ProviderTestResult } from "@/api";
 import type { Fmt } from "@/lib/format";
-import { FMT_ACCENT } from "@/lib/format";
+import { FMT_ACCENT, fmtLabel } from "@/lib/format";
 import { providerModelList } from "@/lib/models";
 import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
@@ -289,8 +289,8 @@ onMounted(load);
                 variant="outline"
                 class="shrink-0"
                 :class="fmtBadgeClass(f)"
-              >{{ f }}</Badge>
-              <Badge v-if="p.supportsResponses" variant="outline" class="shrink-0" :class="FMT_ACCENT.responses.badge">responses</Badge>
+              >{{ fmtLabel(f) }}</Badge>
+              <Badge v-if="p.supportsResponses" variant="outline" class="shrink-0" :class="FMT_ACCENT.responses.badge">{{ fmtLabel("responses") }}</Badge>
               <Badge v-if="p.rpm" variant="outline" class="shrink-0" :title="t('sources.rpmBadgeHint')">{{ t("sources.rpmBadge", { n: p.rpm }) }}</Badge>
               <button
                 type="button"
@@ -308,10 +308,10 @@ onMounted(load);
             <!-- base URLs, one line per enabled format -->
             <div class="min-w-0 flex-1 space-y-1">
               <div v-if="p.formats.includes('openai')" class="truncate font-mono text-xs text-muted-foreground">
-                <span class="opacity-60">openai ·</span> {{ p.baseUrlOpenai }}
+                <span class="opacity-60">{{ fmtLabel("openai") }} ·</span> {{ p.baseUrlOpenai }}
               </div>
               <div v-if="p.formats.includes('anthropic')" class="truncate font-mono text-xs text-muted-foreground">
-                <span class="opacity-60">anthropic ·</span> {{ p.baseUrlAnthropic }}
+                <span class="opacity-60">{{ fmtLabel("anthropic") }} ·</span> {{ p.baseUrlAnthropic }}
               </div>
             </div>
 
@@ -365,17 +365,17 @@ onMounted(load);
               <TableCell class="max-w-[160px] truncate font-medium" :title="p.name">{{ p.name }}</TableCell>
               <TableCell>
                 <div class="flex flex-wrap gap-1">
-                  <Badge v-for="f in p.formats" :key="f" variant="outline" :class="fmtBadgeClass(f)">{{ f }}</Badge>
-                  <Badge v-if="p.supportsResponses" variant="outline" :class="FMT_ACCENT.responses.badge">responses</Badge>
+                  <Badge v-for="f in p.formats" :key="f" variant="outline" :class="fmtBadgeClass(f)">{{ fmtLabel(f) }}</Badge>
+                  <Badge v-if="p.supportsResponses" variant="outline" :class="FMT_ACCENT.responses.badge">{{ fmtLabel("responses") }}</Badge>
                 </div>
               </TableCell>
               <TableCell>
                 <div class="max-w-[300px] space-y-0.5 font-mono text-xs text-muted-foreground">
                   <div v-if="p.formats.includes('openai')" class="truncate" :title="p.baseUrlOpenai">
-                    <span class="opacity-60">openai · </span>{{ p.baseUrlOpenai }}
+                    <span class="opacity-60">{{ fmtLabel("openai") }} · </span>{{ p.baseUrlOpenai }}
                   </div>
                   <div v-if="p.formats.includes('anthropic')" class="truncate" :title="p.baseUrlAnthropic">
-                    <span class="opacity-60">anthropic · </span>{{ p.baseUrlAnthropic }}
+                    <span class="opacity-60">{{ fmtLabel("anthropic") }} · </span>{{ p.baseUrlAnthropic }}
                   </div>
                 </div>
               </TableCell>
@@ -449,12 +449,12 @@ onMounted(load);
                 class="inline-flex items-center rounded-md border px-2 py-0.5 font-mono text-xs font-medium transition-colors"
                 :class="testChipClass(!!testFormats[f], f)"
                 @click="testFormats[f] = !testFormats[f]"
-              >{{ f }}</button>
+              >{{ fmtLabel(f) }}</button>
             </div>
           </div>
           <div v-if="testResults" class="space-y-1.5 rounded-md border bg-muted/30 p-2.5">
             <div v-for="r in testResults" :key="r.format" class="flex min-w-0 items-center gap-2 text-xs">
-              <Badge variant="outline" :class="fmtBadgeClass(r.format)">{{ r.format }}</Badge>
+              <Badge variant="outline" :class="fmtBadgeClass(r.format)">{{ fmtLabel(r.format) }}</Badge>
               <Badge v-if="r.ok" variant="success" class="shrink-0">{{ t("models.probeOk") }}</Badge>
               <Badge v-else variant="destructive" class="shrink-0">{{ t("models.probeFail") }} · {{ r.status || "?" }}</Badge>
               <span class="shrink-0 tabular-nums text-muted-foreground">{{ r.ms }} ms</span>

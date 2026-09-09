@@ -2,7 +2,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 import { useI18n } from "vue-i18n";
 import { req, type CircuitProvider, type Usage } from "@/api";
-import { FMT_ACCENT, type Fmt } from "@/lib/format";
+import { FMT_ACCENT, fmtLabel, type Fmt } from "@/lib/format";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -494,7 +494,7 @@ onUnmounted(stopPolling);
                 <TableCell class="text-sm">{{ l.provider }}</TableCell>
                 <TableCell>
                   <span class="inline-flex items-center gap-1.5">
-                    <Badge variant="outline" :class="fmtBadge(l.format)">{{ l.format }}</Badge>
+                    <Badge variant="outline" :class="fmtBadge(l.format)">{{ fmtLabel(l.format) }}</Badge>
                     <Badge v-if="l.stream" variant="muted" class="text-[10px]">{{ t("logs.stream") }}</Badge>
                     <Badge
                       v-if="l.thinking"

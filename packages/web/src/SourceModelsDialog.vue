@@ -2,6 +2,7 @@
 import { ref, computed, watch, nextTick, onBeforeUnmount } from "vue";
 import { useI18n } from "vue-i18n";
 import { req, type ProviderPublic, type ProviderTestResult } from "@/api";
+import { fmtLabel } from "@/lib/format";
 import { providerModelList } from "@/lib/models";
 import { toast } from "@/lib/toast";
 import { copyText } from "@/lib/clipboard";
@@ -266,8 +267,8 @@ function onEsc(e: KeyboardEvent) {
                   :key="tr.format"
                   :variant="tr.ok ? 'success' : 'destructive'"
                   class="shrink-0 font-mono"
-                  :title="`${tr.format} · ${tr.status || '?'} · ${tr.ms} ms${tr.error ? ' · ' + tr.error : ''}`"
-                >{{ tr.ok ? "✓" : "✗" }} {{ tr.format }} {{ tr.ok ? `${tr.ms}ms` : tr.status || "–" }}</Badge>
+                  :title="`${fmtLabel(tr.format)} · ${tr.status || '?'} · ${tr.ms} ms${tr.error ? ' · ' + tr.error : ''}`"
+                >{{ tr.ok ? "✓" : "✗" }} {{ fmtLabel(tr.format) }} {{ tr.ok ? `${tr.ms}ms` : tr.status || "–" }}</Badge>
               </template>
               <Badge v-if="r.manual" variant="secondary" class="shrink-0">{{ t("sources.modelTagManual") }}</Badge>
               <button

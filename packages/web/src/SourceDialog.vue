@@ -2,6 +2,7 @@
 import { ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { req, type ProviderPublic } from "@/api";
+import { FMT_LABEL } from "@/lib/format";
 import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -154,7 +155,7 @@ async function save() {
                   aria-label="openai"
                   @update:model-value="toggleFmt('openai')"
                 />
-                <span class="text-sm font-medium leading-none">openai</span>
+                <span class="text-sm font-medium leading-none">{{ FMT_LABEL.openai }}</span>
                 <span class="text-xs text-muted-foreground">/chat/completions</span>
               </div>
               <div class="flex items-center gap-2.5 pl-7">
@@ -171,7 +172,7 @@ async function save() {
                   aria-label="anthropic"
                   @update:model-value="toggleFmt('anthropic')"
                 />
-                <span class="text-sm font-medium leading-none">anthropic</span>
+                <span class="text-sm font-medium leading-none">{{ FMT_LABEL.anthropic }}</span>
                 <span class="text-xs text-muted-foreground">/messages</span>
               </div>
             </div>
@@ -201,8 +202,8 @@ async function save() {
         </button>
         <div v-if="showBaseHelp" class="space-y-1.5 rounded-md border bg-muted/30 p-3 text-xs leading-relaxed text-muted-foreground">
           <p>{{ t("sources.baseHelpSplit") }}</p>
-          <p><span class="font-medium text-foreground">openai</span> — {{ t("sources.baseHelpOpenai") }}</p>
-          <p><span class="font-medium text-foreground">anthropic</span> — {{ t("sources.baseHelpAnthropic") }}</p>
+          <p><span class="font-medium text-foreground">{{ FMT_LABEL.openai }}</span> — {{ t("sources.baseHelpOpenai") }}</p>
+          <p><span class="font-medium text-foreground">{{ FMT_LABEL.anthropic }}</span> — {{ t("sources.baseHelpAnthropic") }}</p>
           <p><span class="font-medium text-foreground">{{ t("sources.responses") }}</span> — {{ t("sources.responsesNote") }}</p>
         </div>
 

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useI18n } from "vue-i18n";
 import type { StatBucket } from "@/api";
-import { FMT_ACCENT, providerColor, type Fmt } from "@/lib/format";
+import { FMT_ACCENT, fmtLabel, providerColor, type Fmt } from "@/lib/format";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
 
@@ -69,7 +69,7 @@ function fmtDot(format: string): string | undefined {
               <div class="flex items-center gap-1.5">
                 <span v-if="kind === 'format' && fmtDot(b.key)" class="h-2 w-2 shrink-0 rounded-full" :class="fmtDot(b.key)"></span>
                 <span v-else-if="kind === 'provider' && b.id" class="h-2 w-2 shrink-0 rounded-full" :class="providerColor(b.id).solid"></span>
-                <span class="truncate font-mono text-xs">{{ b.key }}</span>
+                <span class="truncate font-mono text-xs">{{ kind === "format" ? fmtLabel(b.key) : b.key }}</span>
               </div>
             </TableCell>
             <TableCell class="py-1.5">

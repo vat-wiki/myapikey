@@ -47,6 +47,22 @@ export const FMT_ACCENT: Record<
   },
 };
 
+/** Human-readable name per routing family. "openai" and "responses" are BOTH
+ *  OpenAI's protocols — the bare key can't tell them apart, so every surface
+ *  spells out which one it means: openai = the /chat/completions wire,
+ *  responses = the OpenAI Responses API. anthropic needs no qualifier. */
+export const FMT_LABEL: Record<Fmt, string> = {
+  openai: "OpenAI Chat",
+  anthropic: "Anthropic",
+  responses: "OpenAI Responses",
+};
+
+/** Display label for a format key; falls back to the raw key for unknown values
+ *  (legacy log rows, future formats). */
+export function fmtLabel(f: string): string {
+  return FMT_LABEL[f as Fmt] ?? f;
+}
+
 /** Distinct hues for provider/source tags — deterministically assigned per
  *  provider id so the same source is always the same color. Deliberately
  *  disjoint from the format hues (emerald/amber/violet) so a source tag is
