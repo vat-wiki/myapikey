@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onBeforeUnmount } from "vue";
 import { useI18n } from "vue-i18n";
-import { req, type ProviderPublic } from "@/api";
+import { req, type ProviderPublic, type ProviderTestResult } from "@/api";
 import { providerModelList } from "@/lib/models";
 import { toast } from "@/lib/toast";
 import { copyText } from "@/lib/clipboard";
@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
-import { Loader2, Plus, RefreshCw, Search, X, PackageSearch } from "lucide-vue-next";
+import { Loader2, Plus, RefreshCw, Search, X, PackageSearch, Zap } from "lucide-vue-next";
 
 /** The per-source model list, opened by clicking a source's discovery badge.
  *  Discovery results and manual supplements in one scrollable list: type in
@@ -44,6 +44,30 @@ function markFlash(names: string[]) {
 }
 onBeforeUnmount(() => clearTimeout(flashTimer));
 
+/** Per-row quick test: pings the source directly with this model name across
+ *  every protocol it supports (the same endpoint as the row-level test
+ *  button, no routing/logs/circuit side-effects). Results stay on the row —
+ *  replacing the origin tag until re-run — since that's what the user is
+ *  judging at that moment; the chip's tooltip carries status/ms/error. */
+const testing = ref<Set<string>>(new Set());
+const results = ref<Record<string, ProviderTestResult[]>>({});
+
+async function test(name: string) {
+  if (!props.provider || testing.value.has(name)) return;
+  testing.value.add(name);
+  try {
+    const r = await req<{ results: ProviderTestResult[] }>(
+      "POST",
+      `/admin/providers/${props.provider.id}/test?model=${encodeURIComponent(name)}`,
+    );
+    results.value = { ...results.value, [name]: r.results };
+  } catch (e) {
+    toast((e as Error).message, "error");
+  } finally {
+    testing.value.delete(name);
+  }
+}
+
 // Opening resets everything and focuses the search field; a patched provider
 // (our own saves, or a refresh from the row) re-syncs only the supplement
 // copy, keeping the typed filter.
@@ -54,6 +78,8 @@ watch(
     q.value = "";
     extra.value = [...(props.provider?.extraModels ?? [])];
     flash.value.clear();
+    testing.value.clear();
+    results.value = {};
     await nextTick();
     inputRef.value?.$el?.focus();
   },
@@ -232,7 +258,17 @@ function onEsc(e: KeyboardEvent) {
               @click="copy(r.name)"
             >
               <span class="min-w-0 flex-1 truncate font-mono text-sm">{{ r.name }}</span>
-              <Badge v-if="r.manual" variant="secondary" class="shrink-0">{{ t("sources.modelTagManual") }}</Badge>
+              <!-- test results take the origin tag's place until re-run / reopen -->
+              <template v-if="results[r.name]">
+                <Badge
+                  v-for="tr in results[r.name]"
+                  :key="tr.format"
+                  :variant="tr.ok ? 'success' : 'destructive'"
+                  class="shrink-0 font-mono"
+                  :title="`${tr.format} · ${tr.status || '?'} · ${tr.ms} ms${tr.error ? ' · ' + tr.error : ''}`"
+                >{{ tr.ok ? "✓" : "✗" }} {{ tr.format }} {{ tr.ok ? `${tr.ms}ms` : tr.status || "–" }}</Badge>
+              </template>
+              <Badge v-else-if="r.manual" variant="secondary" class="shrink-0">{{ t("sources.modelTagManual") }}</Badge>
               <Badge v-else variant="muted" class="shrink-0">{{ t("sources.modelTagDiscovered") }}</Badge>
               <button
                 v-if="r.manual"
@@ -242,6 +278,16 @@ function onEsc(e: KeyboardEvent) {
                 @click.stop="remove(r.name)"
               >
                 <X class="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                class="-mr-1 flex size-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                :disabled="testing.has(r.name)"
+                :title="t('sources.testBtn')" :aria-label="`${t('sources.testBtn')} ${r.name}`"
+                @click.stop="test(r.name)"
+              >
+                <Loader2 v-if="testing.has(r.name)" class="h-3.5 w-3.5 animate-spin" />
+                <Zap v-else class="h-3.5 w-3.5" />
               </button>
             </div>
           </template>
