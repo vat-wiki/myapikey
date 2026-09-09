@@ -3,7 +3,7 @@ import { ref, computed, onMounted } from "vue";
 import { useI18n } from "vue-i18n";
 import { req, type ModelView, type ModelProvider, type ProviderPublic } from "@/api";
 import type { Fmt } from "@/lib/format";
-import { FMT_ACCENT, providerColor } from "@/lib/format";
+import { FMT_ACCENT, FMT_META, providerColor } from "@/lib/format";
 import { toast } from "@/lib/toast";
 import { copyText } from "@/lib/clipboard";
 import { Button } from "@/components/ui/button";
@@ -13,12 +13,14 @@ import { Card, CardContent } from "@/components/ui/card";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
 import {
   Search, Plus, Loader2, Copy, Zap, Gauge, MoreHorizontal, Pencil, Trash2,
-  Cpu, ServerCog, TriangleAlert, ArrowRight, Brain, Check, LayoutGrid, Table2, ChevronDown, ChevronUp,
+  Cpu, ServerCog, TriangleAlert, Brain, LayoutGrid, Table2, ChevronDown,
 } from "lucide-vue-next";
 import ModelEditor from "@/ModelEditor.vue";
+import ChainDetails, { type ChainLine } from "@/ChainDetails.vue";
 import ConfirmDialog from "@/ConfirmDialog.vue";
 
 const emit = defineEmits<{ goto: [string] }>();
@@ -39,11 +41,6 @@ function setView(v: ViewMode) {
 }
 
 const FORMATS: Fmt[] = ["openai", "anthropic", "responses"];
-const FMT_META: Record<Fmt, { label: string; endpoint: string }> = {
-  openai: { label: "models.fmtOpenai", endpoint: "/chat/completions" },
-  anthropic: { label: "models.fmtAnthropic", endpoint: "/messages" },
-  responses: { label: "models.fmtResponses", endpoint: "/responses" },
-};
 
 const models = ref<ModelView[]>([]);
 const providers = ref<ProviderPublic[]>([]);
@@ -156,7 +153,6 @@ function enabledFormats(m: ModelView): Fmt[] {
  *  plain flow instead of per-protocol repetition, divergent chains get their
  *  own labeled line. `fs` lists every format the line stands for; per-slot
  *  probes fan out over them. */
-interface ChainLine { fs: Fmt[]; enabled: boolean; slots: ModelProvider[]; key: string }
 const chainLines = (m: ModelView): ChainLine[] => {
   const key = (slots: ModelProvider[]) => slots.map((s) => `${s.id}|${s.model ?? ""}|${s.thinking ?? ""}`).join(">");
   const merged: ChainLine[] = [];
@@ -169,19 +165,6 @@ const chainLines = (m: ModelView): ChainLine[] => {
   }
   return merged;
 };
-
-// --- chain collapse: at-a-glance shows the first slot, the rest expand on demand ---
-const chainExpanded = ref<Record<string, boolean>>({});
-
-/** Slots to render — all when expanded, otherwise just the highest-priority one. */
-function visibleSlots(m: ModelView, line: ChainLine): { s: ModelProvider; i: number }[] {
-  return line.slots
-    .map((s, i) => ({ s, i }))
-    .filter((x) => chainExpanded.value[m.name] || x.i === 0);
-}
-function hiddenCount(m: ModelView, line: ChainLine): number {
-  return chainExpanded.value[m.name] ? 0 : line.slots.length - 1;
-}
 
 /** Chip state: on (route enabled), off (chain exists but route disabled),
  *  none (no chain to enable — must be configured in the editor). */
@@ -482,12 +465,12 @@ async function copyName(name: string) {
             </div>
           </div>
 
-          <!-- routing chain: per line, format toggles + first slot capsule;
-               the remaining failover slots stay behind the "+N" chip -->
+          <!-- routing chain: per line, format toggles + the in-use slot as a
+               chip that pops the FULL chain (all slots + per-slot probes) -->
           <div class="min-w-0 flex-1 space-y-1.5" @click.stop>
             <template v-if="chainLines(m).length">
               <div
-                v-for="(line, li) in chainLines(m)"
+                v-for="line in chainLines(m)"
                 :key="line.key"
                 class="flex flex-wrap items-center gap-x-1.5 gap-y-1"
                 :class="{ 'opacity-60': !line.enabled }"
@@ -505,64 +488,40 @@ async function copyName(name: string) {
                   {{ t(FMT_META[f].label) }}
                 </button>
                 <span class="h-4 w-px shrink-0 bg-border" aria-hidden="true" />
-                <template v-for="x in visibleSlots(m, line)" :key="x.i">
-                  <ArrowRight v-if="x.i" class="h-3 w-3 shrink-0 text-muted-foreground/40" />
-                  <span
-                    class="inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs transition-colors"
-                    :class="slotChipClass(m, line, x.i)"
-                    :title="slotProbeState(m, line, x.i) ? slotProbeTitle(m, line, x.i) : undefined"
-                  >
-                    <span class="shrink-0 text-[10px] tabular-nums text-muted-foreground/60">{{ x.i + 1 }}</span>
-                    <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="providerColor(x.s.id).solid" />
-                    <span class="shrink-0 font-medium">{{ x.s.name }}</span>
-                    <span v-if="x.s.model" class="min-w-0 truncate font-mono text-muted-foreground" :title="x.s.model">› {{ x.s.model }}</span>
-                    <span
-                      v-if="x.s.thinking"
-                      class="inline-flex shrink-0 items-center gap-0.5 font-mono text-[10px] text-muted-foreground"
-                      :title="t('models.editor.thinkingLabel')"
+                <Popover>
+                  <PopoverTrigger as-child>
+                    <button
+                      type="button"
+                      class="inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs transition-colors hover:bg-accent hover:text-accent-foreground"
+                      :class="slotChipClass(m, line, 0)"
+                      :title="t('models.chainPopHint')"
+                      :aria-label="t('models.chainPopHint')"
+                      @click.stop
                     >
-                      <Brain class="h-2.5 w-2.5" />{{ x.s.thinking }}
-                    </span>
-                    <template v-if="line.enabled">
-                      <Check v-if="slotProbeState(m, line, x.i)?.state === 'ok'" class="h-3 w-3 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                      <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="providerColor(line.slots[0].id).solid" />
+                      <span class="shrink-0 font-medium">{{ line.slots[0].name }}</span>
+                      <span v-if="line.slots[0].model" class="min-w-0 truncate font-mono text-muted-foreground" :title="line.slots[0].model">› {{ line.slots[0].model }}</span>
                       <span
-                        v-else-if="slotProbeState(m, line, x.i)?.state === 'fail'"
-                        class="shrink-0 font-mono text-[10px] font-semibold text-destructive"
-                      >{{ slotProbeState(m, line, x.i)?.status || "✗" }}</span>
-                      <button
-                        v-if="slotProbeState(m, line, x.i)?.state !== 'testing'"
-                        type="button"
-                        class="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-muted-foreground/40 opacity-0 transition-all hover:bg-accent hover:text-accent-foreground focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100"
-                        :title="t('models.testSourceHint')"
-                        :aria-label="`${t('models.testSource')} · ${x.s.name}`"
-                        @click.stop="testSlot(m, line, x.i)"
+                        v-if="line.slots[0].thinking"
+                        class="inline-flex shrink-0 items-center gap-0.5 font-mono text-[10px] text-muted-foreground"
+                        :title="t('models.editor.thinkingLabel')"
                       >
-                        <Zap class="h-3 w-3" />
-                      </button>
-                      <Loader2 v-else class="h-3 w-3 shrink-0 animate-spin text-muted-foreground" />
-                    </template>
-                  </span>
-                </template>
-                <button
-                  v-if="hiddenCount(m, line) > 0"
-                  type="button"
-                  class="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-dashed px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
-                  :title="t('models.chainMoreHint', { n: hiddenCount(m, line) })"
-                  :aria-label="t('models.chainMoreHint', { n: hiddenCount(m, line) })"
-                  @click="chainExpanded[m.name] = true"
-                >
-                  +{{ hiddenCount(m, line) }}<ChevronDown class="h-3 w-3" />
-                </button>
-                <button
-                  v-else-if="chainExpanded[m.name] && line.slots.length > 1 && li === 0"
-                  type="button"
-                  class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground"
-                  :title="t('models.chainCollapse')"
-                  :aria-label="t('models.chainCollapse')"
-                  @click="chainExpanded[m.name] = false"
-                >
-                  <ChevronUp class="h-3.5 w-3.5" />
-                </button>
+                        <Brain class="h-2.5 w-2.5" />{{ line.slots[0].thinking }}
+                      </span>
+                      <ChevronDown class="h-3 w-3 shrink-0 text-muted-foreground/60" />
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent align="start" class="w-auto max-w-sm p-3">
+                    <ChainDetails
+                      :model="m"
+                      :line="line"
+                      :slot-state="slotProbeState"
+                      :slot-title="slotProbeTitle"
+                      :slot-class="slotChipClass"
+                      :probe-slot="testSlot"
+                    />
+                  </PopoverContent>
+                </Popover>
                 <span v-if="!line.enabled" class="text-xs text-muted-foreground">· {{ t("models.routeDisabled") }}</span>
               </div>
             </template>
@@ -623,7 +582,7 @@ async function copyName(name: string) {
             <TableCell>
               <div v-if="chainLines(m).length" class="min-w-0 space-y-1">
                 <div
-                  v-for="(line, li) in chainLines(m)"
+                  v-for="line in chainLines(m)"
                   :key="line.key"
                   class="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1"
                   :class="{ 'opacity-60': !line.enabled }"
@@ -637,64 +596,40 @@ async function copyName(name: string) {
                       :title="t(FMT_META[f].label)"
                     />
                   </template>
-                  <template v-for="x in visibleSlots(m, line)" :key="x.i">
-                    <ArrowRight v-if="x.i" class="h-3 w-3 shrink-0 text-muted-foreground/40" />
-                    <span
-                      class="inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs transition-colors"
-                      :class="slotChipClass(m, line, x.i)"
-                      :title="slotProbeState(m, line, x.i) ? slotProbeTitle(m, line, x.i) : undefined"
-                    >
-                      <span class="shrink-0 text-[10px] tabular-nums text-muted-foreground/60">{{ x.i + 1 }}</span>
-                      <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="providerColor(x.s.id).solid" />
-                      <span class="shrink-0 font-medium">{{ x.s.name }}</span>
-                      <span v-if="x.s.model" class="min-w-0 truncate font-mono text-muted-foreground" :title="x.s.model">› {{ x.s.model }}</span>
-                      <span
-                        v-if="x.s.thinking"
-                        class="inline-flex shrink-0 items-center gap-0.5 font-mono text-[10px] text-muted-foreground"
-                        :title="t('models.editor.thinkingLabel')"
+                  <Popover>
+                    <PopoverTrigger as-child>
+                      <button
+                        type="button"
+                        class="inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs transition-colors hover:bg-accent hover:text-accent-foreground"
+                        :class="slotChipClass(m, line, 0)"
+                        :title="t('models.chainPopHint')"
+                        :aria-label="t('models.chainPopHint')"
+                        @click.stop
                       >
-                        <Brain class="h-2.5 w-2.5" />{{ x.s.thinking }}
-                      </span>
-                      <template v-if="line.enabled">
-                        <Check v-if="slotProbeState(m, line, x.i)?.state === 'ok'" class="h-3 w-3 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                        <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="providerColor(line.slots[0].id).solid" />
+                        <span class="shrink-0 font-medium">{{ line.slots[0].name }}</span>
+                        <span v-if="line.slots[0].model" class="min-w-0 truncate font-mono text-muted-foreground" :title="line.slots[0].model">› {{ line.slots[0].model }}</span>
                         <span
-                          v-else-if="slotProbeState(m, line, x.i)?.state === 'fail'"
-                          class="shrink-0 font-mono text-[10px] font-semibold text-destructive"
-                        >{{ slotProbeState(m, line, x.i)?.status || "✗" }}</span>
-                        <button
-                          v-if="slotProbeState(m, line, x.i)?.state !== 'testing'"
-                          type="button"
-                          class="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-muted-foreground/40 opacity-0 transition-all hover:bg-accent hover:text-accent-foreground focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100"
-                          :title="t('models.testSourceHint')"
-                          :aria-label="`${t('models.testSource')} · ${x.s.name}`"
-                          @click.stop="testSlot(m, line, x.i)"
+                          v-if="line.slots[0].thinking"
+                          class="inline-flex shrink-0 items-center gap-0.5 font-mono text-[10px] text-muted-foreground"
+                          :title="t('models.editor.thinkingLabel')"
                         >
-                          <Zap class="h-3 w-3" />
-                        </button>
-                        <Loader2 v-else class="h-3 w-3 shrink-0 animate-spin text-muted-foreground" />
-                      </template>
-                    </span>
-                  </template>
-                  <button
-                    v-if="hiddenCount(m, line) > 0"
-                    type="button"
-                    class="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-dashed px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
-                    :title="t('models.chainMoreHint', { n: hiddenCount(m, line) })"
-                    :aria-label="t('models.chainMoreHint', { n: hiddenCount(m, line) })"
-                    @click.stop="chainExpanded[m.name] = true"
-                  >
-                    +{{ hiddenCount(m, line) }}<ChevronDown class="h-3 w-3" />
-                  </button>
-                  <button
-                    v-else-if="chainExpanded[m.name] && line.slots.length > 1 && li === 0"
-                    type="button"
-                    class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground"
-                    :title="t('models.chainCollapse')"
-                    :aria-label="t('models.chainCollapse')"
-                    @click.stop="chainExpanded[m.name] = false"
-                  >
-                    <ChevronUp class="h-3.5 w-3.5" />
-                  </button>
+                          <Brain class="h-2.5 w-2.5" />{{ line.slots[0].thinking }}
+                        </span>
+                        <ChevronDown class="h-3 w-3 shrink-0 text-muted-foreground/60" />
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent align="start" class="w-auto max-w-sm p-3">
+                      <ChainDetails
+                        :model="m"
+                        :line="line"
+                        :slot-state="slotProbeState"
+                        :slot-title="slotProbeTitle"
+                        :slot-class="slotChipClass"
+                        :probe-slot="testSlot"
+                      />
+                    </PopoverContent>
+                  </Popover>
                   <span v-if="!line.enabled" class="text-xs text-muted-foreground">· {{ t("models.routeDisabled") }}</span>
                 </div>
               </div>

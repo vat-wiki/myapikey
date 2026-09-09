@@ -69,3 +69,11 @@ export function providerColor(id: string): { solid: string; badge: string } {
   for (let i = 0; i < id.length; i++) h = (h * 33) ^ id.charCodeAt(i);
   return PROVIDER_HUES[Math.abs(h) % PROVIDER_HUES.length];
 }
+
+/** Per-format display metadata: the i18n label key + the agent-facing endpoint
+ *  path each format serves. Shared by every view that labels a format. */
+export const FMT_META: Record<Fmt, { label: string; endpoint: string }> = {
+  openai: { label: "models.fmtOpenai", endpoint: "/chat/completions" },
+  anthropic: { label: "models.fmtAnthropic", endpoint: "/messages" },
+  responses: { label: "models.fmtResponses", endpoint: "/responses" },
+};
