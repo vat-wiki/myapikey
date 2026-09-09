@@ -316,18 +316,18 @@ onMounted(load);
             </div>
 
             <!-- actions -->
-            <div class="flex items-center gap-1 border-t pt-3" @click.stop>
-              <Button variant="ghost" size="sm" class="h-7 gap-1.5 px-2 text-xs" @click="openTest(p)">
+            <div class="flex items-center gap-1 border-t pt-3">
+              <Button variant="ghost" size="sm" class="h-7 gap-1.5 px-2 text-xs" @click.stop="openTest(p)">
                 <Zap class="h-3.5 w-3.5" />{{ t("sources.testBtn") }}
               </Button>
-              <Button variant="ghost" size="sm" class="h-7 gap-1.5 px-2 text-xs" :disabled="refreshing[p.id]" @click="refresh(p)">
+              <Button variant="ghost" size="sm" class="h-7 gap-1.5 px-2 text-xs" :disabled="refreshing[p.id]" @click.stop="refresh(p)">
                 <Loader2 v-if="refreshing[p.id]" class="h-3.5 w-3.5 animate-spin" />
                 <RefreshCw v-else class="h-3.5 w-3.5" />{{ t("sources.refreshModels") }}
               </Button>
-              <Button variant="ghost" size="sm" class="h-7 gap-1.5 px-2 text-xs" @click="openEdit(p)">
+              <Button variant="ghost" size="sm" class="h-7 gap-1.5 px-2 text-xs" @click.stop="openEdit(p)">
                 <Pencil class="h-3.5 w-3.5" />{{ t("sources.editLabel") }}
               </Button>
-              <div class="ml-auto">
+              <div class="ml-auto" @click.stop>
                 <DropdownMenu>
                   <DropdownMenuTrigger>
                     <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground" :aria-label="t('sources.moreActions')">
