@@ -1,6 +1,6 @@
 import { Hono, type MiddlewareHandler } from "hono";
 import { newProviderId, newApiKey, trimBase } from "../shared/config";
-import type { ChainSlot, Format, FormatEntry, ModelEntry, Provider, RouteKey } from "../shared/types";
+import type { ChainSlot, Format, FormatEntry, LogEntry, ModelEntry, Provider, RouteKey } from "../shared/types";
 import type { Store } from "./store";
 import { shortError, anthropicAuthHeaders, upstreamTarget, upstreamHeaders } from "./proxy";
 import { networkInterfaces } from "node:os";
@@ -377,7 +377,33 @@ export function adminApi(store: Store, auth: MiddlewareHandler, openai: Hono, an
   app.get("/models", (c) => {
     const d = store.get();
     const byId = new Map(d.providers.map((p) => [p.id, p]));
-    const models = Object.entries(d.models).map(([name, e]) => projectModel(name, e, byId));
+    // Where each model's traffic ACTUALLY landed most recently: the latest
+    // successful call per (model, format) from the log tail (newest first,
+    // so the first hit wins). The UI shows this as the model's in-use slot —
+    // after a failover the chip follows the source that really served.
+    // Legacy rows carry only the provider NAME; resolve it to the stable id
+    // so they can still match a slot.
+    const byName = new Map(d.providers.map((p) => [p.name, p.id]));
+    const last = new Map<string, Map<string, LogEntry>>();
+    for (const row of store.getLogs()) {
+      if (row.status < 200 || row.status >= 400) continue;
+      const pid = row.providerId ?? (row.provider ? byName.get(row.provider) : undefined);
+      if (!pid) continue;
+      let perFmt = last.get(row.model);
+      if (!perFmt) last.set(row.model, (perFmt = new Map()));
+      if (!perFmt.has(row.format)) perFmt.set(row.format, row);
+    }
+    const models = Object.entries(d.models).map(([name, e]) => ({
+      ...projectModel(name, e, byId),
+      lastRoute: [...last.get(name)?.entries() ?? []].map(([format, row]) => ({
+        format,
+        providerId: row.providerId ?? byName.get(row.provider) ?? "",
+        // The upstream name that was actually forwarded (a per-slot rewrite,
+        // or the public name sent verbatim).
+        model: row.upstreamModel ?? row.model,
+        ts: row.ts,
+      })),
+    }));
     return c.json({ models });
   });
 

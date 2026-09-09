@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { tmpStore } from "../helpers/store";
 import { mockFetch } from "../helpers/mock";
 import { json } from "../helpers/json";
-import { makeProvider, fe, makeModel, seedStore } from "../helpers/fixtures";
+import { makeProvider, fe, makeModel, makeLog, seedStore } from "../helpers/fixtures";
 import { createApp } from "../../src/server/app";
 import type { Store } from "../../src/server/store";
 
@@ -15,6 +15,7 @@ type FlatModel = {
   anthropic?: { enabled: boolean; providers: Array<{ id: string; name?: string; model?: string; thinking?: string }> };
   responses?: { enabled: boolean; providers: Array<{ id: string; name?: string; model?: string; thinking?: string }> };
   paceRpm?: number;
+  lastRoute?: Array<{ format: string; providerId: string; model: string; ts: number }>;
 };
 
 describe("server/admin", () => {
@@ -416,6 +417,39 @@ describe("server/admin", () => {
       const m = find((await json<{ models: FlatModel[] }>(res)).models, "gpt-4o")!;
       expect(m.openai.enabled).toBe(true);
       expect(m.openai.providers[0]).toEqual({ id: "prv_A", name: "alpha", model: "gpt-4o-2024" });
+    });
+
+    it("GET /admin/models reports lastRoute — the latest SUCCESSFUL call per (model, format)", async () => {
+      // Failover story: openai first served by alpha, then landed on beta
+      // (with an upstream rewrite); anthropic's only row FAILED (excluded).
+      const a = makeProvider({ id: "prv_A", name: "alpha", formats: ["openai", "anthropic"] });
+      const b = makeProvider({ id: "prv_B", name: "beta", formats: ["openai"] });
+      await seedStore(store, {
+        providers: [a, b],
+        models: {
+          "gpt-4o": makeModel({
+            openai: fe([{ id: "prv_A" }, { id: "prv_B" }]),
+            anthropic: fe([{ id: "prv_A" }]),
+          }),
+        },
+      });
+      store.pushLog(makeLog({ ts: 1000, model: "gpt-4o", provider: "alpha", providerId: "prv_A", format: "openai", status: 200 }));
+      store.pushLog(makeLog({ ts: 2000, model: "gpt-4o", provider: "beta", providerId: "prv_B", format: "openai", status: 200, upstreamModel: "gpt-x-real" }));
+      store.pushLog(makeLog({ ts: 3000, model: "gpt-4o", provider: "alpha", providerId: "prv_A", format: "anthropic", status: 502 }));
+      const m = find(await modelsOf(createApp(store)), "gpt-4o")!;
+      expect(m.lastRoute).toEqual([
+        { format: "openai", providerId: "prv_B", model: "gpt-x-real", ts: 2000 },
+      ]);
+    });
+
+    it("GET /admin/models returns an empty lastRoute when the log tail has no successful calls", async () => {
+      await seedStore(store, {
+        providers: [makeProvider({ formats: ["openai"] })],
+        models: { "gpt-4o": makeModel({ openai: fe([{ id: "prv_A" }]) }) },
+      });
+      store.pushLog(makeLog({ ts: 1000, status: 500 }));
+      const m = find(await modelsOf(createApp(store)), "gpt-4o")!;
+      expect(m.lastRoute).toEqual([]);
     });
 
     it("POST /admin/models enables a slot", async () => {

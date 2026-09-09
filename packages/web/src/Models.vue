@@ -166,6 +166,20 @@ const chainLines = (m: ModelView): ChainLine[] => {
   return merged;
 };
 
+/** The slot that actually served this line's formats most recently (latest
+ *  successful call from the log tail) — after a failover the chip follows the
+ *  source that really answered. Falls back to the configured first slot when
+ *  the tail has no hit or the serving source left the chain. */
+function servedSlot(m: ModelView, line: ChainLine): { s: ModelProvider; i: number; actual: boolean } {
+  const hits = (m.lastRoute ?? []).filter((r) => line.fs.includes(r.format as Fmt));
+  if (hits.length) {
+    const last = hits.reduce((a, b) => (b.ts >= a.ts ? b : a));
+    const i = line.slots.findIndex((s) => s.id === last.providerId);
+    if (i >= 0) return { s: line.slots[i], i, actual: true };
+  }
+  return { s: line.slots[0], i: 0, actual: false };
+}
+
 /** Chip state: on (route enabled), off (chain exists but route disabled),
  *  none (no chain to enable — must be configured in the editor). */
 type ChipState = "on" | "off" | "none";
@@ -465,8 +479,8 @@ async function copyName(name: string) {
             </div>
           </div>
 
-          <!-- routing chain: per line, format toggles + the in-use slot as a
-               chip that pops the FULL chain (all slots + per-slot probes) -->
+          <!-- routing chain: per line, format toggles + the ACTUALLY-SERVED
+               slot as a chip that pops the FULL chain (all slots + probes) -->
           <div class="min-w-0 flex-1 space-y-1.5" @click.stop>
             <template v-if="chainLines(m).length">
               <div
@@ -493,20 +507,20 @@ async function copyName(name: string) {
                     <button
                       type="button"
                       class="inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs transition-colors hover:bg-accent hover:text-accent-foreground"
-                      :class="slotChipClass(m, line, 0)"
+                      :class="slotChipClass(m, line, servedSlot(m, line).i)"
                       :title="t('models.chainPopHint')"
                       :aria-label="t('models.chainPopHint')"
                       @click.stop
                     >
-                      <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="providerColor(line.slots[0].id).solid" />
-                      <span class="shrink-0 font-medium">{{ line.slots[0].name }}</span>
-                      <span v-if="line.slots[0].model" class="min-w-0 truncate font-mono text-muted-foreground" :title="line.slots[0].model">› {{ line.slots[0].model }}</span>
+                      <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="providerColor(servedSlot(m, line).s.id).solid" />
+                      <span class="shrink-0 font-medium">{{ servedSlot(m, line).s.name }}</span>
+                      <span v-if="servedSlot(m, line).s.model" class="min-w-0 truncate font-mono text-muted-foreground" :title="servedSlot(m, line).s.model">› {{ servedSlot(m, line).s.model }}</span>
                       <span
-                        v-if="line.slots[0].thinking"
+                        v-if="servedSlot(m, line).s.thinking"
                         class="inline-flex shrink-0 items-center gap-0.5 font-mono text-[10px] text-muted-foreground"
                         :title="t('models.editor.thinkingLabel')"
                       >
-                        <Brain class="h-2.5 w-2.5" />{{ line.slots[0].thinking }}
+                        <Brain class="h-2.5 w-2.5" />{{ servedSlot(m, line).s.thinking }}
                       </span>
                       <ChevronDown class="h-3 w-3 shrink-0 text-muted-foreground/60" />
                     </button>
@@ -515,6 +529,7 @@ async function copyName(name: string) {
                     <ChainDetails
                       :model="m"
                       :line="line"
+                      :active="servedSlot(m, line).actual ? servedSlot(m, line).i : undefined"
                       :slot-state="slotProbeState"
                       :slot-title="slotProbeTitle"
                       :slot-class="slotChipClass"
@@ -601,20 +616,20 @@ async function copyName(name: string) {
                       <button
                         type="button"
                         class="inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs transition-colors hover:bg-accent hover:text-accent-foreground"
-                        :class="slotChipClass(m, line, 0)"
+                        :class="slotChipClass(m, line, servedSlot(m, line).i)"
                         :title="t('models.chainPopHint')"
                         :aria-label="t('models.chainPopHint')"
                         @click.stop
                       >
-                        <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="providerColor(line.slots[0].id).solid" />
-                        <span class="shrink-0 font-medium">{{ line.slots[0].name }}</span>
-                        <span v-if="line.slots[0].model" class="min-w-0 truncate font-mono text-muted-foreground" :title="line.slots[0].model">› {{ line.slots[0].model }}</span>
+                        <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="providerColor(servedSlot(m, line).s.id).solid" />
+                        <span class="shrink-0 font-medium">{{ servedSlot(m, line).s.name }}</span>
+                        <span v-if="servedSlot(m, line).s.model" class="min-w-0 truncate font-mono text-muted-foreground" :title="servedSlot(m, line).s.model">› {{ servedSlot(m, line).s.model }}</span>
                         <span
-                          v-if="line.slots[0].thinking"
+                          v-if="servedSlot(m, line).s.thinking"
                           class="inline-flex shrink-0 items-center gap-0.5 font-mono text-[10px] text-muted-foreground"
                           :title="t('models.editor.thinkingLabel')"
                         >
-                          <Brain class="h-2.5 w-2.5" />{{ line.slots[0].thinking }}
+                          <Brain class="h-2.5 w-2.5" />{{ servedSlot(m, line).s.thinking }}
                         </span>
                         <ChevronDown class="h-3 w-3 shrink-0 text-muted-foreground/60" />
                       </button>
@@ -623,6 +638,7 @@ async function copyName(name: string) {
                       <ChainDetails
                         :model="m"
                         :line="line"
+                        :active="servedSlot(m, line).actual ? servedSlot(m, line).i : undefined"
                         :slot-state="slotProbeState"
                         :slot-title="slotProbeTitle"
                         :slot-class="slotChipClass"

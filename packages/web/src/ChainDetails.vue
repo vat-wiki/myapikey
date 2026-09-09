@@ -19,10 +19,12 @@ import { FMT_ACCENT, FMT_META, providerColor } from "@/lib/format";
 
 /** One chain line rendered in FULL — every slot as a numbered capsule with
  *  per-slot probe affordances. The popover content behind the collapsed
- *  "in-use" chip on both Models views; probe state comes from the owner. */
+ *  "in-use" chip on both Models views; probe state comes from the owner.
+ *  `active` marks the slot that actually served most recently (ring). */
 defineProps<{
   model: ModelView;
   line: ChainLine;
+  active?: number;
   slotState: (m: ModelView, line: ChainLine, i: number) => { state: "testing" | "ok" | "fail"; status?: number; provider?: string; error?: string } | null;
   slotTitle: (m: ModelView, line: ChainLine, i: number) => string;
   slotClass: (m: ModelView, line: ChainLine, i: number) => string;
@@ -41,13 +43,14 @@ const { t } = useI18n();
         {{ t(FMT_META[f].label) }}
       </template>
       <span v-if="!line.enabled" class="font-normal">· {{ t("models.routeDisabled") }}</span>
+      <span v-if="active !== undefined" class="font-normal">· {{ t("models.chainActiveHint") }}</span>
     </div>
     <div class="flex flex-wrap items-center gap-x-1.5 gap-y-1" :class="{ 'opacity-60': !line.enabled }">
       <template v-for="(s, si) in line.slots" :key="si">
         <ArrowRight v-if="si" class="h-3 w-3 shrink-0 text-muted-foreground/40" />
         <span
           class="inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs transition-colors"
-          :class="slotClass(model, line, si)"
+          :class="[slotClass(model, line, si), si === active ? 'ring-1 ring-primary/60' : '']"
           :title="slotState(model, line, si) ? slotTitle(model, line, si) : undefined"
         >
           <span class="shrink-0 text-[10px] tabular-nums text-muted-foreground/60">{{ si + 1 }}</span>

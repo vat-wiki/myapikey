@@ -94,6 +94,16 @@ export interface FormatView {
   enabled: boolean;
   providers: ModelProvider[];
 }
+/** Where this model's traffic ACTUALLY landed most recently (one entry per
+ *  protocol, from the latest successful call in the log tail). Lets the UI
+ *  show the in-use slot after a failover instead of the configured first. */
+export interface LastRoute {
+  format: string;
+  providerId: string;
+  /** The upstream model name that was actually forwarded. */
+  model: string;
+  ts: number;
+}
 export interface ModelView {
   name: string;
   openai: FormatView;
@@ -102,6 +112,7 @@ export interface ModelView {
   /** Per-model even-pacing limit (requests/min, 0 = unlimited). Calls are
    *  spread one every 60/rpm seconds; excess queue at the gateway. */
   paceRpm: number;
+  lastRoute?: LastRoute[];
 }
 
 /** One provider's circuit-breaker state (GET /admin/circuit). Mirrors the
