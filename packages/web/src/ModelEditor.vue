@@ -13,7 +13,7 @@ import { Switch } from "@/components/ui/switch";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import Combobox from "@/components/Combobox.vue";
-import { Plus, Trash2, ArrowUp, ArrowDown, Loader2, ServerCog, ArrowRight, Brain, TriangleAlert } from "lucide-vue-next";
+import { Plus, Trash2, ArrowUp, ArrowDown, Loader2, ServerCog, ArrowRight, Brain, TriangleAlert, Info, ChevronDown, SlidersHorizontal } from "lucide-vue-next";
 
 /** The three routing families. A unified chain fans a slot out to every one of
  *  these the slot's provider supports; per-format mode overrides each. */
@@ -49,6 +49,8 @@ const pace = ref("");
 const saving = ref(false);
 const nameErr = ref("");
 const rowErr = ref<Record<string, string>>({});
+const showHelp = ref(false);
+const advancedOpen = ref(false);
 
 const enc = encodeURIComponent;
 
@@ -90,13 +92,18 @@ function init() {
   rowErr.value = {};
   pace.value = "";
   perFmt.value = false;
+  showHelp.value = false;
   unified.value = [];
   fmtSlots.value = { openai: [], anthropic: [], responses: [] };
   fmtEnabled.value = { openai: false, anthropic: false, responses: false };
   const m = props.model;
-  if (!m) return;
+  if (!m) {
+    advancedOpen.value = false;
+    return;
+  }
   name.value = m.name;
   pace.value = m.paceRpm ? String(m.paceRpm) : "";
+  advancedOpen.value = !!m.paceRpm;
   for (const f of FORMATS) {
     fmtSlots.value[f] = m[f].providers.map(toDraft);
     fmtEnabled.value[f] = m[f].enabled;
@@ -144,9 +151,14 @@ function onProviderChange(slot: DraftSlot) {
   slot.thinking = "";
 }
 
-/** Routes a unified slot would land on — shown as chips under the row. */
+/** Routes a unified slot would land on — shown as chips under the row, but only
+ *  when the picture is not the default "all three" (progressive disclosure). */
 function landsOn(s: DraftSlot): Fmt[] {
   return FORMATS.filter((f) => supports(s.pid, f));
+}
+/** Render the slot's footnote row: partial protocol support or a row error. */
+function slotNoteworthy(s: DraftSlot): boolean {
+  return landsOn(s).length < FORMATS.length || !!rowErr.value.unified;
 }
 
 // --- validation + save -----------------------------------------------------
@@ -335,8 +347,9 @@ const FMT_META: Record<Fmt, { label: string; endpoint: string }> = {
                     </Button>
                   </div>
                 </div>
-                <!-- where this slot lands -->
-                <div class="flex items-center gap-2 pl-6">
+                <!-- where this slot lands: only shown when it deviates from
+                     "lands on every protocol" or carries an error -->
+                <div v-if="slotNoteworthy(s)" class="flex items-center gap-2 pl-6">
                   <span class="text-[11px] text-muted-foreground">{{ t("models.editor.landsOn") }}</span>
                   <span
                     v-for="f in landsOn(s)"
@@ -354,12 +367,10 @@ const FMT_META: Record<Fmt, { label: string; endpoint: string }> = {
             <Button variant="outline" size="sm" class="w-full border-dashed" @click="addSlot('unified')">
               <Plus class="h-4 w-4" />{{ t("models.editor.addSlot") }}
             </Button>
-            <p class="text-xs leading-relaxed text-muted-foreground">{{ t("models.editor.chainHint") }}</p>
           </div>
 
           <!-- per-format chains -->
           <div v-else class="space-y-3">
-            <p class="text-xs leading-relaxed text-muted-foreground">{{ t("models.editor.perFmtHint") }}</p>
             <div v-for="f in FORMATS" :key="f" class="space-y-1.5 rounded-md border bg-muted/30 p-2.5">
               <div class="flex items-center gap-2">
                 <span class="h-2 w-2 rounded-full" :class="FMT_ACCENT[f].solid" />
@@ -418,20 +429,50 @@ const FMT_META: Record<Fmt, { label: string; endpoint: string }> = {
             </div>
           </div>
 
-          <!-- mode switch -->
-          <label class="flex cursor-pointer items-center justify-between gap-3 rounded-md border bg-muted/30 px-3 py-2.5">
-            <span class="min-w-0">
-              <span class="block text-sm font-medium">{{ t("models.editor.perFmtSwitch") }}</span>
-              <span class="block text-xs text-muted-foreground">{{ t("models.editor.perFmtSwitchHint") }}</span>
-            </span>
-            <Switch v-model="perFmt" />
-          </label>
+          <!-- quiet controls: explanation left, chain-mode link right -->
+          <div class="flex items-center justify-between gap-2">
+            <button
+              type="button"
+              class="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+              :aria-expanded="showHelp"
+              @click="showHelp = !showHelp"
+            >
+              <Info class="h-3.5 w-3.5" />
+              {{ t("models.editor.helpToggle") }}
+            </button>
+            <button
+              type="button"
+              class="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+              @click="perFmt = !perFmt"
+            >
+              <SlidersHorizontal class="h-3.5 w-3.5" />
+              {{ perFmt ? t("models.editor.perFmtOff") : t("models.editor.perFmtOn") }}
+            </button>
+          </div>
+          <div v-if="showHelp" class="space-y-1 rounded-md border bg-muted/30 p-3 text-xs leading-relaxed text-muted-foreground">
+            <p>{{ t("models.editor.helpFanout") }}</p>
+            <p>{{ t("models.editor.helpUpstream") }}</p>
+            <p>{{ t("models.editor.helpThinking") }}</p>
+            <p>{{ t("models.editor.helpPerFmt") }}</p>
+          </div>
 
-          <!-- pace -->
+          <!-- advanced -->
           <div class="space-y-1.5">
-            <Label for="m-pace">{{ t("models.editor.paceLabel") }}</Label>
-            <Input id="m-pace" v-model="pace" type="number" min="0" inputmode="numeric" :placeholder="t('models.editor.pacePh')" class="w-32" />
-            <p class="text-xs text-muted-foreground">{{ t("models.editor.paceHint") }}</p>
+            <button
+              type="button"
+              class="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+              :aria-expanded="advancedOpen"
+              @click="advancedOpen = !advancedOpen"
+            >
+              <SlidersHorizontal class="h-3.5 w-3.5" />
+              {{ t("models.editor.advancedToggle") }}
+              <ChevronDown class="h-3.5 w-3.5 transition-transform" :class="{ 'rotate-180': advancedOpen }" />
+            </button>
+            <div v-if="advancedOpen" class="space-y-1.5 rounded-md border bg-muted/30 p-3">
+              <Label for="m-pace">{{ t("models.editor.paceLabel") }}</Label>
+              <Input id="m-pace" v-model="pace" type="number" min="0" inputmode="numeric" :placeholder="t('models.editor.pacePh')" class="w-32" />
+              <p class="text-xs text-muted-foreground">{{ t("models.editor.paceHint") }}</p>
+            </div>
           </div>
         </template>
       </div>

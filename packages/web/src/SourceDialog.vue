@@ -9,7 +9,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Separator } from "@/components/ui/separator";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
-import { Loader2, ServerCog, ChevronDown, Info } from "lucide-vue-next";
+import { Loader2, ServerCog, ChevronDown, Info, SlidersHorizontal } from "lucide-vue-next";
 
 /** Unified create/edit dialog for a source (the Sources page's only write
  *  surface — mirrors the Model editor's modal pattern). `provider` null =
@@ -29,6 +29,7 @@ const fmtOpenai = ref(true);
 const fmtAnthropic = ref(false);
 const responses = ref(false);
 const showBaseHelp = ref(false);
+const advancedOpen = ref(false);
 const err = ref("");
 const saving = ref(false);
 
@@ -53,6 +54,7 @@ const formats = (): string[] => {
 function init() {
   err.value = "";
   showBaseHelp.value = false;
+  advancedOpen.value = !!props.provider?.rpm;
   const p = props.provider;
   if (!p) {
     name.value = "";
@@ -162,21 +164,20 @@ async function save() {
               </div>
             </div>
             <Separator />
-            <div class="flex items-center gap-2.5">
-              <Checkbox
-                :model-value="fmtAnthropic"
-                :disabled="fmtAnthropic && !fmtOpenai"
-                aria-label="anthropic"
-                @update:model-value="toggleFmt('anthropic')"
-              />
-              <span class="text-sm font-medium leading-none">anthropic</span>
-              <span class="text-xs text-muted-foreground">/messages</span>
+              <div class="flex items-center gap-2.5">
+                <Checkbox
+                  :model-value="fmtAnthropic"
+                  :disabled="fmtAnthropic && !fmtOpenai"
+                  aria-label="anthropic"
+                  @update:model-value="toggleFmt('anthropic')"
+                />
+                <span class="text-sm font-medium leading-none">anthropic</span>
+                <span class="text-xs text-muted-foreground">/messages</span>
+              </div>
             </div>
           </div>
-          <p class="text-xs text-muted-foreground">{{ t("sources.addHint") }}</p>
-        </div>
 
-        <div v-if="fmtOpenai" class="space-y-1.5">
+          <div v-if="fmtOpenai" class="space-y-1.5">
           <Label for="s-url-openai">{{ t("sources.urlLabelOpenai") }}</Label>
           <Input id="s-url-openai" v-model="baseUrlOpenai" :placeholder="t('sources.urlPhOpenai')" autocomplete="off" aria-label="openai base url" />
           <p class="text-xs text-muted-foreground">{{ t("sources.urlHintOpenai") }}</p>
@@ -191,6 +192,7 @@ async function save() {
         <button
           type="button"
           class="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+          :aria-expanded="showBaseHelp"
           @click="showBaseHelp = !showBaseHelp"
         >
           <Info class="h-3.5 w-3.5" />
@@ -201,6 +203,7 @@ async function save() {
           <p>{{ t("sources.baseHelpSplit") }}</p>
           <p><span class="font-medium text-foreground">openai</span> — {{ t("sources.baseHelpOpenai") }}</p>
           <p><span class="font-medium text-foreground">anthropic</span> — {{ t("sources.baseHelpAnthropic") }}</p>
+          <p><span class="font-medium text-foreground">{{ t("sources.responses") }}</span> — {{ t("sources.responsesNote") }}</p>
         </div>
 
         <div class="space-y-1.5">
@@ -218,10 +221,23 @@ async function save() {
           />
         </div>
 
+        <!-- advanced -->
         <div class="space-y-1.5">
-          <Label for="s-rpm">{{ t("sources.rpmLabel") }}</Label>
-          <Input id="s-rpm" v-model="rpm" type="number" min="0" inputmode="numeric" :placeholder="t('sources.rpmPh')" aria-label="rpm" />
-          <p class="text-xs text-muted-foreground">{{ t("sources.rpmHint") }}</p>
+          <button
+            type="button"
+            class="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+            :aria-expanded="advancedOpen"
+            @click="advancedOpen = !advancedOpen"
+          >
+            <SlidersHorizontal class="h-3.5 w-3.5" />
+            {{ t("sources.advancedToggle") }}
+            <ChevronDown class="h-3.5 w-3.5 transition-transform" :class="{ 'rotate-180': advancedOpen }" />
+          </button>
+          <div v-if="advancedOpen" class="space-y-1.5 rounded-md border bg-muted/30 p-3">
+            <Label for="s-rpm">{{ t("sources.rpmLabel") }}</Label>
+            <Input id="s-rpm" v-model="rpm" type="number" min="0" inputmode="numeric" :placeholder="t('sources.rpmPh')" aria-label="rpm" />
+            <p class="text-xs text-muted-foreground">{{ t("sources.rpmHint") }}</p>
+          </div>
         </div>
 
         <p v-if="err" class="text-sm text-destructive">{{ err }}</p>
