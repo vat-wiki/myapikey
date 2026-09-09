@@ -166,8 +166,9 @@ export default {
     modelRemoved: "Removed \"{name}\"",
     modelsEmpty: "No models yet",
     modelsEmptyHint: "Refresh (top right) to scan the source; or type a name above to add it manually.",
-    modelsNoMatch: "Nothing matches \"{q}\" — you can add it as an addition.",
-    modelsHint: "{n} discovered, {m} added manually. Additions survive refreshes and appear as upstream suggestions when creating models.",
+    modelsNoMatch: "No matching names — the Add row above will add one.",
+    modelsCount: "{n} discovered · {m} added manually",
+    modelsHint: "Additions survive refreshes and appear as upstream suggestions when creating models. Click a name to copy it.",
   },
   models: {
     searchPh: "Search models…",

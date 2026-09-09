@@ -1,24 +1,26 @@
 <script setup lang="ts">
-import { ref, computed, watch } from "vue";
+import { ref, computed, watch, nextTick, onBeforeUnmount } from "vue";
 import { useI18n } from "vue-i18n";
 import { req, type ProviderPublic } from "@/api";
 import { providerModelList } from "@/lib/models";
 import { toast } from "@/lib/toast";
+import { copyText } from "@/lib/clipboard";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
-import { Loader2, Plus, RefreshCw, X } from "lucide-vue-next";
+import { Loader2, Plus, RefreshCw, Search, X, PackageSearch } from "lucide-vue-next";
 
 /** The per-source model list, opened by clicking a source's discovery badge.
  *  Discovery results and manual supplements in one scrollable list: type in
- *  the search box to filter, and when the typed name isn't already listed an
- *  "Add" row appears (Enter works too) — that's the supplement flow for
- *  upstreams whose /models doesn't list everything. Supplements survive
- *  discovery refreshes; discovered rows carry no remove button, because a
- *  refresh would just bring them back (the upstream is their source of
- *  truth). Saves wholesale via PUT …/extra-models, then hands the updated
- *  provider to the parent so the row and this dialog stay in sync. */
+ *  the search box to filter, and when the typed name isn't already listed a
+ *  sticky "Add" row appears (Enter works too) — that's the supplement flow
+ *  for upstreams whose /models doesn't list everything. Clicking a row copies
+ *  the name. Supplements survive discovery refreshes; discovered rows carry
+ *  no remove button, because a refresh would just bring them back (the
+ *  upstream is their source of truth). Saves wholesale via PUT
+ *  …/extra-models, then hands the updated provider to the parent so the row
+ *  and this dialog stay in sync. */
 const props = defineProps<{ open: boolean; provider: ProviderPublic | null }>();
 const emit = defineEmits<{ "update:open": [boolean]; saved: [ProviderPublic] }>();
 const { t } = useI18n();
@@ -28,16 +30,32 @@ const q = ref("");
  *  PUT is in flight, re-synced from every saved response. */
 const extra = ref<string[]>([]);
 const busy = ref<"" | "add" | "remove" | "refresh">("");
+const inputRef = ref<InstanceType<typeof Input> | null>(null);
+const listRef = ref<HTMLDivElement | null>(null);
 
-// Opening resets everything; a patched provider (our own saves, or a refresh
-// from the row) re-syncs only the supplement copy, keeping the typed filter.
+/** Names just supplemented — flashed once (then un-set) so they're findable
+ *  in the re-sorted list; the row scrolls into view while it flashes. */
+const flash = ref<Set<string>>(new Set());
+let flashTimer: ReturnType<typeof setTimeout> | undefined;
+function markFlash(names: string[]) {
+  flash.value = new Set(names);
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => flash.value.clear(), 1600);
+}
+onBeforeUnmount(() => clearTimeout(flashTimer));
+
+// Opening resets everything and focuses the search field; a patched provider
+// (our own saves, or a refresh from the row) re-syncs only the supplement
+// copy, keeping the typed filter.
 watch(
   () => props.open,
-  (o) => {
-    if (o) {
-      q.value = "";
-      extra.value = [...(props.provider?.extraModels ?? [])];
-    }
+  async (o) => {
+    if (!o) return;
+    q.value = "";
+    extra.value = [...(props.provider?.extraModels ?? [])];
+    flash.value.clear();
+    await nextTick();
+    inputRef.value?.$el?.focus();
   },
 );
 watch(
@@ -59,7 +77,9 @@ const filtered = computed(() => {
   return s ? rows.value.filter((r) => r.name.toLowerCase().includes(s)) : rows.value;
 });
 /** The exact typed name is already known (discovered or supplemented) — then
- *  Enter keeps filtering instead of adding a duplicate. */
+ *  Enter keeps filtering instead of adding a duplicate. Note: whenever the
+ *  filter matches nothing, nothing can equal it either, so an "Add" row is
+ *  always on screen in that case (no separate no-match message needed). */
 const canAdd = computed(() => {
   const s = q.value.trim();
   return !!s && !rows.value.some((r) => r.name === s);
@@ -88,7 +108,12 @@ async function add() {
   try {
     await putExtra([...extra.value, ...tokens]);
     q.value = "";
+    markFlash(tokens);
     toast(t("sources.modelAdded", { n: tokens.length }), "success");
+    // The list re-sorted (and the filter cleared) — bring the new names on
+    // screen instead of leaving them wherever the alphabet put them.
+    await nextTick();
+    listRef.value?.querySelector(`[data-mname="${CSS.escape(tokens[0])}"]`)?.scrollIntoView({ block: "nearest" });
   } catch (e) {
     toast((e as Error).message, "error");
   } finally {
@@ -124,6 +149,20 @@ async function refresh() {
     busy.value = "";
   }
 }
+
+async function copy(name: string) {
+  const ok = await copyText(name);
+  toast(ok ? t("connect.copied") : t("connect.copyFailed"), ok ? "success" : "error");
+}
+
+/** Esc clears the filter first; only with an empty filter does it close the
+ *  dialog (.stop keeps reka's document-level Esc handler out of the way). */
+function onEsc(e: KeyboardEvent) {
+  if (!q.value) return;
+  e.stopPropagation();
+  e.preventDefault();
+  q.value = "";
+}
 </script>
 
 <template>
@@ -131,16 +170,21 @@ async function refresh() {
     <DialogContent class="max-w-lg">
       <DialogTitle class="text-base">{{ t("sources.modelsTitle") }}</DialogTitle>
       <DialogDescription>{{ t("sources.modelsDesc", { name: provider?.name ?? "" }) }}</DialogDescription>
-      <div class="space-y-2">
+      <div class="space-y-3">
         <div class="flex items-center gap-2">
-          <Input
-            v-model="q"
-            :placeholder="t('sources.modelsSearchPh')"
-            autocomplete="off"
-            spellcheck="false"
-            class="font-mono"
-            @keydown.enter.prevent="add"
-          />
+          <div class="relative min-w-0 flex-1">
+            <Search class="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              ref="inputRef"
+              v-model="q"
+              :placeholder="t('sources.modelsSearchPh')"
+              autocomplete="off"
+              spellcheck="false"
+              class="pl-8 font-mono"
+              @keydown.enter.prevent="add"
+              @keydown.esc="onEsc"
+            />
+          </div>
           <Button
             variant="outline" size="icon" class="size-9 shrink-0"
             :disabled="busy !== ''" :title="t('sources.refreshModels')" :aria-label="t('sources.refreshModels')"
@@ -150,43 +194,77 @@ async function refresh() {
             <RefreshCw v-else class="h-4 w-4" />
           </Button>
         </div>
-        <div class="max-h-72 divide-y overflow-y-auto rounded-md border">
-          <div v-if="!rows.length" class="flex flex-col items-center gap-1 px-4 py-8 text-center">
-            <p class="text-sm">{{ t("sources.modelsEmpty") }}</p>
-            <p class="text-xs text-muted-foreground">{{ t("sources.modelsEmptyHint") }}</p>
+        <div ref="listRef" class="max-h-80 divide-y overflow-y-auto rounded-md border">
+          <div v-if="!rows.length" class="flex flex-col items-center gap-2 px-4 py-10 text-center">
+            <span class="flex size-9 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+              <PackageSearch class="size-4" />
+            </span>
+            <div class="space-y-0.5">
+              <p class="text-sm font-medium">{{ t("sources.modelsEmpty") }}</p>
+              <p class="text-xs text-muted-foreground">{{ t("sources.modelsEmptyHint") }}</p>
+            </div>
           </div>
           <template v-else>
-            <button
-              v-if="canAdd"
-              type="button"
-              class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground"
-              :disabled="busy !== ''"
-              @click="add"
-            >
-              <Plus class="h-3.5 w-3.5 shrink-0" />
-              <span class="truncate font-mono">{{ t("sources.modelAddRow", { q: q.trim() }) }}</span>
-            </button>
-            <div v-if="!filtered.length" class="px-3 py-6 text-center text-xs text-muted-foreground">
-              {{ t("sources.modelsNoMatch", { q: q.trim() }) }}
+            <!-- sticky wrapper carries the opaque bg; the hover accent lives on
+                 the button so the two classes never fight in the stylesheet -->
+            <div v-if="canAdd" class="sticky top-0 z-10 border-b bg-background">
+              <button
+                type="button"
+                class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground"
+                :disabled="busy !== ''"
+                @click="add"
+              >
+                <Loader2 v-if="busy === 'add'" class="h-3.5 w-3.5 shrink-0 animate-spin" />
+                <Plus v-else class="h-3.5 w-3.5 shrink-0" />
+                <span class="truncate font-mono">{{ t("sources.modelAddRow", { q: q.trim() }) }}</span>
+              </button>
             </div>
-            <div v-for="r in filtered" :key="r.name" class="flex items-center gap-2 px-3 py-1.5">
-              <span class="min-w-0 flex-1 truncate font-mono text-sm" :title="r.name">{{ r.name }}</span>
+            <div v-if="!filtered.length && rows.length" class="px-3 py-6 text-center text-xs text-muted-foreground">
+              {{ t("sources.modelsNoMatch") }}
+            </div>
+            <div
+              v-for="r in filtered"
+              :key="r.name"
+              :data-mname="r.name"
+              class="flex cursor-pointer items-center gap-2 px-3 py-1.5 transition-colors hover:bg-muted/50"
+              :class="flash.has(r.name) ? 'row-flash' : ''"
+              :title="r.name"
+              @click="copy(r.name)"
+            >
+              <span class="min-w-0 flex-1 truncate font-mono text-sm">{{ r.name }}</span>
               <Badge v-if="r.manual" variant="secondary" class="shrink-0">{{ t("sources.modelTagManual") }}</Badge>
               <Badge v-else variant="muted" class="shrink-0">{{ t("sources.modelTagDiscovered") }}</Badge>
               <button
                 v-if="r.manual"
                 type="button"
-                class="shrink-0 rounded-sm text-muted-foreground transition-colors hover:text-destructive"
+                class="-mr-1 flex size-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent hover:text-destructive"
                 :disabled="busy !== ''" :aria-label="t('sources.modelRemove')"
-                @click="remove(r.name)"
+                @click.stop="remove(r.name)"
               >
                 <X class="h-3.5 w-3.5" />
               </button>
             </div>
           </template>
         </div>
-        <p class="text-xs text-muted-foreground">{{ t("sources.modelsHint", { n: discovered.length, m: extra.length }) }}</p>
+        <div class="space-y-0.5 text-xs text-muted-foreground">
+          <p class="tabular-nums">{{ t("sources.modelsCount", { n: discovered.length, m: extra.length }) }}</p>
+          <p>{{ t("sources.modelsHint") }}</p>
+        </div>
       </div>
     </DialogContent>
   </Dialog>
 </template>
+
+<style scoped>
+@keyframes row-flash {
+  0% {
+    background-color: color-mix(in oklab, var(--primary) 16%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+.row-flash {
+  animation: row-flash 1.4s ease-out;
+}
+</style>

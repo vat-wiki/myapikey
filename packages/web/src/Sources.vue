@@ -13,7 +13,7 @@ import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
-import { Plus, Trash2, Loader2, Pencil, RefreshCw, ServerCog, MoreHorizontal, Zap, LayoutGrid, Table2 } from "lucide-vue-next";
+import { Plus, Trash2, Loader2, Pencil, RefreshCw, ServerCog, MoreHorizontal, Zap, LayoutGrid, Table2, ChevronDown } from "lucide-vue-next";
 import Combobox from "@/components/Combobox.vue";
 import ConfirmDialog from "@/ConfirmDialog.vue";
 import SourceDialog from "@/SourceDialog.vue";
@@ -298,7 +298,10 @@ onMounted(load);
                 :title="discTitle(p)" :aria-label="t('sources.modelsTitle')"
                 @click.stop="openModels(p)"
               >
-                <Badge variant="muted" class="cursor-pointer transition-colors hover:bg-accent hover:text-accent-foreground">{{ discLabel(p) }}</Badge>
+                <Badge variant="muted" class="cursor-pointer gap-1 pr-1.5 transition-colors hover:bg-accent hover:text-accent-foreground">
+                  {{ discLabel(p) }}
+                  <ChevronDown class="size-3 opacity-60" />
+                </Badge>
               </button>
             </div>
 
@@ -387,7 +390,10 @@ onMounted(load);
                   :title="discTitle(p)" :aria-label="t('sources.modelsTitle')"
                   @click.stop="openModels(p)"
                 >
-                  <Badge variant="muted" class="cursor-pointer transition-colors hover:bg-accent hover:text-accent-foreground">{{ discLabel(p) }}</Badge>
+                  <Badge variant="muted" class="cursor-pointer gap-1 pr-1.5 transition-colors hover:bg-accent hover:text-accent-foreground">
+                    {{ discLabel(p) }}
+                    <ChevronDown class="size-3 opacity-60" />
+                  </Badge>
                 </button>
               </TableCell>
               <TableCell @click.stop>
