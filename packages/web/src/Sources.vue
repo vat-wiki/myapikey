@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, computed, onMounted } from "vue";
 import { useI18n } from "vue-i18n";
 import { req, type ModelView, type ProviderPublic, type ProviderTestResult } from "@/api";
 import type { Fmt } from "@/lib/format";
@@ -8,12 +8,12 @@ import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { Plus, Trash2, Loader2, Pencil, RefreshCw, ServerCog, MoreHorizontal, Zap, LayoutGrid, Table2 } from "lucide-vue-next";
+import Combobox from "@/components/Combobox.vue";
 import ConfirmDialog from "@/ConfirmDialog.vue";
 import SourceDialog from "@/SourceDialog.vue";
 
@@ -94,6 +94,10 @@ const testModelName = ref("");
 const testFormats = ref<Record<string, boolean>>({});
 const testRunning = ref(false);
 const testResults = ref<ProviderTestResult[] | null>(null);
+
+/** Discovered upstream ids for the dropdown — typing stays as the fallback
+ *  for sources without a model list (or custom / undiscovered names). */
+const testOptions = computed(() => testTarget.value?.discoveredModels ?? []);
 
 /** Every protocol this source can serve (responses only when flagged). */
 function testFormatList(p: ProviderPublic): string[] {
@@ -392,16 +396,12 @@ onMounted(load);
         <DialogTitle class="text-base">{{ t("sources.testTitle") }}</DialogTitle>
         <DialogDescription>{{ t("sources.testDesc") }}</DialogDescription>
         <div class="space-y-3">
-          <div class="space-y-1.5">
-            <Label for="source-test-model">{{ t("sources.testModelLabel") }}</Label>
-            <Input
-              id="source-test-model"
+          <div class="space-y-1.5" @keydown.enter="runTest">
+            <Label>{{ t("sources.testModelLabel") }}</Label>
+            <Combobox
               v-model="testModelName"
-              class="font-mono"
+              :options="testOptions"
               :placeholder="t('sources.testModelPh')"
-              spellcheck="false"
-              autocomplete="off"
-              @keydown.enter="runTest"
             />
             <p class="text-xs text-muted-foreground">{{ t("sources.testModelHint") }}</p>
           </div>
