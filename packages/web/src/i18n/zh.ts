@@ -232,6 +232,7 @@ export default {
       errNameExists: "已存在同名模型「{name}」",
       chainTitle: "路由链",
       chainPriority: "从上到下依次尝试",
+      fanoutLine: "按协议展开为 {n} 条独立链:",
       addSlot: "添加来源",
       removeSlot: "移除槽位",
       providerPh: "选择来源",

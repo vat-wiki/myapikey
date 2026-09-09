@@ -232,6 +232,7 @@ export default {
       errNameExists: "A model named \"{name}\" already exists",
       chainTitle: "Routing chain",
       chainPriority: "Tried top to bottom",
+      fanoutLine: "Expands into {n} independent chains, one per protocol:",
       addSlot: "Add source",
       removeSlot: "Remove slot",
       providerPh: "Pick a source",

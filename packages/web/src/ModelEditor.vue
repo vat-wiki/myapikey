@@ -160,6 +160,14 @@ function landsOn(s: DraftSlot): Fmt[] {
 function slotNoteworthy(s: DraftSlot): boolean {
   return landsOn(s).length < FORMATS.length || !!rowErr.value.unified;
 }
+/** Protocols the unified chain would actually serve — the union of every
+ *  slot's landing set. Surfaced as a "fans out to N independent chains"
+ *  line so the one-list UI still teaches the per-protocol model. */
+const chainUnion = computed<Fmt[]>(() => {
+  const set = new Set<Fmt>();
+  for (const s of unified.value) for (const f of landsOn(s)) set.add(f);
+  return FORMATS.filter((f) => set.has(f));
+});
 
 // --- validation + save -----------------------------------------------------
 
@@ -298,6 +306,17 @@ const FMT_META: Record<Fmt, { label: string; endpoint: string }> = {
             <div class="flex items-center justify-between">
               <Label>{{ t("models.editor.chainTitle") }}</Label>
               <span class="text-xs text-muted-foreground">{{ t("models.editor.chainPriority") }}</span>
+            </div>
+            <!-- fan-out summary: the one list above expands into one
+                 independent chain per protocol — say so, with the actual set -->
+            <div v-if="chainUnion.length" class="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+              <span>{{ t("models.editor.fanoutLine", { n: chainUnion.length }) }}</span>
+              <span
+                v-for="f in chainUnion"
+                :key="f"
+                class="inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium"
+                :class="FMT_ACCENT[f].chip"
+              >{{ t(FMT_META[f].label) }}</span>
             </div>
             <div class="space-y-1.5">
               <div v-for="(s, i) in unified" :key="i" class="space-y-1 rounded-md border bg-muted/30 p-2">
