@@ -307,6 +307,14 @@ function slotProbeState(m: ModelView, line: ChainLine, i: number): { state: "tes
   return null;
 }
 
+/** Slot capsule look: neutral until a probe lands, then it tints. */
+function slotChipClass(m: ModelView, line: ChainLine, si: number): string {
+  const st = slotProbeState(m, line, si);
+  if (st?.state === "ok") return "border-emerald-500/40 bg-emerald-500/10";
+  if (st?.state === "fail") return "border-destructive/40 bg-destructive/10";
+  return "border-transparent bg-muted/60";
+}
+
 /** Tooltip: one line per probed format, e.g. "OpenAI ✓ 可用 (ark)" / "Anthropic ✗ 401 …". */
 function slotProbeTitle(m: ModelView, line: ChainLine, i: number): string {
   return line.fs.map((f) => {
@@ -420,80 +428,67 @@ async function copyName(name: string) {
             </Badge>
           </div>
 
-          <!-- per-format quick toggles (only the actionable ones) -->
-          <div v-if="FORMATS.some((f) => chipState(m, f) !== 'none')" class="flex flex-wrap items-center gap-1.5" @click.stop>
-            <template v-for="f in FORMATS" :key="f">
-              <button
-                v-if="chipState(m, f) !== 'none'"
-                type="button"
-                :title="chipTitle(m, f)"
-                :aria-label="chipTitle(m, f)"
-                class="inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-medium transition-colors"
-                :class="chipClass(m, f)"
-                @click="toggleFmt(m, f)"
-              >
-                {{ t(FMT_META[f].label) }}
-              </button>
-            </template>
-          </div>
-
-          <!-- routing chain, one numbered row per slot -->
-          <div class="min-w-0 flex-1 space-y-1.5">
+          <!-- routing chain: per line, format toggles + slots as one wrapped capsule flow -->
+          <div class="min-w-0 flex-1 space-y-1.5" @click.stop>
             <template v-if="chainLines(m).length">
-              <div v-for="line in chainLines(m)" :key="line.key" class="space-y-1" :class="{ 'opacity-60': !line.enabled }">
-                <div v-if="chainLines(m).length > 1" class="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
-                  <template v-for="f in line.fs" :key="f">
-                    <span class="h-1.5 w-1.5 rounded-full" :class="FMT_ACCENT[f].solid" />
-                    {{ t(FMT_META[f].label) }}
-                  </template>
-                  <span v-if="!line.enabled" class="font-normal">· {{ t("models.routeDisabled") }}</span>
-                </div>
-                <div v-for="(s, si) in line.slots" :key="si" class="flex min-w-0 items-center gap-1.5 text-xs">
-                  <span class="w-3 shrink-0 text-right text-[10px] tabular-nums text-muted-foreground/60">{{ si + 1 }}</span>
-                  <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="providerColor(s.id).solid" :title="s.name" />
-                  <span class="shrink-0 font-medium">{{ s.name }}</span>
-                  <template v-if="s.model">
-                    <ArrowRight class="h-3 w-3 shrink-0 text-muted-foreground/50" />
-                    <span class="truncate font-mono text-muted-foreground">{{ s.model }}</span>
-                  </template>
+              <div
+                v-for="line in chainLines(m)"
+                :key="line.key"
+                class="flex flex-wrap items-center gap-x-1.5 gap-y-1"
+                :class="{ 'opacity-60': !line.enabled }"
+              >
+                <button
+                  v-for="f in line.fs"
+                  :key="f"
+                  type="button"
+                  :title="chipTitle(m, f)"
+                  :aria-label="chipTitle(m, f)"
+                  class="inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-medium transition-colors"
+                  :class="chipClass(m, f)"
+                  @click="toggleFmt(m, f)"
+                >
+                  {{ t(FMT_META[f].label) }}
+                </button>
+                <span class="h-4 w-px shrink-0 bg-border" aria-hidden="true" />
+                <template v-for="(s, si) in line.slots" :key="si">
+                  <ArrowRight v-if="si" class="h-3 w-3 shrink-0 text-muted-foreground/40" />
                   <span
-                    v-if="s.thinking"
-                    class="inline-flex shrink-0 items-center gap-0.5 rounded bg-muted px-1 py-px font-mono text-[10px] text-muted-foreground"
-                    :title="t('models.editor.thinkingLabel')"
+                    class="inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs transition-colors"
+                    :class="slotChipClass(m, line, si)"
+                    :title="slotProbeState(m, line, si) ? slotProbeTitle(m, line, si) : undefined"
                   >
-                    <Brain class="h-2.5 w-2.5" />{{ s.thinking }}
+                    <span class="shrink-0 text-[10px] tabular-nums text-muted-foreground/60">{{ si + 1 }}</span>
+                    <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="providerColor(s.id).solid" />
+                    <span class="shrink-0 font-medium">{{ s.name }}</span>
+                    <span v-if="s.model" class="min-w-0 truncate font-mono text-muted-foreground" :title="s.model">› {{ s.model }}</span>
+                    <span
+                      v-if="s.thinking"
+                      class="inline-flex shrink-0 items-center gap-0.5 font-mono text-[10px] text-muted-foreground"
+                      :title="t('models.editor.thinkingLabel')"
+                    >
+                      <Brain class="h-2.5 w-2.5" />{{ s.thinking }}
+                    </span>
+                    <template v-if="line.enabled">
+                      <Check v-if="slotProbeState(m, line, si)?.state === 'ok'" class="h-3 w-3 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                      <span
+                        v-else-if="slotProbeState(m, line, si)?.state === 'fail'"
+                        class="shrink-0 font-mono text-[10px] font-semibold text-destructive"
+                      >{{ slotProbeState(m, line, si)?.status || "✗" }}</span>
+                      <button
+                        v-if="slotProbeState(m, line, si)?.state !== 'testing'"
+                        type="button"
+                        class="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-muted-foreground/40 opacity-0 transition-all hover:bg-accent hover:text-accent-foreground focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100"
+                        :title="t('models.testSourceHint')"
+                        :aria-label="`${t('models.testSource')} · ${s.name}`"
+                        @click.stop="testSlot(m, line, si)"
+                      >
+                        <Zap class="h-3 w-3" />
+                      </button>
+                      <Loader2 v-else class="h-3 w-3 shrink-0 animate-spin text-muted-foreground" />
+                    </template>
                   </span>
-                  <!-- per-slot probe: pin the loopback to THIS source (no failover) -->
-                  <template v-if="line.enabled">
-                    <button
-                      v-if="slotProbeState(m, line, si)?.state !== 'testing'"
-                      type="button"
-                      class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/40 opacity-0 transition-all hover:bg-accent hover:text-accent-foreground focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100"
-                      :title="t('models.testSourceHint')"
-                      :aria-label="`${t('models.testSource')} · ${s.name}`"
-                      @click.stop="testSlot(m, line, si)"
-                    >
-                      <Zap class="h-3 w-3" />
-                    </button>
-                    <Loader2 v-else class="h-3 w-3 shrink-0 animate-spin text-muted-foreground" />
-                    <Badge
-                      v-if="slotProbeState(m, line, si)?.state === 'ok'"
-                      variant="success"
-                      class="shrink-0 gap-1"
-                      :title="slotProbeTitle(m, line, si)"
-                    >
-                      <Check class="h-3 w-3" />{{ t("models.probeOk") }}
-                    </Badge>
-                    <Badge
-                      v-else-if="slotProbeState(m, line, si)?.state === 'fail'"
-                      variant="destructive"
-                      class="shrink-0"
-                      :title="slotProbeTitle(m, line, si)"
-                    >
-                      {{ t("models.probeFail") }} · {{ slotProbeState(m, line, si)?.status || "?" }}
-                    </Badge>
-                  </template>
-                </div>
+                </template>
+                <span v-if="!line.enabled" class="text-xs text-muted-foreground">· {{ t("models.routeDisabled") }}</span>
               </div>
             </template>
             <div v-else class="rounded-md border border-dashed px-2.5 py-2 text-xs text-muted-foreground">
