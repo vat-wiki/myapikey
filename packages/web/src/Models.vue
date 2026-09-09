@@ -16,7 +16,7 @@ import { Label } from "@/components/ui/label";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
 import {
   Search, Plus, Loader2, Copy, Zap, Gauge, MoreHorizontal, Pencil, Trash2,
-  Cpu, ServerCog, TriangleAlert, ArrowRight, Brain, Check, LayoutGrid, Table2,
+  Cpu, ServerCog, TriangleAlert, ArrowRight, Brain, Check, LayoutGrid, Table2, ChevronDown, ChevronUp,
 } from "lucide-vue-next";
 import ModelEditor from "@/ModelEditor.vue";
 import ConfirmDialog from "@/ConfirmDialog.vue";
@@ -169,6 +169,19 @@ const chainLines = (m: ModelView): ChainLine[] => {
   }
   return merged;
 };
+
+// --- chain collapse: at-a-glance shows the first slot, the rest expand on demand ---
+const chainExpanded = ref<Record<string, boolean>>({});
+
+/** Slots to render — all when expanded, otherwise just the highest-priority one. */
+function visibleSlots(m: ModelView, line: ChainLine): { s: ModelProvider; i: number }[] {
+  return line.slots
+    .map((s, i) => ({ s, i }))
+    .filter((x) => chainExpanded.value[m.name] || x.i === 0);
+}
+function hiddenCount(m: ModelView, line: ChainLine): number {
+  return chainExpanded.value[m.name] ? 0 : line.slots.length - 1;
+}
 
 /** Chip state: on (route enabled), off (chain exists but route disabled),
  *  none (no chain to enable — must be configured in the editor). */
@@ -426,13 +439,55 @@ async function copyName(name: string) {
             <Badge v-else-if="isStaleAny(m)" variant="secondary" class="shrink-0 gap-1" :title="t('models.delistedHint')">
               <TriangleAlert class="h-3 w-3" />{{ t("models.delisted") }}
             </Badge>
+            <!-- actions: hover-revealed in the name row so cards carry no footer -->
+            <div class="ml-auto flex shrink-0 items-center gap-0.5" @click.stop>
+              <Button
+                variant="ghost" size="icon"
+                class="h-7 w-7 text-muted-foreground opacity-0 transition-all focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100"
+                :disabled="!enabledFormats(m).length || (!!rowProbe(m) && rowProbe(m)!.state === 'testing')"
+                :title="t('models.testModel')" :aria-label="t('models.testModel')"
+                @click="testModel(m)"
+              >
+                <Loader2 v-if="rowProbe(m)?.state === 'testing'" class="h-4 w-4 animate-spin" />
+                <Zap v-else class="h-4 w-4" />
+              </Button>
+              <Button
+                variant="ghost" size="icon"
+                class="h-7 w-7 text-muted-foreground opacity-0 transition-all focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100"
+                :title="t('models.edit')" :aria-label="t('models.edit')"
+                @click="openEditor(m)"
+              >
+                <Pencil class="h-4 w-4" />
+              </Button>
+              <div class="opacity-0 transition-all focus-within:opacity-100 group-hover:opacity-100">
+                <DropdownMenu>
+                  <DropdownMenuTrigger>
+                    <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground" :aria-label="t('models.moreActions')">
+                      <MoreHorizontal class="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem @select="askRename(m)">
+                      <Pencil />
+                      {{ t("models.renameModel") }}
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem class="text-destructive focus:bg-destructive/10 focus:text-destructive" @select="confirmTarget = m; confirmOpen = true">
+                      <Trash2 />
+                      {{ t("models.removeModel") }}
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            </div>
           </div>
 
-          <!-- routing chain: per line, format toggles + slots as one wrapped capsule flow -->
+          <!-- routing chain: per line, format toggles + first slot capsule;
+               the remaining failover slots stay behind the "+N" chip -->
           <div class="min-w-0 flex-1 space-y-1.5" @click.stop>
             <template v-if="chainLines(m).length">
               <div
-                v-for="line in chainLines(m)"
+                v-for="(line, li) in chainLines(m)"
                 :key="line.key"
                 class="flex flex-wrap items-center gap-x-1.5 gap-y-1"
                 :class="{ 'opacity-60': !line.enabled }"
@@ -450,37 +505,37 @@ async function copyName(name: string) {
                   {{ t(FMT_META[f].label) }}
                 </button>
                 <span class="h-4 w-px shrink-0 bg-border" aria-hidden="true" />
-                <template v-for="(s, si) in line.slots" :key="si">
-                  <ArrowRight v-if="si" class="h-3 w-3 shrink-0 text-muted-foreground/40" />
+                <template v-for="x in visibleSlots(m, line)" :key="x.i">
+                  <ArrowRight v-if="x.i" class="h-3 w-3 shrink-0 text-muted-foreground/40" />
                   <span
                     class="inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs transition-colors"
-                    :class="slotChipClass(m, line, si)"
-                    :title="slotProbeState(m, line, si) ? slotProbeTitle(m, line, si) : undefined"
+                    :class="slotChipClass(m, line, x.i)"
+                    :title="slotProbeState(m, line, x.i) ? slotProbeTitle(m, line, x.i) : undefined"
                   >
-                    <span class="shrink-0 text-[10px] tabular-nums text-muted-foreground/60">{{ si + 1 }}</span>
-                    <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="providerColor(s.id).solid" />
-                    <span class="shrink-0 font-medium">{{ s.name }}</span>
-                    <span v-if="s.model" class="min-w-0 truncate font-mono text-muted-foreground" :title="s.model">› {{ s.model }}</span>
+                    <span class="shrink-0 text-[10px] tabular-nums text-muted-foreground/60">{{ x.i + 1 }}</span>
+                    <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="providerColor(x.s.id).solid" />
+                    <span class="shrink-0 font-medium">{{ x.s.name }}</span>
+                    <span v-if="x.s.model" class="min-w-0 truncate font-mono text-muted-foreground" :title="x.s.model">› {{ x.s.model }}</span>
                     <span
-                      v-if="s.thinking"
+                      v-if="x.s.thinking"
                       class="inline-flex shrink-0 items-center gap-0.5 font-mono text-[10px] text-muted-foreground"
                       :title="t('models.editor.thinkingLabel')"
                     >
-                      <Brain class="h-2.5 w-2.5" />{{ s.thinking }}
+                      <Brain class="h-2.5 w-2.5" />{{ x.s.thinking }}
                     </span>
                     <template v-if="line.enabled">
-                      <Check v-if="slotProbeState(m, line, si)?.state === 'ok'" class="h-3 w-3 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                      <Check v-if="slotProbeState(m, line, x.i)?.state === 'ok'" class="h-3 w-3 shrink-0 text-emerald-600 dark:text-emerald-400" />
                       <span
-                        v-else-if="slotProbeState(m, line, si)?.state === 'fail'"
+                        v-else-if="slotProbeState(m, line, x.i)?.state === 'fail'"
                         class="shrink-0 font-mono text-[10px] font-semibold text-destructive"
-                      >{{ slotProbeState(m, line, si)?.status || "✗" }}</span>
+                      >{{ slotProbeState(m, line, x.i)?.status || "✗" }}</span>
                       <button
-                        v-if="slotProbeState(m, line, si)?.state !== 'testing'"
+                        v-if="slotProbeState(m, line, x.i)?.state !== 'testing'"
                         type="button"
                         class="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-muted-foreground/40 opacity-0 transition-all hover:bg-accent hover:text-accent-foreground focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100"
                         :title="t('models.testSourceHint')"
-                        :aria-label="`${t('models.testSource')} · ${s.name}`"
-                        @click.stop="testSlot(m, line, si)"
+                        :aria-label="`${t('models.testSource')} · ${x.s.name}`"
+                        @click.stop="testSlot(m, line, x.i)"
                       >
                         <Zap class="h-3 w-3" />
                       </button>
@@ -488,46 +543,31 @@ async function copyName(name: string) {
                     </template>
                   </span>
                 </template>
+                <button
+                  v-if="hiddenCount(m, line) > 0"
+                  type="button"
+                  class="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-dashed px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                  :title="t('models.chainMoreHint', { n: hiddenCount(m, line) })"
+                  :aria-label="t('models.chainMoreHint', { n: hiddenCount(m, line) })"
+                  @click="chainExpanded[m.name] = true"
+                >
+                  +{{ hiddenCount(m, line) }}<ChevronDown class="h-3 w-3" />
+                </button>
+                <button
+                  v-else-if="chainExpanded[m.name] && line.slots.length > 1 && li === 0"
+                  type="button"
+                  class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground"
+                  :title="t('models.chainCollapse')"
+                  :aria-label="t('models.chainCollapse')"
+                  @click="chainExpanded[m.name] = false"
+                >
+                  <ChevronUp class="h-3.5 w-3.5" />
+                </button>
                 <span v-if="!line.enabled" class="text-xs text-muted-foreground">· {{ t("models.routeDisabled") }}</span>
               </div>
             </template>
             <div v-else class="rounded-md border border-dashed px-2.5 py-2 text-xs text-muted-foreground">
               {{ t("models.unroutedHint") }}
-            </div>
-          </div>
-
-          <!-- actions -->
-          <div class="flex items-center gap-1 border-t pt-3" @click.stop>
-            <Button
-              variant="ghost" size="sm" class="h-7 gap-1.5 px-2 text-xs"
-              :disabled="!enabledFormats(m).length || !!rowProbe(m) && rowProbe(m)!.state === 'testing'"
-              @click="testModel(m)"
-            >
-              <Loader2 v-if="rowProbe(m)?.state === 'testing'" class="h-3.5 w-3.5 animate-spin" />
-              <Zap v-else class="h-3.5 w-3.5" />{{ t("models.testModel") }}
-            </Button>
-            <Button variant="ghost" size="sm" class="h-7 gap-1.5 px-2 text-xs" @click="openEditor(m)">
-              <Pencil class="h-3.5 w-3.5" />{{ t("models.edit") }}
-            </Button>
-            <div class="ml-auto">
-              <DropdownMenu>
-                <DropdownMenuTrigger>
-                  <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground" :aria-label="t('models.moreActions')">
-                    <MoreHorizontal class="h-4 w-4" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem @select="askRename(m)">
-                    <Pencil />
-                    {{ t("models.renameModel") }}
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem class="text-destructive focus:bg-destructive/10 focus:text-destructive" @select="confirmTarget = m; confirmOpen = true">
-                    <Trash2 />
-                    {{ t("models.removeModel") }}
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
             </div>
           </div>
         </div>
@@ -547,7 +587,7 @@ async function copyName(name: string) {
           </TableRow>
         </TableHeader>
         <TableBody>
-          <TableRow v-for="m in filtered" :key="m.name" class="cursor-pointer" @click="openEditor(m)">
+          <TableRow v-for="m in filtered" :key="m.name" class="group cursor-pointer" @click="openEditor(m)">
             <TableCell>
               <div class="space-y-1">
                 <span class="font-mono text-sm font-medium">{{ m.name }}</span>
@@ -583,9 +623,9 @@ async function copyName(name: string) {
             <TableCell>
               <div v-if="chainLines(m).length" class="min-w-0 space-y-1">
                 <div
-                  v-for="line in chainLines(m)"
+                  v-for="(line, li) in chainLines(m)"
                   :key="line.key"
-                  class="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs"
+                  class="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1"
                   :class="{ 'opacity-60': !line.enabled }"
                 >
                   <template v-if="chainLines(m).length > 1">
@@ -597,22 +637,65 @@ async function copyName(name: string) {
                       :title="t(FMT_META[f].label)"
                     />
                   </template>
-                  <template v-for="(s, si) in line.slots" :key="si">
-                    <span v-if="si" class="text-muted-foreground/50">·</span>
-                    <span class="font-medium">{{ s.name }}</span>
-                    <template v-if="s.model">
-                      <ArrowRight class="h-3 w-3 shrink-0 text-muted-foreground/50" />
-                      <span class="font-mono text-muted-foreground" :title="s.model">{{ s.model }}</span>
-                    </template>
+                  <template v-for="x in visibleSlots(m, line)" :key="x.i">
+                    <ArrowRight v-if="x.i" class="h-3 w-3 shrink-0 text-muted-foreground/40" />
                     <span
-                      v-if="s.thinking"
-                      class="inline-flex shrink-0 items-center gap-0.5 rounded bg-muted px-1 py-px font-mono text-[10px] text-muted-foreground"
-                      :title="t('models.editor.thinkingLabel')"
+                      class="inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs transition-colors"
+                      :class="slotChipClass(m, line, x.i)"
+                      :title="slotProbeState(m, line, x.i) ? slotProbeTitle(m, line, x.i) : undefined"
                     >
-                      <Brain class="h-2.5 w-2.5" />{{ s.thinking }}
+                      <span class="shrink-0 text-[10px] tabular-nums text-muted-foreground/60">{{ x.i + 1 }}</span>
+                      <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="providerColor(x.s.id).solid" />
+                      <span class="shrink-0 font-medium">{{ x.s.name }}</span>
+                      <span v-if="x.s.model" class="min-w-0 truncate font-mono text-muted-foreground" :title="x.s.model">› {{ x.s.model }}</span>
+                      <span
+                        v-if="x.s.thinking"
+                        class="inline-flex shrink-0 items-center gap-0.5 font-mono text-[10px] text-muted-foreground"
+                        :title="t('models.editor.thinkingLabel')"
+                      >
+                        <Brain class="h-2.5 w-2.5" />{{ x.s.thinking }}
+                      </span>
+                      <template v-if="line.enabled">
+                        <Check v-if="slotProbeState(m, line, x.i)?.state === 'ok'" class="h-3 w-3 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                        <span
+                          v-else-if="slotProbeState(m, line, x.i)?.state === 'fail'"
+                          class="shrink-0 font-mono text-[10px] font-semibold text-destructive"
+                        >{{ slotProbeState(m, line, x.i)?.status || "✗" }}</span>
+                        <button
+                          v-if="slotProbeState(m, line, x.i)?.state !== 'testing'"
+                          type="button"
+                          class="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-muted-foreground/40 opacity-0 transition-all hover:bg-accent hover:text-accent-foreground focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100"
+                          :title="t('models.testSourceHint')"
+                          :aria-label="`${t('models.testSource')} · ${x.s.name}`"
+                          @click.stop="testSlot(m, line, x.i)"
+                        >
+                          <Zap class="h-3 w-3" />
+                        </button>
+                        <Loader2 v-else class="h-3 w-3 shrink-0 animate-spin text-muted-foreground" />
+                      </template>
                     </span>
                   </template>
-                  <span v-if="!line.enabled" class="text-muted-foreground">· {{ t("models.routeDisabled") }}</span>
+                  <button
+                    v-if="hiddenCount(m, line) > 0"
+                    type="button"
+                    class="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-dashed px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                    :title="t('models.chainMoreHint', { n: hiddenCount(m, line) })"
+                    :aria-label="t('models.chainMoreHint', { n: hiddenCount(m, line) })"
+                    @click.stop="chainExpanded[m.name] = true"
+                  >
+                    +{{ hiddenCount(m, line) }}<ChevronDown class="h-3 w-3" />
+                  </button>
+                  <button
+                    v-else-if="chainExpanded[m.name] && line.slots.length > 1 && li === 0"
+                    type="button"
+                    class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground"
+                    :title="t('models.chainCollapse')"
+                    :aria-label="t('models.chainCollapse')"
+                    @click.stop="chainExpanded[m.name] = false"
+                  >
+                    <ChevronUp class="h-3.5 w-3.5" />
+                  </button>
+                  <span v-if="!line.enabled" class="text-xs text-muted-foreground">· {{ t("models.routeDisabled") }}</span>
                 </div>
               </div>
               <span v-else class="text-xs text-muted-foreground">{{ t("models.unroutedHint") }}</span>
