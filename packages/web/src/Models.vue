@@ -488,8 +488,10 @@ async function copyName(name: string) {
           </div>
 
           <!-- routing chain: per line, format toggles + the ACTUALLY-SERVED
-               slot as a chip that pops the FULL chain (all slots + probes) -->
-          <div class="min-w-0 flex-1 space-y-1.5" @click.stop>
+               slot as a chip that pops the FULL chain (all slots + probes)
+               — no container-level click.stop: empty space bubbles up to the
+               card's open-editor click; the chips stop it themselves -->
+          <div class="min-w-0 flex-1 space-y-1.5">
             <template v-if="chainLines(m).length">
               <div
                 v-for="line in chainLines(m)"
@@ -505,7 +507,7 @@ async function copyName(name: string) {
                   :aria-label="chipTitle(m, f)"
                   class="inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-medium transition-colors"
                   :class="chipClass(m, f)"
-                  @click="toggleFmt(m, f)"
+                  @click.stop="toggleFmt(m, f)"
                 >
                   {{ t(FMT_META[f].label) }}
                 </button>
