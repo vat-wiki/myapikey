@@ -165,7 +165,7 @@ export default {
     modelAdded: "Added {n} model(s)",
     modelRemoved: "Removed \"{name}\"",
     modelsEmpty: "No models yet",
-    modelsEmptyHint: "Refresh (top right) to scan the source; or type a name above to add it manually.",
+    modelsEmptyHint: "No /models endpoint? Just type model names above to add them; or refresh (top right) to scan.",
     modelsNoMatch: "No matching names — the Add row above will add one.",
     modelsCount: "{n} discovered · {m} added manually",
     modelsHint: "Additions survive refreshes and appear as upstream suggestions when creating models. Click a name to copy it.",

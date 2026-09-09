@@ -221,6 +221,21 @@ function onEsc(e: KeyboardEvent) {
           </Button>
         </div>
         <div ref="listRef" class="max-h-80 divide-y overflow-y-auto rounded-md border">
+          <!-- The add row lives OUTSIDE the empty-state branch: a source with no
+               /models endpoint (discovery always []) still needs a visible,
+               working supplement flow — that's the whole point for such backends. -->
+          <div v-if="canAdd" class="sticky top-0 z-10 border-b bg-background">
+            <button
+              type="button"
+              class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground"
+              :disabled="busy !== ''"
+              @click="add"
+            >
+              <Loader2 v-if="busy === 'add'" class="h-3.5 w-3.5 shrink-0 animate-spin" />
+              <Plus v-else class="h-3.5 w-3.5 shrink-0" />
+              <span class="truncate font-mono">{{ t("sources.modelAddRow", { q: q.trim() }) }}</span>
+            </button>
+          </div>
           <div v-if="!rows.length" class="flex flex-col items-center gap-2 px-4 py-10 text-center">
             <span class="flex size-9 items-center justify-center rounded-lg bg-muted text-muted-foreground">
               <PackageSearch class="size-4" />
@@ -231,21 +246,7 @@ function onEsc(e: KeyboardEvent) {
             </div>
           </div>
           <template v-else>
-            <!-- sticky wrapper carries the opaque bg; the hover accent lives on
-                 the button so the two classes never fight in the stylesheet -->
-            <div v-if="canAdd" class="sticky top-0 z-10 border-b bg-background">
-              <button
-                type="button"
-                class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground"
-                :disabled="busy !== ''"
-                @click="add"
-              >
-                <Loader2 v-if="busy === 'add'" class="h-3.5 w-3.5 shrink-0 animate-spin" />
-                <Plus v-else class="h-3.5 w-3.5 shrink-0" />
-                <span class="truncate font-mono">{{ t("sources.modelAddRow", { q: q.trim() }) }}</span>
-              </button>
-            </div>
-            <div v-if="!filtered.length && rows.length" class="px-3 py-6 text-center text-xs text-muted-foreground">
+            <div v-if="!filtered.length" class="px-3 py-6 text-center text-xs text-muted-foreground">
               {{ t("sources.modelsNoMatch") }}
             </div>
             <div

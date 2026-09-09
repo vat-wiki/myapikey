@@ -165,7 +165,7 @@ export default {
     modelAdded: "已补充 {n} 个模型",
     modelRemoved: "已移除补充「{name}」",
     modelsEmpty: "还没有任何模型",
-    modelsEmptyHint: "点右上角刷新扫描该来源;或直接在上方输入名字手动补充。",
+    modelsEmptyHint: "没有模型列表接口也没关系——直接在上方输入模型名补充;或点右上角刷新扫描。",
     modelsNoMatch: "没有匹配的名字——上面的补充行可直接把它加进来。",
     modelsCount: "发现 {n} 个 · 手动补充 {m} 个",
     modelsHint: "补充的名字刷新后保留,创建模型时会出现在上游建议里;点击模型名可复制。",
