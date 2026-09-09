@@ -104,6 +104,16 @@ export interface LastRoute {
   model: string;
   ts: number;
 }
+/** The latest FAILED call per (model, protocol) from the log tail — lets the
+ *  chain popover flag slots that recently errored, with the real message. */
+export interface LastFail {
+  format: string;
+  providerId: string;
+  model: string;
+  status: number;
+  error?: string;
+  ts: number;
+}
 export interface ModelView {
   name: string;
   openai: FormatView;
@@ -113,6 +123,7 @@ export interface ModelView {
    *  spread one every 60/rpm seconds; excess queue at the gateway. */
   paceRpm: number;
   lastRoute?: LastRoute[];
+  lastFail?: LastFail[];
 }
 
 /** One provider's circuit-breaker state (GET /admin/circuit). Mirrors the

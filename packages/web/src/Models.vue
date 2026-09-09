@@ -180,6 +180,11 @@ function servedSlot(m: ModelView, line: ChainLine): { s: ModelProvider; i: numbe
   return { s: line.slots[0], i: 0, actual: false };
 }
 
+/** Recent failure rows for a chain line's formats (for the popover's error markers). */
+function lineFails(m: ModelView, line: ChainLine) {
+  return (m.lastFail ?? []).filter((r) => line.fs.includes(r.format as Fmt));
+}
+
 /** Chip state: on (route enabled), off (chain exists but route disabled),
  *  none (no chain to enable — must be configured in the editor). */
 type ChipState = "on" | "off" | "none";
@@ -530,6 +535,7 @@ async function copyName(name: string) {
                       :model="m"
                       :line="line"
                       :active="servedSlot(m, line).actual ? servedSlot(m, line).i : undefined"
+                      :fails="lineFails(m, line)"
                       :slot-state="slotProbeState"
                       :slot-title="slotProbeTitle"
                       :slot-class="slotChipClass"
@@ -639,6 +645,7 @@ async function copyName(name: string) {
                         :model="m"
                         :line="line"
                         :active="servedSlot(m, line).actual ? servedSlot(m, line).i : undefined"
+                        :fails="lineFails(m, line)"
                         :slot-state="slotProbeState"
                         :slot-title="slotProbeTitle"
                         :slot-class="slotChipClass"

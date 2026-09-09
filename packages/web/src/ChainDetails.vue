@@ -12,19 +12,24 @@ export interface ChainLine {
 </script>
 
 <script setup lang="ts">
+import { ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { ArrowRight, Brain, Check, Loader2, Zap } from "lucide-vue-next";
+import { ArrowRight, Brain, Check, Loader2, TriangleAlert, Zap } from "lucide-vue-next";
 import type { ModelView } from "@/api";
+import type { LastFail } from "@/api";
 import { FMT_ACCENT, FMT_META, providerColor } from "@/lib/format";
 
 /** One chain line rendered in FULL — every slot as a numbered capsule with
  *  per-slot probe affordances. The popover content behind the collapsed
  *  "in-use" chip on both Models views; probe state comes from the owner.
- *  `active` marks the slot that actually served most recently (ring). */
-defineProps<{
+ *  `active` marks the slot that actually served most recently (ring);
+ *  `fails` flags slots with a recent failed call — click the marker for the
+ *  real error text. */
+const props = defineProps<{
   model: ModelView;
   line: ChainLine;
   active?: number;
+  fails?: LastFail[];
   slotState: (m: ModelView, line: ChainLine, i: number) => { state: "testing" | "ok" | "fail"; status?: number; provider?: string; error?: string } | null;
   slotTitle: (m: ModelView, line: ChainLine, i: number) => string;
   slotClass: (m: ModelView, line: ChainLine, i: number) => string;
@@ -32,6 +37,18 @@ defineProps<{
 }>();
 
 const { t } = useI18n();
+
+/** The most recent failure recorded against slot `si` (undefined = clean). */
+function failFor(si: number): LastFail | undefined {
+  const hits = (props.fails ?? []).filter((f) => f.providerId === props.line.slots[si].id);
+  return hits.length ? hits.reduce((a, b) => (b.ts >= a.ts ? b : a)) : undefined;
+}
+
+/** Which slot's failure detail is expanded (one at a time). */
+const errOpen = ref<number | null>(null);
+function toggleErr(si: number) {
+  errOpen.value = errOpen.value === si ? null : si;
+}
 </script>
 
 <template>
@@ -70,6 +87,17 @@ const { t } = useI18n();
               v-else-if="slotState(model, line, si)?.state === 'fail'"
               class="shrink-0 font-mono text-[10px] font-semibold text-destructive"
             >{{ slotState(model, line, si)?.status || "✗" }}</span>
+            <!-- recent real-traffic failure: click for the actual error text -->
+            <button
+              v-if="failFor(si)"
+              type="button"
+              class="inline-flex shrink-0 items-center gap-0.5 rounded px-0.5 font-mono text-[10px] font-semibold text-destructive transition-colors hover:bg-destructive/10"
+              :title="t('models.chainFailHint')"
+              :aria-label="t('models.chainFailHint')"
+              @click.stop="toggleErr(si)"
+            >
+              <TriangleAlert class="h-3 w-3" />{{ failFor(si)!.status || "?" }}
+            </button>
             <button
               v-if="slotState(model, line, si)?.state !== 'testing'"
               type="button"
@@ -84,6 +112,13 @@ const { t } = useI18n();
           </template>
         </span>
       </template>
+    </div>
+    <!-- expanded failure detail: the real message the last failed call saw -->
+    <div
+      v-if="errOpen !== null && failFor(errOpen)"
+      class="rounded-md bg-destructive/10 px-2 py-1.5 font-mono text-[11px] break-all whitespace-pre-wrap text-destructive"
+    >
+      <span class="opacity-70">HTTP {{ failFor(errOpen)!.status }} · </span>{{ failFor(errOpen)!.error || t("models.probeFail") }}
     </div>
   </div>
 </template>

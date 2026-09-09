@@ -187,6 +187,7 @@ export default {
     routeDisabled: "Disabled",
     chainPopHint: "Last serving source — click for the full failover chain",
     chainActiveHint: "most recently served",
+    chainFailHint: "Recent failure — click for the actual error",
     renameModel: "Rename",
     renameDesc: "Change the model name. The routing config (per-route chains and upstream mappings) is preserved as-is.",
     renameHint: "The new name is the public call name; sources without an explicit upstream mapping will receive the new name.",

@@ -187,6 +187,7 @@ export default {
     routeDisabled: "已停用",
     chainPopHint: "最近实际路由到的源与模型——点击查看完整链路",
     chainActiveHint: "最近实际路由",
+    chainFailHint: "最近一次失败——点击查看真实报错",
     renameModel: "重命名",
     renameDesc: "修改模型名。路由配置(各线路的来源链和上游映射)原样保留。",
     renameHint: "新名字就是对外的调用名;未单独映射上游模型名的来源会改发新名字。",

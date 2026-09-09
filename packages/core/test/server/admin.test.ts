@@ -16,6 +16,7 @@ type FlatModel = {
   responses?: { enabled: boolean; providers: Array<{ id: string; name?: string; model?: string; thinking?: string }> };
   paceRpm?: number;
   lastRoute?: Array<{ format: string; providerId: string; model: string; ts: number }>;
+  lastFail?: Array<{ format: string; providerId: string; model: string; status: number; error?: string; ts: number }>;
 };
 
 describe("server/admin", () => {
@@ -421,7 +422,8 @@ describe("server/admin", () => {
 
     it("GET /admin/models reports lastRoute — the latest SUCCESSFUL call per (model, format)", async () => {
       // Failover story: openai first served by alpha, then landed on beta
-      // (with an upstream rewrite); anthropic's only row FAILED (excluded).
+      // (with an upstream rewrite); anthropic's only row FAILED — it must
+      // show up in lastFail, not lastRoute.
       const a = makeProvider({ id: "prv_A", name: "alpha", formats: ["openai", "anthropic"] });
       const b = makeProvider({ id: "prv_B", name: "beta", formats: ["openai"] });
       await seedStore(store, {
@@ -435,21 +437,24 @@ describe("server/admin", () => {
       });
       store.pushLog(makeLog({ ts: 1000, model: "gpt-4o", provider: "alpha", providerId: "prv_A", format: "openai", status: 200 }));
       store.pushLog(makeLog({ ts: 2000, model: "gpt-4o", provider: "beta", providerId: "prv_B", format: "openai", status: 200, upstreamModel: "gpt-x-real" }));
-      store.pushLog(makeLog({ ts: 3000, model: "gpt-4o", provider: "alpha", providerId: "prv_A", format: "anthropic", status: 502 }));
+      store.pushLog(makeLog({ ts: 3000, model: "gpt-4o", provider: "alpha", providerId: "prv_A", format: "anthropic", status: 502, error: "upstream boom" }));
       const m = find(await modelsOf(createApp(store)), "gpt-4o")!;
       expect(m.lastRoute).toEqual([
         { format: "openai", providerId: "prv_B", model: "gpt-x-real", ts: 2000 },
       ]);
+      expect(m.lastFail).toEqual([
+        { format: "anthropic", providerId: "prv_A", model: "gpt-4o", status: 502, error: "upstream boom", ts: 3000 },
+      ]);
     });
 
-    it("GET /admin/models returns an empty lastRoute when the log tail has no successful calls", async () => {
+    it("GET /admin/models returns empty lastRoute/lastFail when the log tail has no calls", async () => {
       await seedStore(store, {
         providers: [makeProvider({ formats: ["openai"] })],
         models: { "gpt-4o": makeModel({ openai: fe([{ id: "prv_A" }]) }) },
       });
-      store.pushLog(makeLog({ ts: 1000, status: 500 }));
       const m = find(await modelsOf(createApp(store)), "gpt-4o")!;
       expect(m.lastRoute).toEqual([]);
+      expect(m.lastFail).toEqual([]);
     });
 
     it("POST /admin/models enables a slot", async () => {

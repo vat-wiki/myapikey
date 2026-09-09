@@ -381,26 +381,39 @@ export function adminApi(store: Store, auth: MiddlewareHandler, openai: Hono, an
     // successful call per (model, format) from the log tail (newest first,
     // so the first hit wins). The UI shows this as the model's in-use slot —
     // after a failover the chip follows the source that really served.
+    // Companion map for FAILURES (latest 4xx/5xx per model+format) so the
+    // chain popover can flag the slots that recently errored.
     // Legacy rows carry only the provider NAME; resolve it to the stable id
     // so they can still match a slot.
     const byName = new Map(d.providers.map((p) => [p.name, p.id]));
-    const last = new Map<string, Map<string, LogEntry>>();
+    const okLog = new Map<string, Map<string, LogEntry>>();
+    const badLog = new Map<string, Map<string, LogEntry>>();
     for (const row of store.getLogs()) {
-      if (row.status < 200 || row.status >= 400) continue;
       const pid = row.providerId ?? (row.provider ? byName.get(row.provider) : undefined);
       if (!pid) continue;
-      let perFmt = last.get(row.model);
-      if (!perFmt) last.set(row.model, (perFmt = new Map()));
+      const target = row.status >= 200 && row.status < 400 ? okLog : badLog;
+      let perFmt = target.get(row.model);
+      if (!perFmt) target.set(row.model, (perFmt = new Map()));
       if (!perFmt.has(row.format)) perFmt.set(row.format, row);
     }
+    const lastEntries = (src: Map<string, Map<string, LogEntry>>, name: string) =>
+      [...src.get(name)?.entries() ?? []];
     const models = Object.entries(d.models).map(([name, e]) => ({
       ...projectModel(name, e, byId),
-      lastRoute: [...last.get(name)?.entries() ?? []].map(([format, row]) => ({
+      lastRoute: lastEntries(okLog, name).map(([format, row]) => ({
         format,
         providerId: row.providerId ?? byName.get(row.provider) ?? "",
         // The upstream name that was actually forwarded (a per-slot rewrite,
         // or the public name sent verbatim).
         model: row.upstreamModel ?? row.model,
+        ts: row.ts,
+      })),
+      lastFail: lastEntries(badLog, name).map(([format, row]) => ({
+        format,
+        providerId: row.providerId ?? byName.get(row.provider) ?? "",
+        model: row.upstreamModel ?? row.model,
+        status: row.status,
+        error: row.error,
         ts: row.ts,
       })),
     }));
