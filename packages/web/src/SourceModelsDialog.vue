@@ -9,28 +9,29 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
-import { Loader2, Plus, RefreshCw, Search, X, PackageSearch, Zap } from "lucide-vue-next";
+import { Loader2, Plus, RefreshCw, Search, X, Zap, PackageSearch } from "lucide-vue-next";
 
 /** The per-source model list, opened by clicking a source's discovery badge.
- *  Discovery results and manual supplements in one scrollable list: type in
- *  the search box to filter, and when the typed name isn't already listed a
- *  sticky "Add" row appears (Enter works too) — that's the supplement flow
- *  for upstreams whose /models doesn't list everything. Clicking a row copies
- *  the name. Supplements survive discovery refreshes; discovered rows carry
- *  no remove button, because a refresh would just bring them back (the
- *  upstream is their source of truth). Saves wholesale via PUT
+ *  Two separate inputs: search filters the list; the supplement row adds
+ *  model names the source serves but discovery can't see (no /models
+ *  endpoint, unlisted) — comma-separated for batch. Clicking a row copies
+ *  the name. Supplements survive discovery refreshes; untagged rows are
+ *  discovered (not individually removable — a refresh would bring them
+ *  back), rows tagged 手动 are removable. Saves wholesale via PUT
  *  …/extra-models, then hands the updated provider to the parent so the row
- *  and this dialog stay in sync. */
+ *  and this dialog stay in sync. Deliberately lean: no explanatory copy. */
 const props = defineProps<{ open: boolean; provider: ProviderPublic | null }>();
 const emit = defineEmits<{ "update:open": [boolean]; saved: [ProviderPublic] }>();
 const { t } = useI18n();
 
 const q = ref("");
+const draft = ref("");
 /** Local copy of the supplement list — drives the optimistic rows while the
  *  PUT is in flight, re-synced from every saved response. */
 const extra = ref<string[]>([]);
 const busy = ref<"" | "add" | "remove" | "refresh">("");
 const inputRef = ref<InstanceType<typeof Input> | null>(null);
+const addRef = ref<InstanceType<typeof Input> | null>(null);
 const listRef = ref<HTMLDivElement | null>(null);
 
 /** Names just supplemented — flashed once (then un-set) so they're findable
@@ -44,30 +45,6 @@ function markFlash(names: string[]) {
 }
 onBeforeUnmount(() => clearTimeout(flashTimer));
 
-/** Per-row quick test: pings the source directly with this model name across
- *  every protocol it supports (the same endpoint as the row-level test
- *  button, no routing/logs/circuit side-effects). Results stay on the row —
- *  replacing the origin tag until re-run — since that's what the user is
- *  judging at that moment; the chip's tooltip carries status/ms/error. */
-const testing = ref<Set<string>>(new Set());
-const results = ref<Record<string, ProviderTestResult[]>>({});
-
-async function test(name: string) {
-  if (!props.provider || testing.value.has(name)) return;
-  testing.value.add(name);
-  try {
-    const r = await req<{ results: ProviderTestResult[] }>(
-      "POST",
-      `/admin/providers/${props.provider.id}/test?model=${encodeURIComponent(name)}`,
-    );
-    results.value = { ...results.value, [name]: r.results };
-  } catch (e) {
-    toast((e as Error).message, "error");
-  } finally {
-    testing.value.delete(name);
-  }
-}
-
 // Opening resets everything and focuses the search field; a patched provider
 // (our own saves, or a refresh from the row) re-syncs only the supplement
 // copy, keeping the typed filter.
@@ -76,6 +53,7 @@ watch(
   async (o) => {
     if (!o) return;
     q.value = "";
+    draft.value = "";
     extra.value = [...(props.provider?.extraModels ?? [])];
     flash.value.clear();
     testing.value.clear();
@@ -102,14 +80,13 @@ const filtered = computed(() => {
   const s = q.value.trim().toLowerCase();
   return s ? rows.value.filter((r) => r.name.toLowerCase().includes(s)) : rows.value;
 });
-/** The exact typed name is already known (discovered or supplemented) — then
- *  Enter keeps filtering instead of adding a duplicate. Note: whenever the
- *  filter matches nothing, nothing can equal it either, so an "Add" row is
- *  always on screen in that case (no separate no-match message needed). */
-const canAdd = computed(() => {
-  const s = q.value.trim();
-  return !!s && !rows.value.some((r) => r.name === s);
+/** The typed name already exists (discovered or supplemented) — block the
+ *  add and say so; the server dedupes anyway, this is just feedback. */
+const exists = computed(() => {
+  const s = draft.value.trim();
+  return !!s && rows.value.some((r) => r.name === s);
 });
+const addReady = computed(() => !!draft.value.trim() && !exists.value);
 
 function applySaved(p: ProviderPublic) {
   extra.value = [...(p.extraModels ?? [])];
@@ -122,24 +99,25 @@ async function putExtra(models: string[]): Promise<ProviderPublic> {
   return r.provider;
 }
 
-/** Commit the typed text as supplements. Splits on whitespace/commas so a
- *  pasted list adds in one go; names already known are skipped. */
+/** Commit the supplement input. Splits on whitespace/commas so a pasted list
+ *  adds in one go; names already known are skipped. */
 async function add() {
-  if (!props.provider || busy.value || !canAdd.value) return;
-  const tokens = [...new Set(q.value.split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean))].filter(
+  if (!props.provider || busy.value || !addReady.value) return;
+  const tokens = [...new Set(draft.value.split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean))].filter(
     (x) => !extra.value.includes(x),
   );
   if (!tokens.length) return;
   busy.value = "add";
   try {
     await putExtra([...extra.value, ...tokens]);
-    q.value = "";
+    draft.value = "";
     markFlash(tokens);
     toast(t("sources.modelAdded", { n: tokens.length }), "success");
-    // The list re-sorted (and the filter cleared) — bring the new names on
-    // screen instead of leaving them wherever the alphabet put them.
+    // The list re-sorted — bring the new names on screen instead of leaving
+    // them wherever the alphabet put them.
     await nextTick();
     listRef.value?.querySelector(`[data-mname="${CSS.escape(tokens[0])}"]`)?.scrollIntoView({ block: "nearest" });
+    addRef.value?.$el?.focus();
   } catch (e) {
     toast((e as Error).message, "error");
   } finally {
@@ -181,6 +159,29 @@ async function copy(name: string) {
   toast(ok ? t("connect.copied") : t("connect.copyFailed"), ok ? "success" : "error");
 }
 
+/** Per-row quick test: pings the source directly with this model name across
+ *  every protocol it supports (same endpoint as the row-level test button,
+ *  no routing/logs/circuit side-effects). Results stay on the row until
+ *  re-run or reopen; the chip's tooltip carries status/ms/error. */
+const testing = ref<Set<string>>(new Set());
+const results = ref<Record<string, ProviderTestResult[]>>({});
+
+async function test(name: string) {
+  if (!props.provider || testing.value.has(name)) return;
+  testing.value.add(name);
+  try {
+    const r = await req<{ results: ProviderTestResult[] }>(
+      "POST",
+      `/admin/providers/${props.provider.id}/test?model=${encodeURIComponent(name)}`,
+    );
+    results.value = { ...results.value, [name]: r.results };
+  } catch (e) {
+    toast((e as Error).message, "error");
+  } finally {
+    testing.value.delete(name);
+  }
+}
+
 /** Esc clears the filter first; only with an empty filter does it close the
  *  dialog (.stop keeps reka's document-level Esc handler out of the way). */
 function onEsc(e: KeyboardEvent) {
@@ -195,8 +196,8 @@ function onEsc(e: KeyboardEvent) {
   <Dialog :open="open" @update:open="emit('update:open', $event)">
     <DialogContent class="max-w-lg">
       <DialogTitle class="text-base">{{ t("sources.modelsTitle") }}</DialogTitle>
-      <DialogDescription>{{ t("sources.modelsDesc", { name: provider?.name ?? "" }) }}</DialogDescription>
-      <div class="space-y-3">
+      <DialogDescription class="sr-only">{{ t("sources.modelsDesc", { name: provider?.name ?? "" }) }}</DialogDescription>
+      <div class="space-y-2.5">
         <div class="flex items-center gap-2">
           <div class="relative min-w-0 flex-1">
             <Search class="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -207,7 +208,6 @@ function onEsc(e: KeyboardEvent) {
               autocomplete="off"
               spellcheck="false"
               class="pl-8 font-mono"
-              @keydown.enter.prevent="add"
               @keydown.esc="onEsc"
             />
           </div>
@@ -220,30 +220,31 @@ function onEsc(e: KeyboardEvent) {
             <RefreshCw v-else class="h-4 w-4" />
           </Button>
         </div>
-        <div ref="listRef" class="max-h-80 divide-y overflow-y-auto rounded-md border">
-          <!-- The add row lives OUTSIDE the empty-state branch: a source with no
-               /models endpoint (discovery always []) still needs a visible,
-               working supplement flow — that's the whole point for such backends. -->
-          <div v-if="canAdd" class="sticky top-0 z-10 border-b bg-background">
-            <button
-              type="button"
-              class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground"
-              :disabled="busy !== ''"
-              @click="add"
-            >
-              <Loader2 v-if="busy === 'add'" class="h-3.5 w-3.5 shrink-0 animate-spin" />
-              <Plus v-else class="h-3.5 w-3.5 shrink-0" />
-              <span class="truncate font-mono">{{ t("sources.modelAddRow", { q: q.trim() }) }}</span>
-            </button>
+        <div class="flex items-center gap-2">
+          <div class="relative min-w-0 flex-1">
+            <Plus class="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              ref="addRef"
+              v-model="draft"
+              :placeholder="t('sources.modelsAddPh')"
+              autocomplete="off"
+              spellcheck="false"
+              class="pl-8 font-mono"
+              @keydown.enter.prevent="add"
+            />
           </div>
+          <Button variant="outline" class="shrink-0" :disabled="!addReady || busy !== ''" @click="add">
+            <Loader2 v-if="busy === 'add'" class="h-4 w-4 animate-spin" />
+            <Plus v-else class="h-4 w-4" />{{ t("sources.modelsAddBtn") }}
+          </Button>
+        </div>
+        <p v-if="exists" class="text-xs text-muted-foreground">{{ t("sources.modelsAddExists", { q: draft.trim() }) }}</p>
+        <div ref="listRef" class="max-h-80 divide-y overflow-y-auto rounded-md border">
           <div v-if="!rows.length" class="flex flex-col items-center gap-2 px-4 py-10 text-center">
             <span class="flex size-9 items-center justify-center rounded-lg bg-muted text-muted-foreground">
               <PackageSearch class="size-4" />
             </span>
-            <div class="space-y-0.5">
-              <p class="text-sm font-medium">{{ t("sources.modelsEmpty") }}</p>
-              <p class="text-xs text-muted-foreground">{{ t("sources.modelsEmptyHint") }}</p>
-            </div>
+            <p class="text-sm text-muted-foreground">{{ t("sources.modelsEmpty") }}</p>
           </div>
           <template v-else>
             <div v-if="!filtered.length" class="px-3 py-6 text-center text-xs text-muted-foreground">
@@ -255,11 +256,10 @@ function onEsc(e: KeyboardEvent) {
               :data-mname="r.name"
               class="flex cursor-pointer items-center gap-2 px-3 py-1.5 transition-colors hover:bg-muted/50"
               :class="flash.has(r.name) ? 'row-flash' : ''"
-              :title="r.name"
+              :title="`${r.name} · ${t('sources.modelCopyTip')}`"
               @click="copy(r.name)"
             >
               <span class="min-w-0 flex-1 truncate font-mono text-sm">{{ r.name }}</span>
-              <!-- test results take the origin tag's place until re-run / reopen -->
               <template v-if="results[r.name]">
                 <Badge
                   v-for="tr in results[r.name]"
@@ -269,8 +269,7 @@ function onEsc(e: KeyboardEvent) {
                   :title="`${tr.format} · ${tr.status || '?'} · ${tr.ms} ms${tr.error ? ' · ' + tr.error : ''}`"
                 >{{ tr.ok ? "✓" : "✗" }} {{ tr.format }} {{ tr.ok ? `${tr.ms}ms` : tr.status || "–" }}</Badge>
               </template>
-              <Badge v-else-if="r.manual" variant="secondary" class="shrink-0">{{ t("sources.modelTagManual") }}</Badge>
-              <Badge v-else variant="muted" class="shrink-0">{{ t("sources.modelTagDiscovered") }}</Badge>
+              <Badge v-if="r.manual" variant="secondary" class="shrink-0">{{ t("sources.modelTagManual") }}</Badge>
               <button
                 v-if="r.manual"
                 type="button"
@@ -292,10 +291,6 @@ function onEsc(e: KeyboardEvent) {
               </button>
             </div>
           </template>
-        </div>
-        <div class="space-y-0.5 text-xs text-muted-foreground">
-          <p class="tabular-nums">{{ t("sources.modelsCount", { n: discovered.length, m: extra.length }) }}</p>
-          <p>{{ t("sources.modelsHint") }}</p>
         </div>
       </div>
     </DialogContent>
