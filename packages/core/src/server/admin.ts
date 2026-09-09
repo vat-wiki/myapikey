@@ -76,6 +76,7 @@ function toPublic(p: Provider) {
     apiKey: mask(p.apiKey),
     rpm: p.rpm ?? 0,
     discoveredModels: p.discoveredModels ?? [],
+    extraModels: p.extraModels ?? [],
     discoveredAt: p.discoveredAt ?? null,
     createdAt: p.createdAt,
   };
@@ -321,6 +322,33 @@ export function adminApi(store: Store, auth: MiddlewareHandler, openai: Hono, an
     } catch (e) {
       return c.json({ error: { message: `discovery failed: ${(e as Error).message}`, models: [] } }, 502);
     }
+  });
+
+  // Manual supplement to discovery: upstream model ids a backend's /models list
+  // doesn't include but that still work (delisted, unlisted, behind a different
+  // endpoint). Wholesale replace — same one-shot-save convention as PUT
+  // /admin/models/:name. Discovery refreshes only ever rewrite
+  // `discoveredModels`, so anything stored here survives every re-scan.
+  app.put("/providers/:id/extra-models", async (c) => {
+    const id = c.req.param("id");
+    const body = await readJson<{ models?: unknown }>(c.req.raw);
+    if (!body || !Array.isArray(body.models) || body.models.some((m) => typeof m !== "string")) {
+      return c.json({ error: { message: "models (string[]) is required" } }, 400);
+    }
+    // Canonical form: trimmed, deduped, case-insensitively sorted for scanning.
+    const models = [...new Set((body.models as string[]).map((m) => m.trim()).filter(Boolean))].sort((a, b) =>
+      a.toLowerCase().localeCompare(b.toLowerCase()),
+    );
+    let found = false;
+    await store.update((d) => {
+      const p = d.providers.find((x) => x.id === id);
+      if (!p) return;
+      found = true;
+      if (models.length) p.extraModels = models;
+      else delete p.extraModels;
+    });
+    if (!found) return c.json({ error: { message: "provider not found" } }, 404);
+    return c.json({ provider: toPublic(store.get().providers.find((x) => x.id === id)!) });
   });
 
   // Test a SOURCE directly: one minimal ping per selected protocol, straight to

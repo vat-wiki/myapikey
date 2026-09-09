@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { cn } from "../src/lib/utils";
 import { FMT_ACCENT, providerColor, type Fmt } from "../src/lib/format";
+import { providerModelList } from "../src/lib/models";
 
 // The Fmt union, as a runtime mirror for key-set assertions.
 const FMT_KEYS = ["openai", "anthropic", "responses"] as const;
@@ -63,6 +64,20 @@ describe("web/lib", () => {
       const keys = Object.keys(FMT_ACCENT);
       expect(keys).toHaveLength(FMT_KEYS.length);
       for (const k of FMT_KEYS) expect(keys).toContain(k);
+    });
+  });
+
+  describe("providerModelList() — discovery + supplements union", () => {
+    it("merges discoveredModels and extraModels, deduped and sorted case-insensitively", () => {
+      const p = { discoveredModels: ["gpt-4o", "B-model"], extraModels: ["a-model", "gpt-4o"] };
+      expect(providerModelList(p)).toEqual(["a-model", "B-model", "gpt-4o"]);
+    });
+
+    it("tolerates absent lists and empty names; undefined provider → []", () => {
+      expect(providerModelList(undefined)).toEqual([]);
+      expect(providerModelList(null)).toEqual([]);
+      expect(providerModelList({})).toEqual([]);
+      expect(providerModelList({ discoveredModels: ["", "keep"], extraModels: undefined })).toEqual(["keep"]);
     });
   });
 });

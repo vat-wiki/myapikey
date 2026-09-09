@@ -4,6 +4,7 @@ import { useI18n } from "vue-i18n";
 import { req, type ModelView, type ProviderPublic, type ProviderTestResult } from "@/api";
 import type { Fmt } from "@/lib/format";
 import { FMT_ACCENT } from "@/lib/format";
+import { providerModelList } from "@/lib/models";
 import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -16,6 +17,7 @@ import { Plus, Trash2, Loader2, Pencil, RefreshCw, ServerCog, MoreHorizontal, Za
 import Combobox from "@/components/Combobox.vue";
 import ConfirmDialog from "@/ConfirmDialog.vue";
 import SourceDialog from "@/SourceDialog.vue";
+import SourceModelsDialog from "@/SourceModelsDialog.vue";
 
 const { t } = useI18n();
 
@@ -95,9 +97,9 @@ const testFormats = ref<Record<string, boolean>>({});
 const testRunning = ref(false);
 const testResults = ref<ProviderTestResult[] | null>(null);
 
-/** Discovered upstream ids for the dropdown — typing stays as the fallback
- *  for sources without a model list (or custom / undiscovered names). */
-const testOptions = computed(() => testTarget.value?.discoveredModels ?? []);
+/** Discovered + supplemented upstream ids for the dropdown — typing stays as
+ *  the fallback for names in neither list. */
+const testOptions = computed(() => (testTarget.value ? providerModelList(testTarget.value) : []));
 
 /** Every protocol this source can serve (responses only when flagged). */
 function testFormatList(p: ProviderPublic): string[] {
@@ -106,7 +108,7 @@ function testFormatList(p: ProviderPublic): string[] {
 
 function openTest(p: ProviderPublic) {
   testTarget.value = p;
-  testModelName.value = p.discoveredModels?.[0] ?? "";
+  testModelName.value = providerModelList(p)[0] ?? "";
   testFormats.value = Object.fromEntries(testFormatList(p).map((f) => [f, true]));
   testResults.value = null;
   testOpen.value = true;
@@ -158,10 +160,10 @@ async function doRemove() {
   }
 }
 
-// --- discovery badge state ---
+// --- discovery badge / source-models dialog ---
 
 function discCount(p: ProviderPublic): number {
-  return p.discoveredModels?.length ?? 0;
+  return providerModelList(p).length;
 }
 function discState(p: ProviderPublic): "never" | "empty" | "found" {
   if (discCount(p) > 0) return "found";
@@ -177,7 +179,16 @@ function discTitle(p: ProviderPublic): string {
   const s = discState(p);
   if (s === "empty") return t("sources.noModelsHint");
   if (s === "never") return t("sources.notScannedHint");
-  return "";
+  return t("sources.modelsOpenHint");
+}
+
+// The badge is the entry point: click to see (and supplement) what this
+// source can run, without opening the edit form.
+const modelsOpen = ref(false);
+const modelsTarget = ref<ProviderPublic | null>(null);
+function openModels(p: ProviderPublic) {
+  modelsTarget.value = p;
+  modelsOpen.value = true;
 }
 
 function fmtBadgeClass(f: string): string {
@@ -281,7 +292,14 @@ onMounted(load);
               >{{ f }}</Badge>
               <Badge v-if="p.supportsResponses" variant="outline" class="shrink-0" :class="FMT_ACCENT.responses.badge">responses</Badge>
               <Badge v-if="p.rpm" variant="outline" class="shrink-0" :title="t('sources.rpmBadgeHint')">{{ t("sources.rpmBadge", { n: p.rpm }) }}</Badge>
-              <Badge variant="muted" class="shrink-0" :title="discTitle(p)">{{ discLabel(p) }}</Badge>
+              <button
+                type="button"
+                class="shrink-0 rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                :title="discTitle(p)" :aria-label="t('sources.modelsTitle')"
+                @click.stop="openModels(p)"
+              >
+                <Badge variant="muted" class="cursor-pointer transition-colors hover:bg-accent hover:text-accent-foreground">{{ discLabel(p) }}</Badge>
+              </button>
             </div>
 
             <!-- base URLs, one line per enabled format -->
@@ -363,7 +381,14 @@ onMounted(load);
                 <span v-else>—</span>
               </TableCell>
               <TableCell>
-                <Badge variant="muted" :title="discTitle(p)">{{ discLabel(p) }}</Badge>
+                <button
+                  type="button"
+                  class="rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  :title="discTitle(p)" :aria-label="t('sources.modelsTitle')"
+                  @click.stop="openModels(p)"
+                >
+                  <Badge variant="muted" class="cursor-pointer transition-colors hover:bg-accent hover:text-accent-foreground">{{ discLabel(p) }}</Badge>
+                </button>
               </TableCell>
               <TableCell @click.stop>
                 <div class="flex items-center justify-end gap-0.5">
@@ -389,6 +414,9 @@ onMounted(load);
     </template>
 
     <SourceDialog v-model:open="dialogOpen" :provider="editing" @saved="onSaved" />
+
+    <!-- per-source model list: discovery results + manual supplements -->
+    <SourceModelsDialog v-model:open="modelsOpen" :provider="modelsTarget" @saved="onSaved" />
 
     <!-- source test: model name + per-protocol toggles, results inline -->
     <Dialog v-model:open="testOpen">

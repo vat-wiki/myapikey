@@ -31,6 +31,11 @@ export interface Provider {
   supportsResponses?: boolean;
   /** Model ids this provider offered at last discovery (cached, may be stale). */
   discoveredModels?: string[];
+  /** Manually supplemented upstream model ids — names a backend's /models list
+   *  doesn't include but that still work (delisted, unlisted, behind a
+   *  different endpoint). Merged with `discoveredModels` for editor suggestions
+   *  and the UI's staleness check; discovery refreshes never touch this list. */
+  extraModels?: string[];
   /** Epoch ms of the last successful/attempted discovery. */
   discoveredAt?: number;
   createdAt: number;

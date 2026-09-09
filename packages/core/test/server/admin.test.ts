@@ -320,6 +320,69 @@ describe("server/admin", () => {
       }
     });
 
+    it("PUT /admin/providers/:id/extra-models replaces the supplement list (trim + dedupe + sort)", async () => {
+      const a = makeProvider({ formats: ["openai"], baseUrlOpenai: "https://a.up.test/v1", discoveredModels: ["gpt-4o"] });
+      await seedStore(store, { providers: [a] });
+      const app = createApp(store);
+      const put = await app.request(`/admin/providers/${a.id}/extra-models`, {
+        method: "PUT", headers: H,
+        body: JSON.stringify({ models: [" old-model ", "old-model", "beta-model"] }),
+      });
+      expect(put.status).toBe(200);
+      const p = (await json<{ provider: { extraModels?: string[] } }>(put)).provider;
+      // Canonical form: trimmed, deduped, case-insensitively sorted.
+      expect(p.extraModels).toEqual(["beta-model", "old-model"]);
+      // The stored list survives a fresh GET (and discovery's list is untouched).
+      const got = (await json<{ providers: { id: string; extraModels?: string[]; discoveredModels?: string[] }[] }>(
+        app.request("/admin/providers", { headers: H_GET }),
+      )).providers.find((x) => x.id === a.id)!;
+      expect(got.extraModels).toEqual(["beta-model", "old-model"]);
+      expect(got.discoveredModels).toEqual(["gpt-4o"]);
+    });
+
+    it("PUT extra-models: empty array clears the field entirely", async () => {
+      const a = makeProvider({ formats: ["openai"], baseUrlOpenai: "https://a.up.test/v1", extraModels: ["x"] });
+      await seedStore(store, { providers: [a] });
+      const res = await createApp(store).request(`/admin/providers/${a.id}/extra-models`, {
+        method: "PUT", headers: H, body: JSON.stringify({ models: [] }),
+      });
+      expect(res.status).toBe(200);
+      expect(store.get().providers[0].extraModels).toBeUndefined();
+    });
+
+    it("PUT extra-models → 400 on non-array / non-string entries, 404 on unknown provider", async () => {
+      const a = makeProvider({ formats: ["openai"], baseUrlOpenai: "https://a.up.test/v1" });
+      await seedStore(store, { providers: [a] });
+      const app = createApp(store);
+      const noArray = await app.request(`/admin/providers/${a.id}/extra-models`, {
+        method: "PUT", headers: H, body: JSON.stringify({ models: "gpt-4o" }),
+      });
+      expect(noArray.status).toBe(400);
+      const badEntry = await app.request(`/admin/providers/${a.id}/extra-models`, {
+        method: "PUT", headers: H, body: JSON.stringify({ models: ["ok", 5] }),
+      });
+      expect(badEntry.status).toBe(400);
+      const missing = await app.request("/admin/providers/prv_nope/extra-models", {
+        method: "PUT", headers: H, body: JSON.stringify({ models: ["x"] }),
+      });
+      expect(missing.status).toBe(404);
+    });
+
+    it("discovery refresh rewrites discoveredModels but NEVER touches extraModels", async () => {
+      const a = makeProvider({
+        formats: ["openai"], baseUrlOpenai: "https://a.up.test/v1",
+        discoveredModels: ["gpt-4o"], extraModels: ["my-custom-name"],
+      });
+      await seedStore(store, { providers: [a] });
+      const res = await createApp(store).request(`/admin/providers/${a.id}/discover`, { method: "POST", headers: H_GET });
+      expect(res.status).toBe(200);
+      const p = store.get().providers[0];
+      // Fresh upstream list from the default /models mock…
+      expect(p.discoveredModels).toEqual(expect.arrayContaining(["gpt-4o", "gpt-3.5-turbo"]));
+      // …while the manual supplement is untouched.
+      expect(p.extraModels).toEqual(["my-custom-name"]);
+    });
+
     it("POST /admin/providers/:id/test pings each supported protocol DIRECTLY (no routing, no logs)", async () => {
       const a = makeProvider({ name: "alpha", formats: ["openai", "anthropic"], baseUrlOpenai: "https://a.up.test/v1", baseUrlAnthropic: "https://a.up.test", apiKey: "sk-a" });
       await seedStore(store, { providers: [a], apiKey: "sk-test" });

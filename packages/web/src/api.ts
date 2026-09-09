@@ -74,6 +74,9 @@ export interface ProviderPublic {
    *  over to the next source instead of racing the upstream's own limit. */
   rpm: number;
   discoveredModels?: string[];
+  /** Manually supplemented upstream ids (the source-models dialog) — merged
+   *  with discoveredModels everywhere suggestions/staleness are computed. */
+  extraModels?: string[];
   discoveredAt?: number | null;
   createdAt: number;
 }

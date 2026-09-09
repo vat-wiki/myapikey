@@ -4,6 +4,7 @@ import { useI18n } from "vue-i18n";
 import { req, type ModelView, type ProviderPublic } from "@/api";
 import type { Fmt } from "@/lib/format";
 import { FMT_ACCENT, providerColor } from "@/lib/format";
+import { providerModelList } from "@/lib/models";
 import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -60,8 +61,10 @@ function supports(pid: string, fmt: Fmt): boolean {
   if (!p) return false;
   return fmt === "responses" ? !!p.supportsResponses : p.formats.includes(fmt);
 }
+/** Upstream suggestions = discovery results + manual supplements (the union
+ *  is what this source can actually run). */
 function discoveredFor(pid: string): string[] {
-  return providerOf(pid)?.discoveredModels ?? [];
+  return providerModelList(providerOf(pid));
 }
 
 // --- draft lifecycle -------------------------------------------------------

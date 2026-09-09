@@ -4,6 +4,7 @@ import { useI18n } from "vue-i18n";
 import { req, type ModelView, type ModelProvider, type ProviderPublic } from "@/api";
 import type { Fmt } from "@/lib/format";
 import { FMT_ACCENT, FMT_META, providerColor } from "@/lib/format";
+import { providerModelList } from "@/lib/models";
 import { toast } from "@/lib/toast";
 import { copyText } from "@/lib/clipboard";
 import { Button } from "@/components/ui/button";
@@ -226,11 +227,13 @@ async function toggleFmt(m: ModelView, f: Fmt) {
 
 /** A slot's effective upstream (its mapping, or the public name sent verbatim)
  *  is what discovery can confirm — a custom public name is expected to be
- *  absent from the source's list, so staleness is judged on this. */
+ *  absent from the source's list, so staleness is judged on this. Manual
+ *  supplements count as confirmed too (they're names the upstream accepts but
+ *  its /models doesn't list). */
 function isStale(m: ModelView, f: Fmt): boolean {
   const c = m[f].providers;
   if (!c.length) return false;
-  const list = (id: string) => providers.value.find((p) => p.id === id)?.discoveredModels ?? [];
+  const list = (id: string) => providerModelList(providers.value.find((p) => p.id === id));
   return !c.some((s) => list(s.id).includes(s.model ?? m.name)) && c.some((s) => list(s.id).length > 0);
 }
 function isStaleAny(m: ModelView): boolean {
