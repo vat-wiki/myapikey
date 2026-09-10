@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { ref, computed, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { req, type ModelView, type DebugCapture } from "@/api";
 import { fmtLabel, providerColor } from "@/lib/format";
@@ -9,19 +9,22 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
-import { ArrowLeft, Brain, Copy, Loader2, RefreshCw, Bug } from "lucide-vue-next";
+import { ArrowLeft, Brain, Copy, Loader2, RefreshCw, Bug, X } from "lucide-vue-next";
 
-/** Per-model debug capture (GET/PUT /admin/models/:name/debug): toggle the
- *  switch, call the model from an agent, and every upstream attempt — the
- *  exact forwarded request + the response body — shows up here (last 50).
- *  Purely a debugging aid: the buffer lives only in gateway memory, so turning
- *  the switch off clears it, and so does a restart. Deliberately lean. */
+/** Per-model debug capture (GET/PUT/DELETE /admin/models/:name/debug*).
+ *  Two tiers, one timeline: failed upstream attempts are ALWAYS recorded (a
+ *  global in-memory net, so an error can be inspected after the fact without
+ *  pre-arming anything — rows tagged 自动); successful attempts are recorded
+ *  only while the switch is on (last 50). Everything lives only in gateway
+ *  memory — the switch-off clears the switch buffer, the net ages out and can
+ *  be scrubbed per model. Deliberately lean. */
 const props = defineProps<{ open: boolean; model: ModelView | null }>();
 const emit = defineEmits<{ "update:open": [boolean]; changed: [] }>();
 const { t } = useI18n();
 
 const enabled = ref(false);
 const captures = ref<DebugCapture[]>([]);
+const failures = ref<DebugCapture[]>([]);
 const loading = ref(false);
 const saving = ref(false);
 const detail = ref<DebugCapture | null>(null);
@@ -30,12 +33,13 @@ async function load() {
   if (!props.model) return;
   loading.value = true;
   try {
-    const r = await req<{ enabled: boolean; captures: DebugCapture[] }>(
+    const r = await req<{ enabled: boolean; captures: DebugCapture[]; failures: DebugCapture[] }>(
       "GET",
       `/admin/models/${encodeURIComponent(props.model.name)}/debug`,
     );
     enabled.value = r.enabled;
     captures.value = r.captures;
+    failures.value = r.failures;
   } catch (e) {
     toast((e as Error).message, "error");
   } finally {
@@ -71,6 +75,30 @@ async function toggle(v: boolean | undefined) {
     saving.value = false;
   }
 }
+
+async function clearFails() {
+  if (!props.model || loading.value) return;
+  loading.value = true;
+  try {
+    await req("DELETE", `/admin/models/${encodeURIComponent(props.model.name)}/debug/fails`);
+    failures.value = [];
+  } catch (e) {
+    toast((e as Error).message, "error");
+  } finally {
+    loading.value = false;
+  }
+}
+
+const isFail = (c: DebugCapture) => c.status >= 400 || c.status === 0;
+/** One newest-first timeline. A failure made while the switch was on sits in
+ *  BOTH server buffers — show it once, from the net, tagged 自动. */
+const rows = computed(() => {
+  const switchOnly = captures.value.filter((c) => !isFail(c));
+  return [
+    ...failures.value.map((c) => ({ c, auto: true })),
+    ...switchOnly.map((c) => ({ c, auto: false })),
+  ].sort((a, b) => b.c.ts - a.c.ts);
+});
 
 function time(ts: number): string {
   return new Date(ts).toLocaleTimeString([], { hour12: false });
@@ -160,39 +188,55 @@ async function copy(s: string | undefined) {
         </div>
         <p class="text-xs text-muted-foreground">{{ t("models.debugHint") }}</p>
 
-        <div v-if="enabled && !captures.length && !loading" class="flex flex-col items-center gap-2 px-4 py-10 text-center">
+        <div v-if="rows.length" class="space-y-1">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-medium text-muted-foreground">
+              {{ t("models.debugFailsTitle", { n: failures.length }) }}
+            </span>
+            <Button
+              v-if="failures.length"
+              variant="ghost" size="icon" class="size-6 text-muted-foreground"
+              :disabled="loading" :title="t('models.debugClearFails')" :aria-label="t('models.debugClearFails')"
+              @click="clearFails"
+            >
+              <X class="h-3 w-3" />
+            </Button>
+          </div>
+          <div class="max-h-80 divide-y overflow-y-auto rounded-md border">
+            <button
+              v-for="(r, i) in rows"
+              :key="`${r.c.ts}-${i}`"
+              type="button"
+              class="flex w-full cursor-pointer flex-wrap items-center gap-x-2 gap-y-0.5 px-3 py-1.5 text-left transition-colors hover:bg-muted/50"
+              @click="detail = r.c"
+            >
+              <span class="w-12 shrink-0 font-mono text-xs text-muted-foreground">{{ time(r.c.ts) }}</span>
+              <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="providerColor(r.c.providerId).solid" />
+              <span class="min-w-0 max-w-40 truncate font-medium">{{ r.c.provider }}</span>
+              <span v-if="r.c.upstreamModel" class="min-w-0 max-w-40 truncate font-mono text-xs text-muted-foreground" :title="r.c.upstreamModel">› {{ r.c.upstreamModel }}</span>
+              <Badge v-if="r.c.status === 0" variant="secondary" class="shrink-0">{{ t("models.debugNetwork") }}</Badge>
+              <Badge v-else-if="r.c.status < 300" variant="success" class="shrink-0 font-mono">{{ r.c.status }}</Badge>
+              <Badge v-else variant="destructive" class="shrink-0 font-mono">{{ r.c.status }}</Badge>
+              <span
+                v-if="r.c.thinking"
+                class="inline-flex shrink-0 items-center gap-0.5 font-mono text-[10px] text-muted-foreground"
+                :title="t('models.editor.thinkingLabel')"
+              >
+                <Brain class="h-2.5 w-2.5" />{{ r.c.thinking.value }}
+              </span>
+              <Badge v-if="r.auto" variant="secondary" class="shrink-0 text-[10px]">{{ t("models.debugAutoTag") }}</Badge>
+              <span class="ml-auto shrink-0 font-mono text-xs text-muted-foreground">{{ r.c.ms }}ms · {{ size(r.c.request) }}/{{ size(r.c.response) }}</span>
+            </button>
+          </div>
+        </div>
+        <div v-else-if="enabled" class="flex flex-col items-center gap-2 px-4 py-10 text-center">
           <span class="flex size-9 items-center justify-center rounded-lg bg-muted text-muted-foreground">
             <Bug class="size-4" />
           </span>
           <p class="text-sm text-muted-foreground">{{ t("models.debugEmpty") }}</p>
         </div>
-        <div v-else-if="!enabled" class="rounded-md border border-dashed px-3 py-6 text-center text-sm text-muted-foreground">
+        <div v-else class="rounded-md border border-dashed px-3 py-6 text-center text-sm text-muted-foreground">
           {{ t("models.debugEmptyOff") }}
-        </div>
-        <div v-else class="max-h-80 divide-y overflow-y-auto rounded-md border">
-          <button
-            v-for="(c, i) in captures"
-            :key="`${c.ts}-${i}`"
-            type="button"
-            class="flex w-full cursor-pointer flex-wrap items-center gap-x-2 gap-y-0.5 px-3 py-1.5 text-left transition-colors hover:bg-muted/50"
-            @click="detail = c"
-          >
-            <span class="w-12 shrink-0 font-mono text-xs text-muted-foreground">{{ time(c.ts) }}</span>
-            <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="providerColor(c.providerId).solid" />
-            <span class="min-w-0 max-w-40 truncate font-medium">{{ c.provider }}</span>
-            <span v-if="c.upstreamModel" class="min-w-0 max-w-40 truncate font-mono text-xs text-muted-foreground" :title="c.upstreamModel">› {{ c.upstreamModel }}</span>
-            <Badge v-if="c.status === 0" variant="secondary" class="shrink-0">{{ t("models.debugNetwork") }}</Badge>
-            <Badge v-else-if="c.status < 300" variant="success" class="shrink-0 font-mono">{{ c.status }}</Badge>
-            <Badge v-else variant="destructive" class="shrink-0 font-mono">{{ c.status }}</Badge>
-            <span
-              v-if="c.thinking"
-              class="inline-flex shrink-0 items-center gap-0.5 font-mono text-[10px] text-muted-foreground"
-              :title="t('models.editor.thinkingLabel')"
-            >
-              <Brain class="h-2.5 w-2.5" />{{ c.thinking.value }}
-            </span>
-            <span class="ml-auto shrink-0 font-mono text-xs text-muted-foreground">{{ c.ms }}ms · {{ size(c.request) }}/{{ size(c.response) }}</span>
-          </button>
         </div>
       </template>
     </DialogContent>

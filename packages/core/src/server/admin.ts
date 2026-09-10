@@ -705,12 +705,15 @@ export function adminApi(store: Store, auth: MiddlewareHandler, openai: Hono, an
 // ON: dispatch records every upstream attempt for this model (exact forwarded
 // request + response bodies) into an in-memory ring buffer, last 50. OFF: the
 // buffer is cleared immediately — captured conversations shouldn't outlive the
-// debugging session. The switch itself is config state (persists in data.json);
-// the captured bodies do not (in-memory only, restart clears them too).
+// debugging session. Independently, FAILED attempts always land in a global
+// in-memory net (last 50 across all models) so an error can be inspected even
+// when the switch was never on; `failures` here is that net filtered to this
+// model. The switch is config state (persists in data.json); the captured
+// bodies do not (in-memory only, restart clears them too).
 app.get("/models/:name/debug", (c) => {
   const name = c.req.param("name");
   if (!store.get().models[name]) return c.json({ error: { message: "model not found" } }, 404);
-  return c.json({ enabled: store.isDebug(name), captures: store.getCaptures(name) });
+  return c.json({ enabled: store.isDebug(name), captures: store.getCaptures(name), failures: store.getFailCaptures(name) });
 });
 
 app.put("/models/:name/debug", async (c) => {
@@ -730,6 +733,16 @@ app.put("/models/:name/debug", async (c) => {
   if (errStatus === 404) return c.json({ error: { message: "model not found" } }, 404);
   if (!enabled) store.clearCaptures(name);
   return c.json({ ok: true, enabled });
+});
+
+// Manual scrub of this model's rows in the always-on failure net (the switch
+// only governs the per-model buffer; failures age out of the global ring on
+// their own — this drops them now).
+app.delete("/models/:name/debug/fails", (c) => {
+  const name = c.req.param("name");
+  if (!store.get().models[name]) return c.json({ error: { message: "model not found" } }, 404);
+  store.clearFailCaptures(name);
+  return c.json({ ok: true });
 });
 
   // Set (or clear) the upstream-model mapping for ONE chain slot (addressed by

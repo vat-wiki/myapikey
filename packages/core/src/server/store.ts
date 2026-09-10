@@ -45,12 +45,18 @@ const RPM_WINDOW_MS = 60_000;
  *  time and the queue depth (at N rpm / 60s wait, at most ~N requests queue). */
 const PACE_MAX_WAIT_MS = 60_000;
 
-/** Debug capture (per-model, in-memory ring buffer): how many upstream attempts
- *  to keep, and how many CHARS of each request/response body. 50 × 2 × 256KB ≈
- *  25MB worst case per debugged model — acceptable for a home-server debug aid.
- *  Bodies (conversations) are sensitive: the buffer lives only in memory, is
- *  dropped when the model's debug switch turns off, and never hits disk. */
+/** Debug capture (in-memory ring buffers, never persisted). Two tiers:
+ *  - FAIL_NET (global): the last CAPTURE_FAIL_MAX FAILED upstream attempts
+ *    across ALL models, recorded ALWAYS (that's the safety net — errors are
+ *    debugged after the fact, when nobody pre-armed a switch). 50 × 2 × 256KB
+ *    ≈ 25MB worst case, typical far less (failed responses are tiny).
+ *  - per-model switch buffer: last CAPTURE_MAX attempts of a model whose
+ *    ModelEntry.debugCapture is on — success AND failure.
+ *  Bodies (conversations) are sensitive: everything lives only in memory,
+ *  never touches disk, ages out of the rings, and the switch-off / clear
+ *  endpoints drop it on demand. */
 export const CAPTURE_MAX = 50;
+export const CAPTURE_FAIL_MAX = 50;
 export const CAPTURE_BODY_MAX = 256 * 1024;
 
 /** Per-provider circuit state (in-memory, never persisted). */
@@ -200,10 +206,14 @@ export class Store {
    *  release slot. In-memory, NOT persisted (resets on restart). */
   private pace = new Map<string, number>();
   /** Per-model debug-capture ring buffers: model name -> last CAPTURE_MAX
-   *  upstream attempts (oldest first). In-memory, NOT persisted — bodies are
-   *  conversation content, so they live only while the model's debug switch
-   *  is on and evaporate on restart or toggle-off. */
+   *  upstream attempts (oldest first) while the model's switch is on.
+   *  In-memory, NOT persisted — bodies are conversation content, so they live
+   *  only while the switch is on and evaporate on restart or toggle-off. */
   private captures = new Map<string, DebugCapture[]>();
+  /** The always-on failure net: last CAPTURE_FAIL_MAX FAILED upstream attempts
+   *  across all models (oldest first), regardless of any switch. In-memory,
+   *  NOT persisted; entries age out as new failures push them off. */
+  private failCaptures: DebugCapture[] = [];
 
   constructor(dataDir: string, opts: { logger?: Logger } = {}) {
     this.dataDir = dataDir;
@@ -669,12 +679,27 @@ export class Store {
     return !!this.data.models[model]?.debugCapture;
   }
 
-  /** Record one upstream attempt for a debugged model. Ignores silently when
-   *  the switch is off (defense against a stale caller); bodies are capped at
-   *  CAPTURE_BODY_MAX chars each (flagging `truncated`), and the buffer keeps
-   *  only the most recent CAPTURE_MAX attempts per model. */
+  /** Record one upstream attempt. Routing: FAILED attempts (4xx/5xx/network)
+   *  always land in the global failure net (the safety net for after-the-fact
+   *  debugging); EVERYTHING lands in the model's own buffer while its switch
+   *  is on. When the switch is off, successes are dropped. Bodies are capped
+   *  at CAPTURE_BODY_MAX chars each (flagging `truncated`). */
   pushCapture(model: string, entry: DebugCapture): void {
+    const e = this.capped({ ...entry, model }); // row's model = the routing key
+    const failed = e.status >= 400 || e.status === 0;
+    if (failed) {
+      this.failCaptures.push(e);
+      if (this.failCaptures.length > CAPTURE_FAIL_MAX) this.failCaptures.splice(0, this.failCaptures.length - CAPTURE_FAIL_MAX);
+    }
     if (!this.isDebug(model)) return;
+    let arr = this.captures.get(model);
+    if (!arr) this.captures.set(model, (arr = []));
+    arr.push(e);
+    if (arr.length > CAPTURE_MAX) arr.splice(0, arr.length - CAPTURE_MAX);
+  }
+
+  /** Copy of an entry with both bodies clamped to CAPTURE_BODY_MAX. */
+  private capped(entry: DebugCapture): DebugCapture {
     const e = { ...entry };
     if (e.request.length > CAPTURE_BODY_MAX) {
       e.request = e.request.slice(0, CAPTURE_BODY_MAX);
@@ -684,21 +709,29 @@ export class Store {
       e.response = e.response.slice(0, CAPTURE_BODY_MAX);
       e.truncated = true;
     }
-    let arr = this.captures.get(model);
-    if (!arr) this.captures.set(model, (arr = []));
-    arr.push(e);
-    if (arr.length > CAPTURE_MAX) arr.splice(0, arr.length - CAPTURE_MAX);
+    return e;
   }
 
-  /** The model's captured attempts, newest first. */
+  /** The model's switch-captured attempts, newest first. */
   getCaptures(model: string): DebugCapture[] {
     const arr = this.captures.get(model);
     return arr ? [...arr].reverse() : [];
   }
 
-  /** Drop a model's capture buffer (toggle-off, model delete/rename). */
+  /** The model's always-recorded failed attempts (from the global net),
+   *  newest first. */
+  getFailCaptures(model: string): DebugCapture[] {
+    return this.failCaptures.filter((c) => c.model === model).reverse();
+  }
+
+  /** Drop a model's switch-capture buffer (toggle-off, model delete/rename). */
   clearCaptures(model: string): void {
     this.captures.delete(model);
+  }
+
+  /** Scrub a model's entries from the global failure net (manual clear). */
+  clearFailCaptures(model: string): void {
+    this.failCaptures = this.failCaptures.filter((c) => c.model !== model);
   }
 
   /** Snapshot of every configured provider's circuit state for GET /admin/circuit.

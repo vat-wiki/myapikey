@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { tmpStore } from "../helpers/store";
 import { seedStore, makeModel } from "../helpers/fixtures";
-import { CAPTURE_MAX, CAPTURE_BODY_MAX, type Store } from "../../src/server/store";
+import { CAPTURE_MAX, CAPTURE_FAIL_MAX, CAPTURE_BODY_MAX, type Store } from "../../src/server/store";
 import type { DebugCapture } from "../../src/shared/types";
 
 describe("store/debug captures", () => {
@@ -57,9 +57,54 @@ describe("store/debug captures", () => {
     expect(store.getCaptures("m")).toHaveLength(2);
   });
 
-  it("pushCapture is a silent no-op when the switch is off", () => {
+  it("pushCapture drops successful calls when the switch is off", () => {
     store.pushCapture("off", cap());
     expect(store.getCaptures("off")).toEqual([]);
+    expect(store.getFailCaptures("off")).toEqual([]);
+  });
+
+  it("records failed attempts in the global net EVEN when the switch is off", () => {
+    store.pushCapture("off", cap({ status: 500, request: '{"q":1}', response: '{"error":"x"}' }));
+    expect(store.getCaptures("off")).toEqual([]); // switch buffer untouched
+    const fails = store.getFailCaptures("off");
+    expect(fails).toHaveLength(1);
+    expect(fails[0]).toMatchObject({ status: 500, request: '{"q":1}', response: '{"error":"x"}' });
+  });
+
+  it("routes a network error (status 0) to the net as a failure", () => {
+    store.pushCapture("off", cap({ status: 0, error: "network error" }));
+    expect(store.getFailCaptures("off")).toHaveLength(1);
+  });
+
+  it("with the switch on, a failure lands in BOTH buffers; a success only in the model's", () => {
+    store.pushCapture("m", cap({ status: 500 }));
+    store.pushCapture("m", cap({ status: 200 }));
+    expect(store.getCaptures("m").map((c) => c.status)).toEqual([200, 500]);
+    expect(store.getFailCaptures("m").map((c) => c.status)).toEqual([500]);
+  });
+
+  it("the net is a GLOBAL ring capped at CAPTURE_FAIL_MAX across models", () => {
+    for (let i = 0; i < CAPTURE_FAIL_MAX + 2; i++) {
+      store.pushCapture(i % 2 ? "m" : "off", cap({ ts: i, status: 500 }));
+    }
+    expect(store.getFailCaptures("m").length + store.getFailCaptures("off").length).toBe(CAPTURE_FAIL_MAX);
+    // Oldest dropped (ts 0/1 gone), newest first per model.
+    expect(store.getFailCaptures("m")[0].ts).toBe(CAPTURE_FAIL_MAX + 1);
+  });
+
+  it("clearFailCaptures scrubs only that model's net entries", () => {
+    store.pushCapture("m", cap({ status: 500 }));
+    store.pushCapture("off", cap({ status: 502 }));
+    store.clearFailCaptures("m");
+    expect(store.getFailCaptures("m")).toEqual([]);
+    expect(store.getFailCaptures("off")).toHaveLength(1);
+  });
+
+  it("clearCaptures (toggle-off) leaves the failure net intact", () => {
+    store.pushCapture("m", cap({ status: 500 }));
+    store.clearCaptures("m");
+    expect(store.getCaptures("m")).toEqual([]);
+    expect(store.getFailCaptures("m")).toHaveLength(1);
   });
 
   it("clearCaptures drops the buffer", () => {

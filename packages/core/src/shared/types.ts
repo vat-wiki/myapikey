@@ -104,7 +104,9 @@ export interface ModelEntry {
    *  records every UPSTREAM ATTEMPT for this model — the exact forwarded request
    *  body and the response body — into an in-memory ring buffer (last 50, see
    *  Store.pushCapture). Turning it off clears the buffer; restarts clear it too.
-   *  Nothing here ever touches logs.jsonl. */
+   *  Independently of this switch, FAILED attempts always land in a global
+   *  in-memory net (last 50 across all models) so an error can be inspected
+   *  after the fact. Nothing here ever touches logs.jsonl. */
   debugCapture?: boolean;
 }
 

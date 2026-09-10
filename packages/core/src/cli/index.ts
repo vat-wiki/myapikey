@@ -285,7 +285,7 @@ model.command("remove <name>").description("remove a model entirely (both format
 
 model
   .command("debug <name> [action] [index]")
-  .description("debug capture: on|off toggles recording of the last 50 actual upstream requests/responses; show lists them (add an index to dump one in full)")
+  .description("debug capture: on|off toggles recording of the last 50 actual requests/responses (failed attempts are ALWAYS recorded in a global net, last 50); show lists everything (add an index to dump one in full)")
   .action(async (name: string, action = "show", indexRaw?: string) => {
     const path = `/admin/models/${encodeURIComponent(name)}/debug`;
     if (action === "on" || action === "off") {
@@ -293,32 +293,39 @@ model
       console.log(
         r.enabled
           ? `Debug capture ON for ${name} — the last 50 upstream attempts (request + response) are recorded in memory; turn off to clear.`
-          : `Debug capture OFF for ${name}; captured content cleared.`,
+          : `Debug capture OFF for ${name}; captured content cleared (auto-recorded failures stay until they age out of the net).`,
       );
       return;
     }
     if (action !== "show") throw new Error(`Unknown action '${action}' (use on | off | show).`);
-    const r = (await api(ctx(), "GET", path)) as { enabled: boolean; captures: any[] };
-    if (!r.enabled) console.log(`Debug capture is OFF for ${name}.`);
-    const cs = r.captures ?? [];
+    const r = (await api(ctx(), "GET", path)) as { enabled: boolean; captures: any[]; failures: any[] };
+    if (!r.enabled) console.log(`Debug capture is OFF for ${name} (failed calls are still auto-recorded).`);
+    const isFail = (c: any) => c.status >= 400 || c.status === 0;
+    // One newest-first timeline; a failure made while the switch was on sits
+    // in both server buffers — show it once, from the net, tagged AUTO.
+    const rows = [
+      ...(r.failures ?? []).map((c) => ({ c, auto: true })),
+      ...(r.captures ?? []).filter((c) => !isFail(c)).map((c) => ({ c, auto: false })),
+    ].sort((a, b) => b.c.ts - a.c.ts);
     if (indexRaw !== undefined) {
-      const row = cs[Number(indexRaw) - 1];
-      if (!row) throw new Error(`No capture #${indexRaw} (list is newest-first, ${cs.length} captured).`);
-      console.log(`#${Number(indexRaw)}  ${new Date(row.ts).toLocaleTimeString("en-GB", { hour12: false })}  ${row.provider} [${row.format}]  status=${row.status}  ${row.ms}ms${row.upstreamModel ? `  model=${row.upstreamModel}` : ""}${row.error ? `  error=${row.error}` : ""}${row.truncated ? "  (truncated)" : ""}`);
+      const row = rows[Number(indexRaw) - 1];
+      if (!row) throw new Error(`No capture #${indexRaw} (list is newest-first, ${rows.length} recorded).`);
+      const c = row.c;
+      console.log(`#${Number(indexRaw)}${row.auto ? " (auto)" : ""}  ${new Date(c.ts).toLocaleTimeString("en-GB", { hour12: false })}  ${c.provider} [${c.format}]  status=${c.status}  ${c.ms}ms${c.upstreamModel ? `  model=${c.upstreamModel}` : ""}${c.error ? `  error=${c.error}` : ""}${c.truncated ? "  (truncated)" : ""}`);
       console.log("\n--- request (forwarded verbatim) ---");
-      console.log(prettyJson(row.request));
-      if (row.response !== undefined) {
+      console.log(prettyJson(c.request));
+      if (c.response !== undefined) {
         console.log("\n--- response (upstream) ---");
-        console.log(prettyJson(row.response));
+        console.log(prettyJson(c.response));
       }
       return;
     }
-    if (!cs.length) return console.log("No captures yet — call the model, then `show` again (or pass an index to dump one).");
-    console.log(`${name}: ${cs.length} captured (newest first)`);
-    for (let i = 0; i < cs.length; i++) {
-      const c = cs[i];
+    if (!rows.length) return console.log("Nothing recorded yet — call the model, then `show` again (or pass an index to dump one).");
+    console.log(`${name}: ${rows.length} recorded (newest first; AUTO = failed attempt, always recorded)`);
+    for (let i = 0; i < rows.length; i++) {
+      const { c, auto } = rows[i];
       console.log(
-        `  #${i + 1}  ${new Date(c.ts).toLocaleTimeString("en-GB", { hour12: false })}  ${c.provider} [${c.format}]  status=${c.status}  ${c.ms}ms  ${fmtBytes(c.request)} req / ${fmtBytes(c.response ?? "")} resp${c.upstreamModel ? `  model=${c.upstreamModel}` : ""}${c.error ? `  ${c.error}` : ""}`,
+        `  #${i + 1}${auto ? " AUTO" : "     "}  ${new Date(c.ts).toLocaleTimeString("en-GB", { hour12: false })}  ${c.provider} [${c.format}]  status=${c.status}  ${c.ms}ms  ${fmtBytes(c.request)} req / ${fmtBytes(c.response ?? "")} resp${c.upstreamModel ? `  model=${c.upstreamModel}` : ""}${c.error ? `  ${c.error}` : ""}`,
       );
     }
     console.log("\nDump one: myapikey model debug <name> show <index>");

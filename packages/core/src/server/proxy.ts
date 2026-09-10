@@ -613,17 +613,19 @@ export function proxyApi(
         // Count this attempt toward the source's RPM window — but not for a pinned
         // probe, which (like circuit state) takes no routing side-effects.
         if (pinIndex == null) store.recordDispatch(provider.id);
-        // Debug capture (ModelEntry.debugCapture): when the model's switch is
-        // on, record EVERY upstream attempt — the exact forwarded body (this
-        // slot's model rewrite + thinking injection are already applied) and
-        // the response as it flowed. UI probes are excluded (not real
-        // conversations). One entry per attempt: a failover chain writes
-        // several, each showing what THAT source actually received.
-        const debugNow = !isProbe && store.isDebug(model);
+        // Debug capture: EVERY upstream attempt is offered to the store —
+        // failed attempts always land in the global failure net (the safety
+        // net for after-the-fact debugging), everything lands in the model's
+        // own buffer while its switch is on. The row carries the exact
+        // forwarded body (this slot's model rewrite + thinking injection are
+        // already applied) and the response as it flowed. UI probes are
+        // excluded (not real conversations). One entry per attempt: a
+        // failover chain writes several, each showing what THAT source
+        // actually received.
         const attemptStart = Date.now();
         const reqText = JSON.stringify(body);
         const capture = (status: number, response: string | undefined, truncated: boolean, error?: string) => {
-          if (!debugNow) return;
+          if (isProbe) return;
           const row: DebugCapture = {
             ts: Date.now(),
             model,
@@ -679,36 +681,32 @@ export function proxyApi(
           const ttfb = Date.now() - start;
           // Debug capture tee: accumulate the decoded chunks into a bounded
           // string (the proxy keeps forwarding bytes verbatim regardless).
-          const capAcc = debugNow ? { text: "", truncated: false } : undefined;
+          const capAcc = { text: "", truncated: false };
           const out = observedBody(upstream, {
             stream,
             key,
             requestMessages: body.messages,
-            ...(capAcc
-              ? {
-                  onText: (txt: string) => {
-                    const room = CAPTURE_BODY_MAX - capAcc.text.length;
-                    if (room <= 0) {
-                      capAcc.truncated = true;
-                      return;
-                    }
-                    if (txt.length > room) capAcc.truncated = true;
-                    capAcc.text += txt.slice(0, room);
-                  },
-                }
-              : {}),
+            onText: (txt: string) => {
+              const room = CAPTURE_BODY_MAX - capAcc.text.length;
+              if (room <= 0) {
+                capAcc.truncated = true;
+                return;
+              }
+              if (txt.length > room) capAcc.truncated = true;
+              capAcc.text += txt.slice(0, room);
+            },
             onSettle: (info) => {
               if (info.ok) {
                 store.recordCircuitSuccess(provider.id);
                 store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: 200, ms: ttfb, stream, thinking: think, usage: info.usage });
-                capture(200, capAcc?.text, capAcc?.truncated ?? false);
+                capture(200, capAcc.text, capAcc.truncated);
               } else {
                 // A pinned per-source probe takes no circuit side-effects (a manual
                 // test must not trip the breaker) — mirrors the retryable branch.
                 if (pinIndex == null) store.recordCircuitFailure(provider.id, info.status, info.error || "stream failed");
                 if (!isProbe) rt.warn(`proxy stream failed: provider '${provider.name}' status=${info.status} (${info.error || "stream failed"})`);
                 store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: info.status, ms: ttfb, stream, thinking: think, error: info.error });
-                capture(info.status, capAcc?.text, capAcc?.truncated ?? false, info.error);
+                capture(info.status, capAcc.text, capAcc.truncated, info.error);
               }
             },
           });

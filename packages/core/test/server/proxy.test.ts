@@ -1195,7 +1195,7 @@ describe("proxy", () => {
       expect(c.response).toHaveLength(CAPTURE_BODY_MAX);
     });
 
-    it("captures nothing when the model's switch is off", async () => {
+    it("captures nothing when the model's switch is off (successful calls)", async () => {
       mock = mockFetch([
         { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "hi" } }] } } },
       ]);
@@ -1203,6 +1203,7 @@ describe("proxy", () => {
       expect(res.status).toBe(200);
       await json<ChatBody>(res);
       expect(store.getCaptures("m")).toEqual([]);
+      expect(store.getFailCaptures("m")).toEqual([]);
     });
 
     it("captures nothing for UI probes (not real conversations)", async () => {
@@ -1214,6 +1215,41 @@ describe("proxy", () => {
       expect(res.status).toBe(200);
       await json<ChatBody>(res);
       expect(store.getCaptures("m")).toEqual([]);
+    });
+
+    it("captures a FAILED attempt even when the switch was never on (the safety net)", async () => {
+      // The whole point of the net: the error happens first, the user opens the
+      // dialog after — and the bodies are still there.
+      mock = mockFetch([
+        { match: "/a/v1/chat/completions", response: { status: 500, body: { error: { message: "boom" } } } },
+        { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "ok" } }] } } },
+      ]);
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [{ role: "user", content: "later" }] });
+      expect(res.status).toBe(200);
+      await json<ChatBody>(res);
+      expect(store.getCaptures("m")).toEqual([]); // switch off → no switch buffer
+      const fails = store.getFailCaptures("m");
+      expect(fails).toHaveLength(1);
+      expect(fails[0]).toMatchObject({ provider: "A", status: 500, error: "boom" });
+      expect(JSON.parse(fails[0].request)).toMatchObject({ model: "m", messages: [{ role: "user", content: "later" }] });
+      expect(JSON.parse(fails[0].response!)).toEqual({ error: { message: "boom" } });
+      // The succeeding attempt on B was a success → net untouched by it.
+      expect(fails[0].providerId).toBe("prv_A");
+    });
+
+    it("a failure made with the switch on lands in the net only once per attempt", async () => {
+      await seedStore(store, { models: { m: makeModel({ openai: fe(["prv_A"]), debugCapture: true }) } });
+      mock = mockFetch([
+        { match: "/a/v1/chat/completions", response: { status: 429, body: { error: { message: "slow down" } } } },
+      ]);
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      // 429 is retryable and A is the only slot → the client gets the usual
+      // collapsed 502; the capture row records the real upstream status.
+      expect(res.status).toBe(502);
+      await res.text();
+      expect(store.getFailCaptures("m")).toHaveLength(1);
+      expect(store.getFailCaptures("m")[0]).toMatchObject({ provider: "A", status: 429, error: "slow down" });
+      expect(store.getCaptures("m")).toHaveLength(1);
     });
   });
 

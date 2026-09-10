@@ -1218,6 +1218,32 @@ describe("server/admin", () => {
         expect(get.captures).toHaveLength(1);
         expect(get.captures[0]).toMatchObject({ request: '{"model":"m"}', response: "{}" });
       });
+
+      it("GET carries the model's slice of the always-on failure net", async () => {
+        await seedStore(store, { models: { m: makeModel(), other: makeModel() } });
+        const app = createApp(store);
+        store.pushCapture("m", { ts: 1000, model: "m", provider: "A", providerId: "prv_1", format: "openai", status: 500, ms: 5, stream: false, request: "{}", response: "{}" });
+        store.pushCapture("other", { ts: 1001, model: "other", provider: "A", providerId: "prv_1", format: "openai", status: 0, ms: 5, stream: false, request: "{}" });
+        const get = await json<{ enabled: boolean; captures: unknown[]; failures: Array<{ model: string; status: number }> }>(
+          await app.request("/admin/models/m/debug", { headers: H_GET }),
+        );
+        expect(get.enabled).toBe(false); // net is independent of the switch
+        expect(get.captures).toEqual([]);
+        expect(get.failures.map((f) => f.model)).toEqual(["m"]);
+        expect(get.failures[0].status).toBe(500);
+      });
+
+      it("DELETE /admin/models/:name/debug/fails scrubs only that model's net rows (404 unknown)", async () => {
+        await seedStore(store, { models: { m: makeModel(), other: makeModel() } });
+        const app = createApp(store);
+        store.pushCapture("m", { ts: 1000, model: "m", provider: "A", providerId: "prv_1", format: "openai", status: 500, ms: 5, stream: false, request: "{}" });
+        store.pushCapture("other", { ts: 1001, model: "other", provider: "A", providerId: "prv_1", format: "openai", status: 500, ms: 5, stream: false, request: "{}" });
+        expect((await app.request("/admin/models/nope/debug/fails", { method: "DELETE", headers: H_GET })).status).toBe(404);
+        const del = await app.request("/admin/models/m/debug/fails", { method: "DELETE", headers: H_GET });
+        expect(del.status).toBe(200);
+        expect(store.getFailCaptures("m")).toEqual([]);
+        expect(store.getFailCaptures("other")).toHaveLength(1);
+      });
     });
   });
 
