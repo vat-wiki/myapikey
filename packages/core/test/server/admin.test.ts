@@ -15,6 +15,7 @@ type FlatModel = {
   anthropic?: { enabled: boolean; providers: Array<{ id: string; name?: string; model?: string; thinking?: string }> };
   responses?: { enabled: boolean; providers: Array<{ id: string; name?: string; model?: string; thinking?: string }> };
   paceRpm?: number;
+  debugCapture?: boolean;
   lastRoute?: Array<{ format: string; providerId: string; model: string; ts: number }>;
   lastFail?: Array<{ format: string; providerId: string; model: string; status: number; error?: string; ts: number }>;
 };
@@ -1146,6 +1147,76 @@ describe("server/admin", () => {
           method: "PUT", headers: H, body: JSON.stringify({}),
         });
         expect(slash.status).toBe(400);
+      });
+    });
+
+    describe("debug capture (GET/PUT /admin/models/:name/debug)", () => {
+      it("404s for an unknown model (GET and PUT)", async () => {
+        const app = createApp(store);
+        expect((await app.request("/admin/models/nope/debug", { headers: H_GET })).status).toBe(404);
+        expect((
+          await app.request("/admin/models/nope/debug", { method: "PUT", headers: H, body: JSON.stringify({ enabled: true }) })
+        ).status).toBe(404);
+      });
+
+      it("PUT {enabled:true} flips the flag; GET reports enabled with an empty buffer", async () => {
+        await seedStore(store, { models: { m: makeModel() } });
+        const app = createApp(store);
+        const put = await app.request("/admin/models/m/debug", {
+          method: "PUT", headers: H, body: JSON.stringify({ enabled: true }),
+        });
+        expect(put.status).toBe(200);
+        expect(await put.json()).toEqual({ ok: true, enabled: true });
+        expect(store.isDebug("m")).toBe(true);
+        const get = await json<{ enabled: boolean; captures: unknown[] }>(
+          await app.request("/admin/models/m/debug", { headers: H_GET }),
+        );
+        expect(get.enabled).toBe(true);
+        expect(get.captures).toEqual([]);
+      });
+
+      it("PUT {enabled:false} clears the switch AND the captured buffer", async () => {
+        await seedStore(store, { models: { m: makeModel({ debugCapture: true }) } });
+        store.pushCapture("m", {
+          ts: 1000, model: "m", provider: "p", providerId: "prv_1", format: "openai",
+          status: 200, ms: 5, stream: false, request: "{}",
+        });
+        expect(store.getCaptures("m")).toHaveLength(1);
+        const app = createApp(store);
+        const put = await app.request("/admin/models/m/debug", {
+          method: "PUT", headers: H, body: JSON.stringify({ enabled: false }),
+        });
+        expect(put.status).toBe(200);
+        expect(store.get().models["m"].debugCapture).toBeUndefined();
+        expect(store.getCaptures("m")).toEqual([]);
+        const get = await json<{ enabled: boolean }>(
+          await app.request("/admin/models/m/debug", { headers: H_GET }),
+        );
+        expect(get.enabled).toBe(false);
+      });
+
+      it("the model projection carries debugCapture for the UI", async () => {
+        await seedStore(store, { models: { m: makeModel({ debugCapture: true }) } });
+        const app = createApp(store);
+        expect(find(await modelsOf(app), "m")!.debugCapture).toBe(true);
+        await app.request("/admin/models/m/debug", {
+          method: "PUT", headers: H, body: JSON.stringify({ enabled: false }),
+        });
+        expect(find(await modelsOf(app), "m")!.debugCapture).toBe(false);
+      });
+
+      it("a fresh capture shows up in GET /admin/models/:name/debug", async () => {
+        await seedStore(store, { models: { m: makeModel({ debugCapture: true }) } });
+        const app = createApp(store);
+        store.pushCapture("m", {
+          ts: 1000, model: "m", provider: "A", providerId: "prv_1", format: "openai",
+          status: 200, ms: 5, stream: false, request: '{"model":"m"}', response: "{}",
+        });
+        const get = await json<{ captures: Array<{ request: string; response: string }> }>(
+          await app.request("/admin/models/m/debug", { headers: H_GET }),
+        );
+        expect(get.captures).toHaveLength(1);
+        expect(get.captures[0]).toMatchObject({ request: '{"model":"m"}', response: "{}" });
       });
     });
   });

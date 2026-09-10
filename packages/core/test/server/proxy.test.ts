@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createApp } from "../../src/server/app";
 import { shortError, anthropicAuthHeaders } from "../../src/server/proxy";
-import type { Store } from "../../src/server/store";
+import { CAPTURE_BODY_MAX, type Store } from "../../src/server/store";
 import { tmpStore } from "../helpers/store";
 import { mockFetch, sseBody, chunkedBody, sequence, type FetchMock } from "../helpers/mock";
 import { json } from "../helpers/json";
@@ -1095,6 +1095,125 @@ describe("proxy", () => {
       mock = mockFetch([{ match: "/a/v1/messages", response: { status: 200, bodyStream: sse, headers: sseH } }]);
       await (await post("/anthropic/v1/messages", { model: "m", messages: [], stream: true })).text();
       expect(find()?.usage).toBeUndefined();
+    });
+  });
+
+  describe("dispatch debug capture", () => {
+    it("captures the exact forwarded body + the upstream response on success", async () => {
+      await seedStore(store, { models: { m: makeModel({ openai: fe(["prv_A"]), debugCapture: true }) } });
+      mock = mockFetch([
+        { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "hi" } }] } } },
+      ]);
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [{ role: "user", content: "hi" }], max_tokens: 5 });
+      expect(res.status).toBe(200);
+      await json<ChatBody>(res); // consume → the body's settle callback runs → the capture lands
+      const caps = store.getCaptures("m");
+      expect(caps).toHaveLength(1);
+      const c = caps[0];
+      expect(c.provider).toBe("A");
+      expect(c.providerId).toBe("prv_A");
+      expect(c.status).toBe(200);
+      expect(c.format).toBe("openai");
+      expect(c.stream).toBe(false);
+      expect(c.ms).toBeGreaterThanOrEqual(0);
+      expect(JSON.parse(c.request)).toMatchObject({ model: "m", max_tokens: 5 });
+      expect(JSON.parse(c.response!)).toEqual({ choices: [{ message: { content: "hi" } }] });
+      expect(c.truncated).toBeUndefined();
+      expect(c.error).toBeUndefined();
+    });
+
+    it("records one entry per failover attempt, each with its own upstream body", async () => {
+      await seedStore(store, {
+        models: { m: makeModel({ openai: fe([{ id: "prv_A", model: "up-a", thinking: "high" }, "prv_B"]), debugCapture: true }) },
+      });
+      mock = mockFetch([
+        { match: "/a/v1/chat/completions", response: { status: 500, body: { error: { message: "down" } } } },
+        { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "ok" } }] } } },
+      ]);
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      expect(res.status).toBe(200);
+      await json<ChatBody>(res);
+      const caps = store.getCaptures("m"); // newest first
+      expect(caps).toHaveLength(2);
+      // Newest = the successful B attempt (public name, no thinking override).
+      expect(caps[0]).toMatchObject({ provider: "B", status: 200 });
+      expect(JSON.parse(caps[0].request).model).toBe("m");
+      expect(caps[0].upstreamModel).toBeUndefined();
+      // Oldest = the failed A attempt: rewritten model + injected thinking + the error body.
+      expect(caps[1]).toMatchObject({ provider: "A", status: 500, upstreamModel: "up-a", thinking: { value: "high", from: "default" }, error: "down" });
+      const reqA = JSON.parse(caps[1].request);
+      expect(reqA.model).toBe("up-a");
+      expect(reqA.reasoning_effort).toBe("high");
+      expect(JSON.parse(caps[1].response!)).toEqual({ error: { message: "down" } });
+    });
+
+    it("captures a streaming response as the SSE text it actually flowed", async () => {
+      await seedStore(store, { models: { m: makeModel({ openai: fe(["prv_A"]), debugCapture: true }) } });
+      mock = mockFetch([
+        {
+          match: "/a/v1/chat/completions",
+          response: {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+            bodyStream: sseBody(["data: {\"choices\":[{\"delta\":{\"content\":\"hel\"}}]}", "", "data: {\"choices\":[{\"delta\":{\"content\":\"lo\"}}]}", "", "data: [DONE]", ""]),
+          },
+        },
+      ]);
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [], stream: true });
+      expect(res.status).toBe(200);
+      await res.text();
+      const c = store.getCaptures("m")[0];
+      expect(c.stream).toBe(true);
+      expect(c.status).toBe(200);
+      expect(c.response).toContain("\"content\":\"hel\"");
+      expect(c.response).toContain("[DONE]");
+    });
+
+    it("records a network error as status 0 with no response body", async () => {
+      await seedStore(store, { models: { m: makeModel({ openai: fe(["prv_A"]), debugCapture: true }) } });
+      mock = mockFetch([
+        { match: "/a/v1/chat/completions", response: () => { throw new Error("dns broke"); } },
+      ]);
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      // No other slot in the chain → the client sees the usual 502, while the
+      // capture still records what this attempt actually did (status 0).
+      expect(res.status).toBe(502);
+      const c = store.getCaptures("m")[0];
+      expect(c).toMatchObject({ provider: "A", status: 0, error: "network error" });
+      expect(c.response).toBeUndefined();
+    });
+
+    it("flags truncation when a response exceeds the capture cap", async () => {
+      await seedStore(store, { models: { m: makeModel({ openai: fe(["prv_A"]), debugCapture: true }) } });
+      mock = mockFetch([
+        { match: "/a/v1/chat/completions", response: { status: 200, body: "x".repeat(CAPTURE_BODY_MAX + 1000) } },
+      ]);
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      await res.text();
+      const c = store.getCaptures("m")[0];
+      expect(c.truncated).toBe(true);
+      expect(c.response).toHaveLength(CAPTURE_BODY_MAX);
+    });
+
+    it("captures nothing when the model's switch is off", async () => {
+      mock = mockFetch([
+        { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "hi" } }] } } },
+      ]);
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      expect(res.status).toBe(200);
+      await json<ChatBody>(res);
+      expect(store.getCaptures("m")).toEqual([]);
+    });
+
+    it("captures nothing for UI probes (not real conversations)", async () => {
+      await seedStore(store, { models: { m: makeModel({ openai: fe(["prv_A"]), debugCapture: true }) } });
+      mock = mockFetch([
+        { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "hi" } }] } } },
+      ]);
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] }, { "x-myapikey-probe": "1" });
+      expect(res.status).toBe(200);
+      await json<ChatBody>(res);
+      expect(store.getCaptures("m")).toEqual([]);
     });
   });
 

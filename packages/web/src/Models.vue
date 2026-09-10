@@ -18,9 +18,10 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
 import {
   Search, Plus, Loader2, Copy, Zap, Gauge, MoreHorizontal, Pencil, Trash2,
-  Cpu, ServerCog, TriangleAlert, Brain, LayoutGrid, Table2, ChevronDown,
+  Cpu, ServerCog, TriangleAlert, Brain, LayoutGrid, Table2, ChevronDown, Bug,
 } from "lucide-vue-next";
 import ModelEditor from "@/ModelEditor.vue";
+import ModelDebugDialog from "@/ModelDebugDialog.vue";
 import ChainDetails, { type ChainLine } from "@/ChainDetails.vue";
 import ConfirmDialog from "@/ConfirmDialog.vue";
 
@@ -73,6 +74,16 @@ const renameOpen = ref(false);
 const renameTarget = ref<ModelView | null>(null);
 const renameValue = ref("");
 const renaming = ref(false);
+
+// --- debug capture dialog ---
+
+const debugOpen = ref(false);
+const debugTarget = ref<ModelView | null>(null);
+
+function openDebug(m: ModelView) {
+  debugTarget.value = m;
+  debugOpen.value = true;
+}
 
 function askRename(m: ModelView) {
   renameTarget.value = m;
@@ -438,6 +449,9 @@ async function copyName(name: string) {
             <Badge v-if="m.paceRpm" variant="outline" class="shrink-0 gap-1" :title="t('models.paceBadgeHint', { n: m.paceRpm, s: Math.max(1, Math.round(60 / m.paceRpm)) })">
               <Gauge class="h-3 w-3" />{{ t("models.paceBadge", { n: m.paceRpm }) }}
             </Badge>
+            <Badge v-if="m.debugCapture" variant="outline" class="shrink-0 cursor-pointer gap-1" :title="t('models.debugBadgeHint')" @click.stop="openDebug(m)">
+              <Bug class="h-3 w-3" />{{ t("models.debugOnBadge") }}
+            </Badge>
             <Badge v-if="rowProbe(m)?.state === 'testing'" variant="muted" class="shrink-0 gap-1"><Loader2 class="h-3 w-3 animate-spin" />{{ t("models.probeTesting") }}</Badge>
             <Badge v-else-if="rowProbe(m)?.state === 'ok'" variant="success" class="shrink-0" :title="t('models.probeOkHint', { name: rowProbe(m)?.provider ?? '' })">{{ t("models.probeOk") }}</Badge>
             <Badge v-else-if="rowProbe(m)?.state === 'fail'" variant="destructive" class="shrink-0" :title="rowProbe(m)?.error || t('models.probeFailHint')">{{ t("models.probeFail") }} · {{ rowProbe(m)?.status || '?' }}</Badge>
@@ -446,6 +460,14 @@ async function copyName(name: string) {
             </Badge>
             <!-- actions: hover-revealed in the name row so cards carry no footer -->
             <div class="ml-auto flex shrink-0 items-center gap-0.5" @click.stop>
+              <Button
+                variant="ghost" size="icon"
+                class="h-7 w-7 text-muted-foreground opacity-0 transition-all focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100"
+                :title="t('models.debug')" :aria-label="t('models.debug')"
+                @click="openDebug(m)"
+              >
+                <Bug class="h-4 w-4" />
+              </Button>
               <Button
                 variant="ghost" size="icon"
                 class="h-7 w-7 text-muted-foreground opacity-0 transition-all focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100"
@@ -576,9 +598,12 @@ async function copyName(name: string) {
             <TableCell>
               <div class="space-y-1">
                 <span class="font-mono text-sm font-medium">{{ m.name }}</span>
-                <div v-if="m.paceRpm || rowProbe(m) || isStaleAny(m)" class="flex flex-wrap items-center gap-1">
+                <div v-if="m.paceRpm || m.debugCapture || rowProbe(m) || isStaleAny(m)" class="flex flex-wrap items-center gap-1">
                   <Badge v-if="m.paceRpm" variant="outline" class="gap-1" :title="t('models.paceBadgeHint', { n: m.paceRpm, s: Math.max(1, Math.round(60 / m.paceRpm)) })">
                     <Gauge class="h-3 w-3" />{{ t("models.paceBadge", { n: m.paceRpm }) }}
+                  </Badge>
+                  <Badge v-if="m.debugCapture" variant="outline" class="cursor-pointer gap-1" :title="t('models.debugBadgeHint')" @click.stop="openDebug(m)">
+                    <Bug class="h-3 w-3" />{{ t("models.debugOnBadge") }}
                   </Badge>
                   <Badge v-if="rowProbe(m)?.state === 'ok'" variant="success" :title="t('models.probeOkHint', { name: rowProbe(m)?.provider ?? '' })">{{ t("models.probeOk") }}</Badge>
                   <Badge v-else-if="rowProbe(m)?.state === 'fail'" variant="destructive" :title="rowProbe(m)?.error || t('models.probeFailHint')">{{ t("models.probeFail") }} · {{ rowProbe(m)?.status || '?' }}</Badge>
@@ -674,6 +699,14 @@ async function copyName(name: string) {
                 <Button
                   variant="ghost" size="icon"
                   class="h-7 w-7 text-muted-foreground"
+                  :title="t('models.debug')" :aria-label="t('models.debug')"
+                  @click="openDebug(m)"
+                >
+                  <Bug class="h-3.5 w-3.5" />
+                </Button>
+                <Button
+                  variant="ghost" size="icon"
+                  class="h-7 w-7 text-muted-foreground"
                   :disabled="!enabledFormats(m).length || !!rowProbe(m) && rowProbe(m)!.state === 'testing'"
                   :title="t('models.testModel')" :aria-label="t('models.testModel')"
                   @click="testModel(m)"
@@ -716,6 +749,8 @@ async function copyName(name: string) {
       :existing-names="models.map((x) => x.name)"
       @saved="onEditorSaved"
     />
+
+    <ModelDebugDialog v-model:open="debugOpen" :model="debugTarget" @changed="load()" />
 
     <Dialog v-model:open="renameOpen">
       <DialogContent class="max-w-sm">

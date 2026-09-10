@@ -283,6 +283,62 @@ model.command("remove <name>").description("remove a model entirely (both format
   console.log(`Removed ${name}.`);
 });
 
+model
+  .command("debug <name> [action] [index]")
+  .description("debug capture: on|off toggles recording of the last 50 actual upstream requests/responses; show lists them (add an index to dump one in full)")
+  .action(async (name: string, action = "show", indexRaw?: string) => {
+    const path = `/admin/models/${encodeURIComponent(name)}/debug`;
+    if (action === "on" || action === "off") {
+      const r = (await api(ctx(), "PUT", path, { enabled: action === "on" })) as { enabled: boolean };
+      console.log(
+        r.enabled
+          ? `Debug capture ON for ${name} — the last 50 upstream attempts (request + response) are recorded in memory; turn off to clear.`
+          : `Debug capture OFF for ${name}; captured content cleared.`,
+      );
+      return;
+    }
+    if (action !== "show") throw new Error(`Unknown action '${action}' (use on | off | show).`);
+    const r = (await api(ctx(), "GET", path)) as { enabled: boolean; captures: any[] };
+    if (!r.enabled) console.log(`Debug capture is OFF for ${name}.`);
+    const cs = r.captures ?? [];
+    if (indexRaw !== undefined) {
+      const row = cs[Number(indexRaw) - 1];
+      if (!row) throw new Error(`No capture #${indexRaw} (list is newest-first, ${cs.length} captured).`);
+      console.log(`#${Number(indexRaw)}  ${new Date(row.ts).toLocaleTimeString("en-GB", { hour12: false })}  ${row.provider} [${row.format}]  status=${row.status}  ${row.ms}ms${row.upstreamModel ? `  model=${row.upstreamModel}` : ""}${row.error ? `  error=${row.error}` : ""}${row.truncated ? "  (truncated)" : ""}`);
+      console.log("\n--- request (forwarded verbatim) ---");
+      console.log(prettyJson(row.request));
+      if (row.response !== undefined) {
+        console.log("\n--- response (upstream) ---");
+        console.log(prettyJson(row.response));
+      }
+      return;
+    }
+    if (!cs.length) return console.log("No captures yet — call the model, then `show` again (or pass an index to dump one).");
+    console.log(`${name}: ${cs.length} captured (newest first)`);
+    for (let i = 0; i < cs.length; i++) {
+      const c = cs[i];
+      console.log(
+        `  #${i + 1}  ${new Date(c.ts).toLocaleTimeString("en-GB", { hour12: false })}  ${c.provider} [${c.format}]  status=${c.status}  ${c.ms}ms  ${fmtBytes(c.request)} req / ${fmtBytes(c.response ?? "")} resp${c.upstreamModel ? `  model=${c.upstreamModel}` : ""}${c.error ? `  ${c.error}` : ""}`,
+      );
+    }
+    console.log("\nDump one: myapikey model debug <name> show <index>");
+  });
+
+/** Pretty-print when the text parses as JSON (a forwarded request body, a JSON
+ *  response); raw text (e.g. an SSE stream) goes through untouched. */
+function prettyJson(s: string): string {
+  try {
+    return JSON.stringify(JSON.parse(s), null, 2);
+  } catch {
+    return s;
+  }
+}
+
+function fmtBytes(s: string): string {
+  const n = Buffer.byteLength(s, "utf8");
+  return n >= 1024 ? `${(n / 1024).toFixed(1)}KB` : `${n}B`;
+}
+
 // ---------------------------------------------------------------------------
 // call
 // ---------------------------------------------------------------------------

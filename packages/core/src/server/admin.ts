@@ -163,6 +163,7 @@ function projectModel(name: string, e: ModelEntry, byId: Map<string, Provider>) 
     anthropic: proj(e.anthropic),
     responses: proj(e.responses),
     paceRpm: e.paceRpm ?? 0,
+    debugCapture: e.debugCapture === true,
   };
 }
 
@@ -566,6 +567,7 @@ export function adminApi(store: Store, auth: MiddlewareHandler, openai: Hono, an
     const cfg = store.get();
     if (!cfg.models[name]) return c.json({ error: { message: "model not found" } }, 404);
     if (cfg.models[next]) return c.json({ error: { message: `model already exists: ${next}` } }, 409);
+    store.clearCaptures(name); // captured bodies keyed by the old name are unreachable now
     await store.update((d) => {
       const rebuilt: typeof d.models = {};
       for (const [k, v] of Object.entries(d.models)) rebuilt[k === name ? next : k] = v;
@@ -692,12 +694,43 @@ export function adminApi(store: Store, auth: MiddlewareHandler, openai: Hono, an
         errStatus = 404;
         return;
       }
-      if (rpm) entry.paceRpm = rpm;
-      else delete entry.paceRpm;
-    });
-    if (errStatus === 404) return c.json({ error: { message: "model not found" } }, 404);
-    return c.json({ ok: true, paceRpm: rpm ?? 0 });
+    if (rpm) entry.paceRpm = rpm;
+    else delete entry.paceRpm;
   });
+  if (errStatus === 404) return c.json({ error: { message: "model not found" } }, 404);
+  return c.json({ ok: true, paceRpm: rpm ?? 0 });
+});
+
+// Debug capture switch (pure debugging aid — see ModelEntry.debugCapture).
+// ON: dispatch records every upstream attempt for this model (exact forwarded
+// request + response bodies) into an in-memory ring buffer, last 50. OFF: the
+// buffer is cleared immediately — captured conversations shouldn't outlive the
+// debugging session. The switch itself is config state (persists in data.json);
+// the captured bodies do not (in-memory only, restart clears them too).
+app.get("/models/:name/debug", (c) => {
+  const name = c.req.param("name");
+  if (!store.get().models[name]) return c.json({ error: { message: "model not found" } }, 404);
+  return c.json({ enabled: store.isDebug(name), captures: store.getCaptures(name) });
+});
+
+app.put("/models/:name/debug", async (c) => {
+  const name = c.req.param("name");
+  const body = await readJson<{ enabled?: unknown }>(c.req.raw);
+  const enabled = body?.enabled === true;
+  let errStatus = 0;
+  await store.update((d) => {
+    const entry = d.models[name];
+    if (!entry) {
+      errStatus = 404;
+      return;
+    }
+    if (enabled) entry.debugCapture = true;
+    else delete entry.debugCapture;
+  });
+  if (errStatus === 404) return c.json({ error: { message: "model not found" } }, 404);
+  if (!enabled) store.clearCaptures(name);
+  return c.json({ ok: true, enabled });
+});
 
   // Set (or clear) the upstream-model mapping for ONE chain slot (addressed by
   // `index`). An empty `model` clears it (back to identity — send the public
@@ -904,6 +937,7 @@ export function adminApi(store: Store, auth: MiddlewareHandler, openai: Hono, an
     await store.update((d) => {
       delete d.models[name];
     });
+    store.clearCaptures(name);
     return c.json({ ok: true });
   });
 

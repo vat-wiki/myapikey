@@ -1,7 +1,7 @@
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { defaultConfig, newApiKey, CONFIG_VERSION } from "../shared/config";
-import type { GateConfig, LogEntry, Provider } from "../shared/types";
+import type { DebugCapture, GateConfig, LogEntry, Provider } from "../shared/types";
 import { createLogger, type Logger } from "./logger";
 
 /** Call-log retention: the log is bounded two ways — never older than this, and
@@ -44,6 +44,14 @@ const RPM_WINDOW_MS = 60_000;
  *  this gets rejected (429) instead of queueing. Bounds both the client's hang
  *  time and the queue depth (at N rpm / 60s wait, at most ~N requests queue). */
 const PACE_MAX_WAIT_MS = 60_000;
+
+/** Debug capture (per-model, in-memory ring buffer): how many upstream attempts
+ *  to keep, and how many CHARS of each request/response body. 50 × 2 × 256KB ≈
+ *  25MB worst case per debugged model — acceptable for a home-server debug aid.
+ *  Bodies (conversations) are sensitive: the buffer lives only in memory, is
+ *  dropped when the model's debug switch turns off, and never hits disk. */
+export const CAPTURE_MAX = 50;
+export const CAPTURE_BODY_MAX = 256 * 1024;
 
 /** Per-provider circuit state (in-memory, never persisted). */
 interface CircuitEntry {
@@ -191,6 +199,11 @@ export class Store {
   /** Per-model even-pacing queue: model name -> epoch ms of the next free
    *  release slot. In-memory, NOT persisted (resets on restart). */
   private pace = new Map<string, number>();
+  /** Per-model debug-capture ring buffers: model name -> last CAPTURE_MAX
+   *  upstream attempts (oldest first). In-memory, NOT persisted — bodies are
+   *  conversation content, so they live only while the model's debug switch
+   *  is on and evaporate on restart or toggle-off. */
+  private captures = new Map<string, DebugCapture[]>();
 
   constructor(dataDir: string, opts: { logger?: Logger } = {}) {
     this.dataDir = dataDir;
@@ -647,6 +660,45 @@ export class Store {
     if (wait > PACE_MAX_WAIT_MS) return -1;
     this.pace.set(model, next + interval);
     return wait;
+  }
+
+  // --- debug capture (per model, in-memory ring buffer; never persisted) ---
+
+  /** Whether a model's debug capture switch is on (config state, persisted). */
+  isDebug(model: string): boolean {
+    return !!this.data.models[model]?.debugCapture;
+  }
+
+  /** Record one upstream attempt for a debugged model. Ignores silently when
+   *  the switch is off (defense against a stale caller); bodies are capped at
+   *  CAPTURE_BODY_MAX chars each (flagging `truncated`), and the buffer keeps
+   *  only the most recent CAPTURE_MAX attempts per model. */
+  pushCapture(model: string, entry: DebugCapture): void {
+    if (!this.isDebug(model)) return;
+    const e = { ...entry };
+    if (e.request.length > CAPTURE_BODY_MAX) {
+      e.request = e.request.slice(0, CAPTURE_BODY_MAX);
+      e.truncated = true;
+    }
+    if (e.response !== undefined && e.response.length > CAPTURE_BODY_MAX) {
+      e.response = e.response.slice(0, CAPTURE_BODY_MAX);
+      e.truncated = true;
+    }
+    let arr = this.captures.get(model);
+    if (!arr) this.captures.set(model, (arr = []));
+    arr.push(e);
+    if (arr.length > CAPTURE_MAX) arr.splice(0, arr.length - CAPTURE_MAX);
+  }
+
+  /** The model's captured attempts, newest first. */
+  getCaptures(model: string): DebugCapture[] {
+    const arr = this.captures.get(model);
+    return arr ? [...arr].reverse() : [];
+  }
+
+  /** Drop a model's capture buffer (toggle-off, model delete/rename). */
+  clearCaptures(model: string): void {
+    this.captures.delete(model);
   }
 
   /** Snapshot of every configured provider's circuit state for GET /admin/circuit.

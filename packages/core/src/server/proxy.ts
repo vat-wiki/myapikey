@@ -1,7 +1,7 @@
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { trimBase } from "../shared/config";
-import type { Format, Provider, RouteKey, Usage } from "../shared/types";
-import type { Store } from "./store";
+import type { DebugCapture, Format, Provider, RouteKey, Usage } from "../shared/types";
+import { CAPTURE_BODY_MAX, type Store } from "./store";
 import { UsageCollector } from "./tokens";
 
 /** HTTP statuses that should trigger failover to the next provider. 401/403
@@ -342,6 +342,10 @@ function observedBody(
     /** The original request's `messages`, used only to estimate prompt tokens
      *  on the openai-chat-stream fallback path (see tokens.ts). */
     requestMessages?: unknown;
+    /** Called with each decoded text chunk AS IT FLOWS — the debug capture's
+     *  tee point (the proxy keeps forwarding bytes verbatim regardless).
+     *  Optional: absent = zero capture overhead. */
+    onText?: (txt: string) => void;
     onSettle: (info: SettleInfo) => void;
   },
 ): ReadableStream<Uint8Array> {
@@ -385,6 +389,7 @@ function observedBody(
         }
         const txt = dec.decode(value, { stream: true });
         usage.feed(txt, { stream: opts.stream, key: opts.key });
+        opts.onText?.(txt);
         if (!terminal && markers.length) {
           const win = tail + txt;
           if (markers.some((m) => win.includes(m))) terminal = true;
@@ -608,15 +613,45 @@ export function proxyApi(
         // Count this attempt toward the source's RPM window — but not for a pinned
         // probe, which (like circuit state) takes no routing side-effects.
         if (pinIndex == null) store.recordDispatch(provider.id);
+        // Debug capture (ModelEntry.debugCapture): when the model's switch is
+        // on, record EVERY upstream attempt — the exact forwarded body (this
+        // slot's model rewrite + thinking injection are already applied) and
+        // the response as it flowed. UI probes are excluded (not real
+        // conversations). One entry per attempt: a failover chain writes
+        // several, each showing what THAT source actually received.
+        const debugNow = !isProbe && store.isDebug(model);
+        const attemptStart = Date.now();
+        const reqText = JSON.stringify(body);
+        const capture = (status: number, response: string | undefined, truncated: boolean, error?: string) => {
+          if (!debugNow) return;
+          const row: DebugCapture = {
+            ts: Date.now(),
+            model,
+            provider: provider.name,
+            providerId: provider.id,
+            format: wire,
+            status,
+            ms: Date.now() - attemptStart,
+            stream,
+            request: reqText,
+            ...(upstreamModel ? { upstreamModel } : {}),
+            ...(think ? { thinking: think } : {}),
+            ...(response ? { response } : {}),
+            ...(truncated ? { truncated: true } : {}),
+            ...(error ? { error } : {}),
+          };
+          store.pushCapture(model, row);
+        };
         let upstream: Response;
         try {
           upstream = await fetch(upstreamTarget(provider, key).url, {
             method: "POST",
             headers: upstreamHeaders(provider, wire, clientVersion),
-            body: JSON.stringify(body),
+            body: reqText,
           });
         } catch {
           // Network error / DNS / timeout → try next provider.
+          capture(0, undefined, false, "network error");
           lastStatus = 502;
           lastErr = "network error";
           if (pinIndex != null) break; // per-source probe: fail fast, no circuit impact.
@@ -642,20 +677,38 @@ export function proxyApi(
           // the body's end (so the row reflects the real outcome, not just the
           // headers). See observedBody() for the detection rules.
           const ttfb = Date.now() - start;
+          // Debug capture tee: accumulate the decoded chunks into a bounded
+          // string (the proxy keeps forwarding bytes verbatim regardless).
+          const capAcc = debugNow ? { text: "", truncated: false } : undefined;
           const out = observedBody(upstream, {
             stream,
             key,
             requestMessages: body.messages,
+            ...(capAcc
+              ? {
+                  onText: (txt: string) => {
+                    const room = CAPTURE_BODY_MAX - capAcc.text.length;
+                    if (room <= 0) {
+                      capAcc.truncated = true;
+                      return;
+                    }
+                    if (txt.length > room) capAcc.truncated = true;
+                    capAcc.text += txt.slice(0, room);
+                  },
+                }
+              : {}),
             onSettle: (info) => {
               if (info.ok) {
                 store.recordCircuitSuccess(provider.id);
                 store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: 200, ms: ttfb, stream, thinking: think, usage: info.usage });
+                capture(200, capAcc?.text, capAcc?.truncated ?? false);
               } else {
                 // A pinned per-source probe takes no circuit side-effects (a manual
                 // test must not trip the breaker) — mirrors the retryable branch.
                 if (pinIndex == null) store.recordCircuitFailure(provider.id, info.status, info.error || "stream failed");
                 if (!isProbe) rt.warn(`proxy stream failed: provider '${provider.name}' status=${info.status} (${info.error || "stream failed"})`);
                 store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: info.status, ms: ttfb, stream, thinking: think, error: info.error });
+                capture(info.status, capAcc?.text, capAcc?.truncated ?? false, info.error);
               }
             },
           });
@@ -667,6 +720,7 @@ export function proxyApi(
           // reason for the log (this branch never streams back to the client).
           const txt = await upstream.text().catch(() => "");
           lastErr = shortError(txt) || `HTTP ${upstream.status}`;
+          capture(upstream.status, txt, false, lastErr);
           if (pinIndex != null) break; // per-source probe: fail fast, no circuit impact.
           sayFailover(provider, `HTTP ${lastStatus} (${lastErr})`);
           // A 429/overloaded upstream usually carries Retry-After; honoring it
@@ -687,6 +741,7 @@ export function proxyApi(
         // error text off a CLONE so the original body still streams back.
         const errText = await upstream.clone().text().catch(() => "");
         store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: upstream.status, ms: Date.now() - start, stream, thinking: think, error: shortError(errText) || `HTTP ${upstream.status}` });
+        capture(upstream.status, errText, false, shortError(errText) || `HTTP ${upstream.status}`);
         return passThrough(upstream, isProbe ? provider.name : undefined);
       }
 

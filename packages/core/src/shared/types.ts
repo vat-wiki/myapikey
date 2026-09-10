@@ -100,6 +100,12 @@ export interface ModelEntry {
    *  independent of Provider.rpm (that one skips a busy source and fails over);
    *  this one paces the model across all three route slots. Absent = unlimited. */
   paceRpm?: number;
+  /** Debug capture (pure debugging aid, never on by default). When true, dispatch
+   *  records every UPSTREAM ATTEMPT for this model — the exact forwarded request
+   *  body and the response body — into an in-memory ring buffer (last 50, see
+   *  Store.pushCapture). Turning it off clears the buffer; restarts clear it too.
+   *  Nothing here ever touches logs.jsonl. */
+  debugCapture?: boolean;
 }
 
 export interface Account {
@@ -180,4 +186,39 @@ export interface LogEntry {
    *  failure count that triggered it. */
   cooldownMs?: number;
   fails?: number;
+}
+
+/** One debug-captured upstream attempt (in-memory ring buffer ONLY — never
+ *  persisted to logs.jsonl or data.json; see ModelEntry.debugCapture). One
+ *  client call that fails over produces several entries, one per attempt,
+ *  because each attempt's forwarded body can differ (per-slot model rewrite +
+ *  thinking injection). Bodies are captured VERBATIM: `request` is the exact
+ *  JSON string sent upstream, `response` the upstream body as it flowed (raw
+ *  SSE text for streams). Headers are never captured — provider api keys stay
+ *  out of the buffer. */
+export interface DebugCapture {
+  ts: number;
+  model: string;
+  provider: string;
+  providerId: string;
+  format: Format;
+  /** The upstream model name actually sent this attempt (post per-slot
+   *  rewrite). Absent when the public name went through verbatim. */
+  upstreamModel?: string;
+  /** Upstream HTTP status (0 = network error / never reached). */
+  status: number;
+  /** Latency of THIS attempt (ms). */
+  ms: number;
+  stream: boolean;
+  /** The exact forwarded request body (JSON text). */
+  request: string;
+  /** The upstream response body as it flowed. Absent when nothing was read
+   *  (network error) or the client cancelled before the body flowed. */
+  response?: string;
+  /** True when a body was cut at the capture size cap. */
+  truncated?: boolean;
+  /** Short failure reason (mirrors LogEntry.error). */
+  error?: string;
+  /** The thinking level this attempt ran with (same shape as LogEntry.thinking). */
+  thinking?: { value: string; from: "client" | "default" };
 }

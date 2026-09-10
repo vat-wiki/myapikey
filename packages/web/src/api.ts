@@ -125,8 +125,34 @@ export interface ModelView {
   /** Per-model even-pacing limit (requests/min, 0 = unlimited). Calls are
    *  spread one every 60/rpm seconds; excess queue at the gateway. */
   paceRpm: number;
+  /** Debug capture switch (in-memory ring buffer of actual upstream bodies). */
+  debugCapture?: boolean;
   lastRoute?: LastRoute[];
   lastFail?: LastFail[];
+}
+
+/** One debug-captured upstream attempt (GET /admin/models/:name/debug). In-memory
+ *  only — cleared when the model's debug switch turns off or the gateway restarts. */
+export interface DebugCapture {
+  ts: number;
+  model: string;
+  provider: string;
+  providerId: string;
+  format: string;
+  /** The upstream model name actually sent (post per-slot rewrite); absent when
+   *  the public name went through verbatim. */
+  upstreamModel?: string;
+  /** Upstream HTTP status (0 = network error / never reached). */
+  status: number;
+  ms: number;
+  stream: boolean;
+  /** The exact forwarded request body (JSON text). */
+  request: string;
+  /** The upstream response body as it flowed (raw SSE text for streams). */
+  response?: string;
+  truncated?: boolean;
+  error?: string;
+  thinking?: { value: string; from: "client" | "default" };
 }
 
 /** One provider's circuit-breaker state (GET /admin/circuit). Mirrors the
