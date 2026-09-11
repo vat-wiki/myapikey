@@ -1,4 +1,6 @@
-# syntax=docker/dockerfile:1
+# BuildKit's built-in frontend covers everything used here (multi-stage,
+# COPY --from); the `# syntax=` directive would force a docker.io fetch of
+# docker/dockerfile:1 at build time, which breaks on offline/mirrored hosts.
 
 # ---- stage 1: build the web SPA ----
 FROM node:22-alpine AS web
