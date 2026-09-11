@@ -110,13 +110,40 @@ function size(s: string | undefined): string {
   return n >= 1024 ? `${(n / 1024).toFixed(1)}KB` : `${n}B`;
 }
 
-function pretty(s: string): string {
+const full = ref(false);
+watch(detail, () => (full.value = false));
+
+const STR_MAX = 300;
+
+function collapse(v: unknown, hit: { cut: boolean }): unknown {
+  if (typeof v === "string") {
+    if (v.length <= STR_MAX) return v;
+    hit.cut = true;
+    return `${v.slice(0, STR_MAX)}…${t("models.debugOmitted", { n: v.length - STR_MAX })}`;
+  }
+  if (Array.isArray(v)) return v.map((x) => collapse(x, hit));
+  if (v && typeof v === "object") {
+    const o: Record<string, unknown> = {};
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) o[k] = collapse(val, hit);
+    return o;
+  }
+  return v;
+}
+
+function view(s: string | undefined): { text: string; cut: boolean } {
+  if (!s) return { text: "", cut: false };
   try {
-    return JSON.stringify(JSON.parse(s), null, 2);
+    const obj = JSON.parse(s) as unknown;
+    const hit = { cut: false };
+    const shown = collapse(obj, hit);
+    return { text: JSON.stringify(full.value ? obj : shown, null, 2), cut: hit.cut };
   } catch {
-    return s;
+    return { text: s, cut: false };
   }
 }
+
+const reqView = computed(() => view(detail.value?.request));
+const respView = computed(() => view(detail.value?.response));
 
 async function copy(s: string | undefined) {
   if (!s) return;
@@ -154,21 +181,31 @@ async function copy(s: string | undefined) {
         <div class="space-y-1">
           <div class="flex items-center justify-between">
             <span class="text-xs font-medium text-muted-foreground">{{ t("models.debugReq") }} · {{ size(detail.request) }}</span>
-            <Button variant="ghost" size="icon" class="size-6 text-muted-foreground" :title="t('connect.copy')" :aria-label="t('connect.copy')" @click="copy(detail.request)">
-              <Copy class="h-3 w-3" />
-            </Button>
+            <div class="flex items-center">
+              <Button v-if="reqView.cut" variant="ghost" size="sm" class="h-6 px-2 text-[11px] text-muted-foreground" @click="full = !full">
+                {{ full ? t("models.debugCollapse") : t("models.debugExpand") }}
+              </Button>
+              <Button variant="ghost" size="icon" class="size-6 text-muted-foreground" :title="t('connect.copy')" :aria-label="t('connect.copy')" @click="copy(detail.request)">
+                <Copy class="h-3 w-3" />
+              </Button>
+            </div>
           </div>
-          <pre class="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted/50 p-3 font-mono text-xs">{{ pretty(detail.request) }}</pre>
+          <pre class="max-h-96 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted/50 p-3 font-mono text-xs">{{ reqView.text }}</pre>
         </div>
 
         <div v-if="detail.response !== undefined" class="space-y-1">
           <div class="flex items-center justify-between">
             <span class="text-xs font-medium text-muted-foreground">{{ t("models.debugResp") }} · {{ size(detail.response) }}</span>
-            <Button variant="ghost" size="icon" class="size-6 text-muted-foreground" :title="t('connect.copy')" :aria-label="t('connect.copy')" @click="copy(detail.response)">
-              <Copy class="h-3 w-3" />
-            </Button>
+            <div class="flex items-center">
+              <Button v-if="respView.cut" variant="ghost" size="sm" class="h-6 px-2 text-[11px] text-muted-foreground" @click="full = !full">
+                {{ full ? t("models.debugCollapse") : t("models.debugExpand") }}
+              </Button>
+              <Button variant="ghost" size="icon" class="size-6 text-muted-foreground" :title="t('connect.copy')" :aria-label="t('connect.copy')" @click="copy(detail.response)">
+                <Copy class="h-3 w-3" />
+              </Button>
+            </div>
           </div>
-          <pre class="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted/50 p-3 font-mono text-xs">{{ pretty(detail.response) }}</pre>
+          <pre class="max-h-96 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted/50 p-3 font-mono text-xs">{{ respView.text }}</pre>
         </div>
       </template>
 
