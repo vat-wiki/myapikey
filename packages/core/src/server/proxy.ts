@@ -6,8 +6,43 @@ import { UsageCollector } from "./tokens";
 
 /** HTTP statuses that should trigger failover to the next provider. 401/403
  *  included: a banned/invalid credential (e.g. "User has been banned") is dead
- *  for THIS source only - the same request may be fine on the next one. */
-const RETRYABLE = new Set([401, 403, 408, 425, 429, 500, 502, 503, 504]);
+ *  for THIS source only - the same request may be fine on the next one. 402 is
+ *  always account-level (exhausted balance). */
+const RETRYABLE = new Set([401, 402, 403, 408, 425, 429, 500, 502, 503, 504]);
+
+/** Error-body markers that turn a NON-retryable 4xx into an account-level
+ *  failure worth failing over: dead credential / expired subscription / no
+ *  balance, which some vendors smuggle under a 400 instead of 401/403
+ *  (Volcengine Ark's expired coding-plan subscription is the case that bit
+ *  us). Deliberately narrow — a genuine request-shape 400 (bad params, context
+ *  overflow, "max_tokens too large") still returns to the client as-is, since
+ *  every other source would 400 identically. Matched case-insensitively. */
+const ACCOUNT_HINTS = [
+  "subscription",
+  "unauthorized",
+  "invalid_api_key",
+  "invalid api key",
+  "incorrect api key",
+  "quota",
+  "insufficient",
+  "balance",
+  "credit",
+  "expired",
+  "令牌",
+  "订阅",
+  "额度",
+  "余额",
+  "欠费",
+  "未开通",
+];
+
+/** True when `status`/`bodyText` describe an account-level failure on an
+ *  otherwise non-retryable 4xx (see ACCOUNT_HINTS). */
+function isAccountLevelError(status: number, bodyText: string): boolean {
+  if (RETRYABLE.has(status) || status < 400 || status >= 500) return false;
+  const t = bodyText.toLowerCase();
+  return ACCOUNT_HINTS.some((h) => t.includes(h));
+}
 
 /** Even pacing (per-model `paceRpm`) message constants. The queue itself lives
  *  in Store.paceClaim - 60s wait horizon, one release every 60/rpm seconds. */
@@ -257,11 +292,6 @@ function downHeaders(upstream: Response, servedBy?: string): Headers {
   }
   if (servedBy) headers.set("x-myapikey-provider", encodeTag(servedBy));
   return headers;
-}
-
-function passThrough(upstream: Response, servedBy?: string): Response {
-  // Stream the upstream body straight through (handles SSE + normal JSON).
-  return new Response(upstream.body, { status: upstream.status, headers: downHeaders(upstream, servedBy) });
 }
 
 /** Pull a short human-readable message out of an upstream error body. */
@@ -712,13 +742,18 @@ export function proxyApi(
           });
           return new Response(out, { status: upstream.status, headers: downHeaders(upstream, isProbe ? provider.name : undefined) });
         }
-        if (RETRYABLE.has(upstream.status)) {
-          lastStatus = upstream.status;
-          // Drain so the connection can be reused, then move on; capture the
-          // reason for the log (this branch never streams back to the client).
-          const txt = await upstream.text().catch(() => "");
-          lastErr = shortError(txt) || `HTTP ${upstream.status}`;
-          capture(upstream.status, txt, false, lastErr);
+        // Error from the upstream. Read the body ONCE (drains the connection
+        // for reuse), then either fail over or pass the error back verbatim —
+        // both branches share this text (log row + debug capture).
+        const txt = await upstream.text().catch(() => "");
+        lastStatus = upstream.status;
+        lastErr = shortError(txt) || `HTTP ${upstream.status}`;
+        capture(upstream.status, txt, false, lastErr);
+        // Fail over on a retryable status OR an account-level failure smuggled
+        // under a non-retryable 4xx (expired subscription / dead key / no
+        // balance returned as 400) — the source is dead for THIS request only,
+        // exactly like a 401/403.
+        if (RETRYABLE.has(upstream.status) || isAccountLevelError(upstream.status, txt)) {
           if (pinIndex != null) break; // per-source probe: fail fast, no circuit impact.
           sayFailover(provider, `HTTP ${lastStatus} (${lastErr})`);
           // A 429/overloaded upstream usually carries Retry-After; honoring it
@@ -735,12 +770,9 @@ export function proxyApi(
           }
           continue;
         }
-        // Non-retryable client error: return it to the caller as-is. Read the
-        // error text off a CLONE so the original body still streams back.
-        const errText = await upstream.clone().text().catch(() => "");
-        store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: upstream.status, ms: Date.now() - start, stream, thinking: think, error: shortError(errText) || `HTTP ${upstream.status}` });
-        capture(upstream.status, errText, false, shortError(errText) || `HTTP ${upstream.status}`);
-        return passThrough(upstream, isProbe ? provider.name : undefined);
+        // Non-retryable client error: return it to the caller as-is.
+        store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: upstream.status, ms: Date.now() - start, stream, thinking: think, error: lastErr });
+        return new Response(txt, { status: upstream.status, headers: downHeaders(upstream, isProbe ? provider.name : undefined) });
       }
 
       const last = order[order.length - 1];

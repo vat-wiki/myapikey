@@ -229,6 +229,41 @@ describe("proxy", () => {
       expect(mock.calls.filter((c) => c.url.includes("/b/")).length).toBe(0);
     });
 
+    it("fails over on an account-level error smuggled as a 400 (expired subscription)", async () => {
+      // Volcengine Ark reports an expired coding-plan subscription as a 400 —
+      // dead for THIS source only, so it must behave like a 401/403.
+      mock = mockFetch([
+        {
+          match: "/a/v1/chat/completions",
+          response: {
+            status: 400,
+            body: { error: { message: "Your account (2106150631) does not have a valid AgentPlan subscription, or your subscription has expired." } },
+          },
+        },
+        { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "B" } }] } } },
+      ]);
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      expect(res.status).toBe(200);
+      expect(mock.calls.filter((c) => c.url.includes("/a/")).length).toBe(1);
+      expect(mock.calls.filter((c) => c.url.includes("/b/")).length).toBe(1);
+    });
+
+    it("fails over on a Chinese account-level 400 (余额不足) and on 402", async () => {
+      for (const [status, message] of [
+        [400, "该令牌余额不足，请充值后重试"],
+        [402, "Insufficient Balance"],
+      ] as const) {
+        mock?.restore();
+        mock = mockFetch([
+          { match: "/a/v1/chat/completions", response: { status, body: { error: { message } } } },
+          { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "B" } }] } } },
+        ]);
+        const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+        expect(res.status).toBe(200);
+        expect(mock.calls.filter((c) => c.url.includes("/b/")).length).toBe(1);
+      }
+    });
+
     it("returns 502 with an 'all providers … last status' message when every provider fails", async () => {
       mock = mockFetch([
         { match: "/a/v1/chat/completions", response: { status: 500, body: { error: { message: "boom" } } } },
