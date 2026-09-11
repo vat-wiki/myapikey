@@ -213,6 +213,7 @@ export default {
     debugTools: "Tools",
     debugThinking: "Thinking",
     debugImage: "[image]",
+    debugOpen: "Open in new tab",
     debugTokIn: "in",
     debugTokOut: "out",
     debugFinish: "finish",

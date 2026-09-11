@@ -213,6 +213,7 @@ export default {
     debugTools: "工具",
     debugThinking: "思考",
     debugImage: "[图片]",
+    debugOpen: "新标签打开",
     debugTokIn: "输入",
     debugTokOut: "输出",
     debugFinish: "结束",

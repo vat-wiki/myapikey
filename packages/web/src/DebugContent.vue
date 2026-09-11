@@ -13,6 +13,7 @@ const NOTE_MAX = 160;
 type Block =
   | { t: "text"; text: string; think?: boolean }
   | { t: "note"; text: string }
+  | { t: "img"; src: string; note?: string }
   | { t: "call"; name: string; args?: string };
 type Card = { role: string; blocks: Block[] };
 type Tool = { name: string; desc?: string; schema?: string };
@@ -20,6 +21,7 @@ type ReqView = { params: { k: string; v: string }[]; cards: Card[]; tools: Tool[
 type RespView = { cards: Card[]; inp?: number; out?: number; finish?: string; chunks?: number };
 
 const expanded = ref<Set<string>>(new Set());
+const preview = ref<string | null>(null);
 function toggle(key: string) {
   const s = new Set(expanded.value);
   if (s.has(key)) s.delete(key);
@@ -62,14 +64,31 @@ function textBlock(v: unknown, think = false): Block {
   return { t: "text", text: str(v), think: think || undefined };
 }
 
-function imgNote(o: Record<string, unknown>): string {
+function imgSrc(o: Record<string, unknown>): string {
   const u =
     typeof o.image_url === "string"
       ? o.image_url
       : ((o.image_url as Record<string, unknown> | undefined)?.url as string | undefined) ?? (o.url as string | undefined);
-  if (!u) return "";
-  if (u.startsWith("data:")) return `base64 ${(u.length / 1024).toFixed(1)}KB`;
-  return clip(u);
+  if (u) return u;
+  const src = o.source as Record<string, unknown> | undefined;
+  if (src?.type === "base64" && typeof src.data === "string") return `data:${str(src.media_type) || "image/png"};base64,${src.data}`;
+  if (src?.type === "url" && typeof src.url === "string") return src.url;
+  return "";
+}
+
+/** Only data:image and http(s) go to <img>/preview — anything else (or missing)
+ *  degrades to the plain [image] note it was before. */
+function imgPart(o: Record<string, unknown>): Block {
+  const u = imgSrc(o);
+  if (!u || !/^data:image\//.test(u) && !/^https?:\/\//.test(u)) {
+    const raw = u ? clip(u) : "";
+    return { t: "note", text: raw ? `${t("models.debugImage")} · ${raw}` : t("models.debugImage") };
+  }
+  return {
+    t: "img",
+    src: u,
+    note: u.startsWith("data:") ? `base64 ${(u.length / 1024).toFixed(1)}KB` : clip(u),
+  };
 }
 
 function partBlocks(p: unknown): Block[] {
@@ -88,10 +107,8 @@ function partBlocks(p: unknown): Block[] {
       return [{ t: "note", text: t("models.debugThinking") }];
     case "image_url":
     case "input_image":
-    case "image": {
-      const note = imgNote(o);
-      return [{ t: "note", text: note ? `${t("models.debugImage")} · ${note}` : t("models.debugImage") }];
-    }
+    case "image":
+      return [imgPart(o)];
     case "tool_use":
     case "function_call":
       return [{ t: "call", name: str(o.name), args: prettyJson(o.type === "tool_use" ? o.input : o.arguments) }];
@@ -348,6 +365,26 @@ const prettyBody = computed(() => {
       <div class="space-y-1.5 px-2.5 py-1.5">
         <template v-for="(b, j) in c.blocks" :key="j">
           <p v-if="b.t === 'note'" class="break-all font-mono text-[11px] text-muted-foreground">{{ b.text }}</p>
+          <div v-else-if="b.t === 'img'" class="space-y-1">
+            <img
+              :src="b.src"
+              :alt="t('models.debugImage')"
+              loading="lazy"
+              class="max-h-28 max-w-full cursor-zoom-in rounded border bg-muted/30 object-contain"
+              @click="preview = b.src"
+            />
+            <p class="flex flex-wrap items-center gap-x-2 font-mono text-[11px] text-muted-foreground">
+              <span class="break-all">{{ b.note }}</span>
+              <a
+                v-if="!b.src.startsWith('data:')"
+                :href="b.src"
+                target="_blank"
+                rel="noreferrer"
+                class="text-primary hover:underline"
+                @click.stop
+              >{{ t("models.debugOpen") }}</a>
+            </p>
+          </div>
           <div v-else-if="b.t === 'call'" class="rounded bg-muted/50 px-2 py-1">
             <p class="flex items-center gap-1 font-mono text-[11px] font-medium">
               <Wrench class="h-3 w-3 shrink-0 text-muted-foreground" />{{ b.name }}
@@ -408,4 +445,14 @@ const prettyBody = computed(() => {
   </div>
 
   <pre v-else class="max-h-96 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted/50 p-3 font-mono text-xs">{{ prettyBody }}</pre>
+
+  <Teleport to="body">
+    <div
+      v-if="preview"
+      class="fixed inset-0 z-[60] flex cursor-zoom-out items-center justify-center bg-black/80 p-8"
+      @click="preview = null"
+    >
+      <img :src="preview" :alt="t('models.debugImage')" class="max-h-full max-w-full rounded object-contain shadow-lg" />
+    </div>
+  </Teleport>
 </template>
