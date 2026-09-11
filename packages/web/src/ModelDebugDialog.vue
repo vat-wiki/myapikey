@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import DebugContent from "./DebugContent.vue";
 import { ArrowLeft, Brain, Copy, Loader2, RefreshCw, Bug, X } from "lucide-vue-next";
 
 /** Per-model debug capture (GET/PUT/DELETE /admin/models/:name/debug*).
@@ -111,7 +112,11 @@ function size(s: string | undefined): string {
 }
 
 const full = ref(false);
-watch(detail, () => (full.value = false));
+const mode = ref<"content" | "raw">("content");
+watch(detail, () => {
+  full.value = false;
+  mode.value = "content";
+});
 
 const STR_MAX = 300;
 
@@ -174,7 +179,27 @@ async function copy(s: string | undefined) {
           <Badge v-else-if="detail.status < 300" variant="success" class="shrink-0">{{ detail.status }}</Badge>
           <Badge v-else variant="destructive" class="shrink-0">{{ detail.status }}</Badge>
           <Badge v-if="detail.truncated" variant="secondary" class="shrink-0">{{ t("models.debugTruncated") }}</Badge>
-          <span class="ml-auto font-mono text-xs text-muted-foreground">{{ time(detail.ts) }} · {{ detail.ms }}ms</span>
+          <div class="ml-auto flex items-center gap-2">
+            <div class="flex items-center rounded-md border p-0.5">
+              <button
+                type="button"
+                class="rounded px-1.5 py-0.5 text-[11px]"
+                :class="mode === 'content' ? 'bg-muted font-medium text-foreground' : 'text-muted-foreground hover:text-foreground'"
+                @click="mode = 'content'"
+              >
+                {{ t("models.debugViewContent") }}
+              </button>
+              <button
+                type="button"
+                class="rounded px-1.5 py-0.5 text-[11px]"
+                :class="mode === 'raw' ? 'bg-muted font-medium text-foreground' : 'text-muted-foreground hover:text-foreground'"
+                @click="mode = 'raw'"
+              >
+                {{ t("models.debugViewRaw") }}
+              </button>
+            </div>
+            <span class="font-mono text-xs text-muted-foreground">{{ time(detail.ts) }} · {{ detail.ms }}ms</span>
+          </div>
         </div>
         <p v-if="detail.error" class="text-xs text-destructive">{{ detail.error }}</p>
 
@@ -182,7 +207,7 @@ async function copy(s: string | undefined) {
           <div class="flex items-center justify-between">
             <span class="text-xs font-medium text-muted-foreground">{{ t("models.debugReq") }} · {{ size(detail.request) }}</span>
             <div class="flex items-center">
-              <Button v-if="reqView.cut" variant="ghost" size="sm" class="h-6 px-2 text-[11px] text-muted-foreground" @click="full = !full">
+              <Button v-if="mode === 'raw' && reqView.cut" variant="ghost" size="sm" class="h-6 px-2 text-[11px] text-muted-foreground" @click="full = !full">
                 {{ full ? t("models.debugCollapse") : t("models.debugExpand") }}
               </Button>
               <Button variant="ghost" size="icon" class="size-6 text-muted-foreground" :title="t('connect.copy')" :aria-label="t('connect.copy')" @click="copy(detail.request)">
@@ -190,14 +215,17 @@ async function copy(s: string | undefined) {
               </Button>
             </div>
           </div>
-          <pre class="max-h-96 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted/50 p-3 font-mono text-xs">{{ reqView.text }}</pre>
+          <div v-if="mode === 'content'" class="max-h-[60vh] overflow-y-auto">
+            <DebugContent :body="detail.request" kind="request" />
+          </div>
+          <pre v-else class="max-h-96 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted/50 p-3 font-mono text-xs">{{ reqView.text }}</pre>
         </div>
 
         <div v-if="detail.response !== undefined" class="space-y-1">
           <div class="flex items-center justify-between">
             <span class="text-xs font-medium text-muted-foreground">{{ t("models.debugResp") }} · {{ size(detail.response) }}</span>
             <div class="flex items-center">
-              <Button v-if="respView.cut" variant="ghost" size="sm" class="h-6 px-2 text-[11px] text-muted-foreground" @click="full = !full">
+              <Button v-if="mode === 'raw' && respView.cut" variant="ghost" size="sm" class="h-6 px-2 text-[11px] text-muted-foreground" @click="full = !full">
                 {{ full ? t("models.debugCollapse") : t("models.debugExpand") }}
               </Button>
               <Button variant="ghost" size="icon" class="size-6 text-muted-foreground" :title="t('connect.copy')" :aria-label="t('connect.copy')" @click="copy(detail.response)">
@@ -205,7 +233,10 @@ async function copy(s: string | undefined) {
               </Button>
             </div>
           </div>
-          <pre class="max-h-96 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted/50 p-3 font-mono text-xs">{{ respView.text }}</pre>
+          <div v-if="mode === 'content'" class="max-h-[60vh] overflow-y-auto">
+            <DebugContent :body="detail.response" kind="response" />
+          </div>
+          <pre v-else class="max-h-96 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted/50 p-3 font-mono text-xs">{{ respView.text }}</pre>
         </div>
       </template>
 
