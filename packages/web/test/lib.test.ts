@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { cn } from "../src/lib/utils";
 import { FMT_ACCENT, providerColor, type Fmt } from "../src/lib/format";
 import { providerModelList } from "../src/lib/models";
+import { conversationOf, firstUserText } from "../src/lib/conv";
 
 // The Fmt union, as a runtime mirror for key-set assertions.
 const FMT_KEYS = ["openai", "anthropic", "responses"] as const;
@@ -78,6 +79,68 @@ describe("web/lib", () => {
       expect(providerModelList(null)).toEqual([]);
       expect(providerModelList({})).toEqual([]);
       expect(providerModelList({ discoveredModels: ["", "keep"], extraModels: undefined })).toEqual(["keep"]);
+    });
+  });
+
+  describe("conversationOf() — debug-capture conversation grouping", () => {
+    const chat = (firstUser: string, lastUser?: string) =>
+      JSON.stringify({
+        model: "m",
+        messages: [
+          { role: "system", content: "sys" },
+          { role: "user", content: firstUser },
+          { role: "assistant", content: "hi" },
+          ...(lastUser ? [{ role: "user", content: lastUser }] : []),
+        ],
+      });
+
+    it("turns of one conversation share a key (first user message is constant); others differ", () => {
+      const t1 = conversationOf(chat("hello world"), "");
+      const t2 = conversationOf(chat("hello world", "follow-up"), "");
+      const other = conversationOf(chat("different task"), "");
+      expect(t2.key).toBe(t1.key);
+      expect(other.key).not.toBe(t1.key);
+    });
+
+    it("titles come from the first user message, whitespace-collapsed and capped at 80 chars", () => {
+      const long = "a".repeat(120) + " tail";
+      const v = conversationOf(chat(`  ${long}  \n more`), "");
+      expect(v.title).toBe(`a`.repeat(80) + "…");
+      const short = conversationOf(chat("short prompt"), "");
+      expect(short.title).toBe("short prompt");
+    });
+
+    it("metadata.user_id wins over the message hash (same text, two sessions stay apart)", () => {
+      const a = conversationOf(JSON.stringify({ metadata: { user_id: "user_1__session_A" }, messages: [{ role: "user", content: "same" }] }), "");
+      const b = conversationOf(JSON.stringify({ metadata: { user_id: "user_1__session_B" }, messages: [{ role: "user", content: "same" }] }), "");
+      const c = conversationOf(JSON.stringify({ metadata: { user_id: "user_1__session_A" }, messages: [{ role: "user", content: "same" }, { role: "user", content: "grew" }] }), "");
+      expect(b.key).not.toBe(a.key);
+      expect(c.key).toBe(a.key);
+    });
+
+    it("reads the anthropic wire (content parts arrays; non-text parts contribute nothing)", () => {
+      const body = JSON.stringify({
+        system: "sys",
+        messages: [
+          { role: "user", content: [{ type: "text", text: "part one" }, { type: "image", source: {} }, { type: "text", text: "part two" }] },
+        ],
+      });
+      const v = conversationOf(body, "");
+      expect(v.title).toBe("part one part two");
+      expect(v.key).toBe(conversationOf(JSON.stringify({ messages: [{ role: "user", content: "part one part two" }] }), "").key);
+    });
+
+    it("reads the responses wire — input as string and as message array", () => {
+      const asString = conversationOf(JSON.stringify({ input: "fix the bug" }), "");
+      const asArray = conversationOf(JSON.stringify({ input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "fix the bug" }] }] }), "");
+      expect(firstUserText(JSON.parse(JSON.stringify({ input: "fix the bug" })))).toBe("fix the bug");
+      expect(asArray.title).toBe("fix the bug");
+      expect(asString.key).toBe(asArray.key);
+    });
+
+    it("unidentifiable bodies → empty key (caller makes solo groups) and the fallback title", () => {
+      expect(conversationOf("not json", "fb")).toEqual({ key: "", title: "fb" });
+      expect(conversationOf(JSON.stringify({ messages: [{ role: "assistant", content: "only" }] }), "fb")).toEqual({ key: "", title: "fb" });
     });
   });
 });

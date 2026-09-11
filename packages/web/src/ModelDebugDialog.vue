@@ -3,6 +3,7 @@ import { ref, computed, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { req, type ModelView, type DebugCapture } from "@/api";
 import { fmtLabel, providerColor } from "@/lib/format";
+import { conversationOf } from "@/lib/conv";
 import { toast } from "@/lib/toast";
 import { copyText } from "@/lib/clipboard";
 import { Button } from "@/components/ui/button";
@@ -10,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import DebugContent from "./DebugContent.vue";
-import { ArrowLeft, Brain, Copy, Loader2, RefreshCw, Bug, X } from "lucide-vue-next";
+import { ArrowLeft, Brain, ChevronDown, ChevronRight, Copy, Loader2, RefreshCw, Bug, X } from "lucide-vue-next";
 
 /** Per-model debug capture (GET/PUT/DELETE /admin/models/:name/debug*).
  *  Two tiers, one timeline: failed upstream attempts are ALWAYS recorded (a
@@ -53,6 +54,7 @@ watch(
   (o) => {
     if (o) {
       detail.value = null;
+      expanded.value = new Set();
       void load();
     }
   },
@@ -100,6 +102,60 @@ const rows = computed(() => {
     ...switchOnly.map((c) => ({ c, auto: false })),
   ].sort((a, b) => b.c.ts - a.c.ts);
 });
+
+/** Conversation grouping (the default view): agents resend the whole history
+ *  every turn, so one conversation = many attempts. Groups share a key derived
+ *  from the request body (see lib/conv) — newest conversation first, attempts
+ *  inside read oldest→newest like the exchange itself. */
+type Row = { c: DebugCapture; auto: boolean };
+interface ConvGroup {
+  key: string;
+  title: string;
+  items: Row[];
+  lastTs: number;
+  fails: number;
+}
+
+const viewMode = ref<"conv" | "flat">("conv");
+const expanded = ref<Set<string>>(new Set());
+
+const groups = computed<ConvGroup[]>(() => {
+  const map = new Map<string, ConvGroup>();
+  rows.value.forEach((r, i) => {
+    const conv = conversationOf(r.c.request, t("models.debugConvNoUser"));
+    const key = conv.key || `solo:${i}`;
+    let g = map.get(key);
+    if (!g) {
+      g = { key, title: conv.title, items: [], lastTs: 0, fails: 0 };
+      map.set(key, g);
+    }
+    g.items.push(r);
+    if (r.c.ts > g.lastTs) g.lastTs = r.c.ts;
+    if (isFail(r.c)) g.fails += 1;
+  });
+  for (const g of map.values()) g.items.sort((a, b) => a.c.ts - b.c.ts);
+  return [...map.values()].sort((a, b) => b.lastTs - a.lastTs);
+});
+
+type Disp = { kind: "group"; g: ConvGroup } | { kind: "row"; r: Row; indent: boolean };
+/** Flat = the raw timeline; conv = group headers interleaved with their (only
+ *  when expanded) rows — one list, one v-for, either way. */
+const display = computed<Disp[]>(() => {
+  if (viewMode.value === "flat") return rows.value.map((r) => ({ kind: "row" as const, r, indent: false }));
+  const out: Disp[] = [];
+  for (const g of groups.value) {
+    out.push({ kind: "group", g });
+    if (expanded.value.has(g.key)) for (const r of g.items) out.push({ kind: "row", r, indent: true });
+  }
+  return out;
+});
+
+function toggleGroup(key: string) {
+  const next = new Set(expanded.value);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  expanded.value = next;
+}
 
 function time(ts: number): string {
   return new Date(ts).toLocaleTimeString([], { hour12: false });
@@ -245,6 +301,24 @@ async function copy(s: string | undefined) {
         <div class="flex items-center gap-2">
           <Switch :model-value="enabled" :disabled="saving || loading" :aria-label="t('models.debugSwitch')" @update:model-value="toggle" />
           <span class="min-w-0 flex-1 text-sm">{{ t("models.debugSwitch") }}</span>
+          <div class="flex items-center rounded-md border p-0.5">
+            <button
+              type="button"
+              class="rounded px-1.5 py-0.5 text-[11px]"
+              :class="viewMode === 'conv' ? 'bg-muted font-medium text-foreground' : 'text-muted-foreground hover:text-foreground'"
+              @click="viewMode = 'conv'"
+            >
+              {{ t("models.debugModeConv") }}
+            </button>
+            <button
+              type="button"
+              class="rounded px-1.5 py-0.5 text-[11px]"
+              :class="viewMode === 'flat' ? 'bg-muted font-medium text-foreground' : 'text-muted-foreground hover:text-foreground'"
+              @click="viewMode = 'flat'"
+            >
+              {{ t("models.debugModeFlat") }}
+            </button>
+          </div>
           <Button
             variant="outline" size="icon" class="size-8 shrink-0"
             :disabled="loading" :title="t('models.debugRefresh')" :aria-label="t('models.debugRefresh')"
@@ -271,30 +345,49 @@ async function copy(s: string | undefined) {
             </Button>
           </div>
           <div class="max-h-80 divide-y overflow-y-auto rounded-md border">
-            <button
-              v-for="(r, i) in rows"
-              :key="`${r.c.ts}-${i}`"
-              type="button"
-              class="flex w-full cursor-pointer flex-wrap items-center gap-x-2 gap-y-0.5 px-3 py-1.5 text-left transition-colors hover:bg-muted/50"
-              @click="detail = r.c"
-            >
-              <span class="w-12 shrink-0 font-mono text-xs text-muted-foreground">{{ time(r.c.ts) }}</span>
-              <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="providerColor(r.c.providerId).solid" />
-              <span class="min-w-0 max-w-40 truncate font-medium">{{ r.c.provider }}</span>
-              <span v-if="r.c.upstreamModel" class="min-w-0 max-w-40 truncate font-mono text-xs text-muted-foreground" :title="r.c.upstreamModel">› {{ r.c.upstreamModel }}</span>
-              <Badge v-if="r.c.status === 0" variant="secondary" class="shrink-0">{{ t("models.debugNetwork") }}</Badge>
-              <Badge v-else-if="r.c.status < 300" variant="success" class="shrink-0 font-mono">{{ r.c.status }}</Badge>
-              <Badge v-else variant="destructive" class="shrink-0 font-mono">{{ r.c.status }}</Badge>
-              <span
-                v-if="r.c.thinking"
-                class="inline-flex shrink-0 items-center gap-0.5 font-mono text-[10px] text-muted-foreground"
-                :title="t('models.editor.thinkingLabel')"
+            <template v-for="(d, i) in display" :key="d.kind === 'group' ? `g:${d.g.key}` : `r:${d.r.c.ts}-${i}`">
+              <button
+                v-if="d.kind === 'group'"
+                type="button"
+                class="flex w-full cursor-pointer items-center gap-2 bg-muted/30 px-3 py-1.5 text-left transition-colors hover:bg-muted/60"
+                @click="toggleGroup(d.g.key)"
               >
-                <Brain class="h-2.5 w-2.5" />{{ r.c.thinking.value }}
-              </span>
-              <Badge v-if="r.auto" variant="secondary" class="shrink-0 text-[10px]">{{ t("models.debugAutoTag") }}</Badge>
-              <span class="ml-auto shrink-0 font-mono text-xs text-muted-foreground">{{ r.c.ms }}ms · {{ size(r.c.request) }}/{{ size(r.c.response) }}</span>
-            </button>
+                <ChevronDown v-if="expanded.has(d.g.key)" class="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <ChevronRight v-else class="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <span class="w-12 shrink-0 font-mono text-xs text-muted-foreground">{{ time(d.g.lastTs) }}</span>
+                <span class="min-w-0 flex-1 truncate" :title="d.g.title">{{ d.g.title }}</span>
+                <Badge v-if="d.g.fails" variant="destructive" class="shrink-0 text-[10px]">
+                  {{ t("models.debugConvFails", { n: d.g.fails }) }}
+                </Badge>
+                <Badge variant="secondary" class="shrink-0 text-[10px]">
+                  {{ t("models.debugConvReqs", { n: d.g.items.length }) }}
+                </Badge>
+              </button>
+              <button
+                v-else
+                type="button"
+                class="flex w-full cursor-pointer flex-wrap items-center gap-x-2 gap-y-0.5 px-3 py-1.5 text-left transition-colors hover:bg-muted/50"
+                :class="d.indent ? 'pl-7' : ''"
+                @click="detail = d.r.c"
+              >
+                <span class="w-12 shrink-0 font-mono text-xs text-muted-foreground">{{ time(d.r.c.ts) }}</span>
+                <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="providerColor(d.r.c.providerId).solid" />
+                <span class="min-w-0 max-w-40 truncate font-medium">{{ d.r.c.provider }}</span>
+                <span v-if="d.r.c.upstreamModel" class="min-w-0 max-w-40 truncate font-mono text-xs text-muted-foreground" :title="d.r.c.upstreamModel">› {{ d.r.c.upstreamModel }}</span>
+                <Badge v-if="d.r.c.status === 0" variant="secondary" class="shrink-0">{{ t("models.debugNetwork") }}</Badge>
+                <Badge v-else-if="d.r.c.status < 300" variant="success" class="shrink-0 font-mono">{{ d.r.c.status }}</Badge>
+                <Badge v-else variant="destructive" class="shrink-0 font-mono">{{ d.r.c.status }}</Badge>
+                <span
+                  v-if="d.r.c.thinking"
+                  class="inline-flex shrink-0 items-center gap-0.5 font-mono text-[10px] text-muted-foreground"
+                  :title="t('models.editor.thinkingLabel')"
+                >
+                  <Brain class="h-2.5 w-2.5" />{{ d.r.c.thinking.value }}
+                </span>
+                <Badge v-if="d.r.auto" variant="secondary" class="shrink-0 text-[10px]">{{ t("models.debugAutoTag") }}</Badge>
+                <span class="ml-auto shrink-0 font-mono text-xs text-muted-foreground">{{ d.r.c.ms }}ms · {{ size(d.r.c.request) }}/{{ size(d.r.c.response) }}</span>
+              </button>
+            </template>
           </div>
         </div>
         <div v-else-if="enabled" class="flex flex-col items-center gap-2 px-4 py-10 text-center">
