@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { cn } from "../src/lib/utils";
 import { FMT_ACCENT, providerColor, type Fmt } from "../src/lib/format";
 import { providerModelList } from "../src/lib/models";
-import { conversationOf, firstUserText } from "../src/lib/conv";
+import { analyzeRequest, assignConversationGroups, conversationGroupsOf } from "../src/lib/conv";
 
 // The Fmt union, as a runtime mirror for key-set assertions.
 const FMT_KEYS = ["openai", "anthropic", "responses"] as const;
@@ -82,65 +82,98 @@ describe("web/lib", () => {
     });
   });
 
-  describe("conversationOf() — debug-capture conversation grouping", () => {
-    const chat = (firstUser: string, lastUser?: string) =>
+  describe("conversation grouping — containment of resent history", () => {
+    /** chat wire; one user message per "turn". */
+    const chat = (turns: string[], uid?: string) =>
       JSON.stringify({
-        model: "m",
+        ...(uid ? { metadata: { user_id: uid } } : {}),
+        messages: turns.map((content) => ({ role: "user", content })),
+      });
+    const groupsOf = (bodies: string[]) => new Set(assignConversationGroups(bodies.map(analyzeRequest))).size;
+
+    it("later requests contain earlier ones → the whole conversation is ONE group", () => {
+      expect(groupsOf([chat(["hello"]), chat(["hello", "hi"]), chat(["hello", "hi", "and more"])])).toBe(1);
+    });
+
+    it("different openings → different groups (containment never bridges them)", () => {
+      expect(groupsOf([chat(["task one"]), chat(["task one", "continue"]), chat(["task two"])])).toBe(2);
+    });
+
+    it("a body TRUNCATED at the capture cap still joins its conversation via its raw-text prefix", () => {
+      const full = chat(["hello", "second turn with some more text", "third turn with even more text in it"]);
+      const cut = full.slice(0, Math.floor(full.length * 0.55));
+      expect(JSON.parse.bind(null, cut)).toThrow(); // genuinely unparseable, like a capped capture
+      expect(groupsOf([full, cut])).toBe(1);
+      expect(analyzeRequest(cut).hashes.length).toBeGreaterThan(0); // leading messages still extracted
+    });
+
+    it("a moving cache_control breakpoint does not split a conversation", () => {
+      const withCc = JSON.stringify({ messages: [{ role: "user", content: "hi", cache_control: { type: "ephemeral" } }] });
+      const withoutCc = JSON.stringify({ messages: [{ role: "user", content: "hi" }] });
+      expect(groupsOf([withCc, withoutCc])).toBe(1);
+    });
+
+    it("the same metadata.user_id unions even when content diverged (compaction)", () => {
+      expect(groupsOf([chat(["rewritten context"], "sess_A"), chat(["different now"], "sess_A")])).toBe(1);
+      expect(groupsOf([chat(["session one"], "sess_A"), chat(["session two"], "sess_B")])).toBe(2);
+    });
+
+    it("responses wire: string input and array input of the same text are the same prefix", () => {
+      expect(
+        groupsOf([
+          JSON.stringify({ input: "fix the bug" }),
+          JSON.stringify({ input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "fix the bug" }] }] }),
+          JSON.stringify({
+            input: [
+              { type: "message", role: "user", content: [{ type: "input_text", text: "fix the bug" }] },
+              { type: "message", role: "user", content: [{ type: "input_text", text: "still failing" }] },
+            ],
+          }),
+        ]),
+      ).toBe(1);
+    });
+
+    it("unidentifiable bodies stay solo; the title falls back", () => {
+      expect(groupsOf(["not json", "also not json"])).toBe(2);
+      expect(analyzeRequest("not json")).toEqual({ hashes: [], uid: "", title: "" });
+    });
+
+    it("title = first user message preview, whitespace-collapsed, capped at 80 chars", () => {
+      expect(analyzeRequest(chat(["  hello   world "])).title).toBe("hello world");
+      expect(analyzeRequest(chat(["a".repeat(120)])).title).toBe("a".repeat(80) + "…");
+      const sysFirst = JSON.stringify({ messages: [{ role: "system", content: "sys prompt" }, { role: "user", content: "real ask" }] });
+      expect(analyzeRequest(sysFirst).title).toBe("real ask");
+    });
+
+    it("title skips injected <system-reminder> chunks to the real prompt in the same message", () => {
+      const cc = JSON.stringify({
         messages: [
-          { role: "system", content: "sys" },
-          { role: "user", content: firstUser },
-          { role: "assistant", content: "hi" },
-          ...(lastUser ? [{ role: "user", content: lastUser }] : []),
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "<system-reminder>\nAs you answer the user's questions, you can use the following context.\n</system-reminder>" },
+              { type: "text", text: "fix the login bug" },
+            ],
+          },
         ],
       });
-
-    it("turns of one conversation share a key (first user message is constant); others differ", () => {
-      const t1 = conversationOf(chat("hello world"), "");
-      const t2 = conversationOf(chat("hello world", "follow-up"), "");
-      const other = conversationOf(chat("different task"), "");
-      expect(t2.key).toBe(t1.key);
-      expect(other.key).not.toBe(t1.key);
-    });
-
-    it("titles come from the first user message, whitespace-collapsed and capped at 80 chars", () => {
-      const long = "a".repeat(120) + " tail";
-      const v = conversationOf(chat(`  ${long}  \n more`), "");
-      expect(v.title).toBe(`a`.repeat(80) + "…");
-      const short = conversationOf(chat("short prompt"), "");
-      expect(short.title).toBe("short prompt");
-    });
-
-    it("metadata.user_id wins over the message hash (same text, two sessions stay apart)", () => {
-      const a = conversationOf(JSON.stringify({ metadata: { user_id: "user_1__session_A" }, messages: [{ role: "user", content: "same" }] }), "");
-      const b = conversationOf(JSON.stringify({ metadata: { user_id: "user_1__session_B" }, messages: [{ role: "user", content: "same" }] }), "");
-      const c = conversationOf(JSON.stringify({ metadata: { user_id: "user_1__session_A" }, messages: [{ role: "user", content: "same" }, { role: "user", content: "grew" }] }), "");
-      expect(b.key).not.toBe(a.key);
-      expect(c.key).toBe(a.key);
-    });
-
-    it("reads the anthropic wire (content parts arrays; non-text parts contribute nothing)", () => {
-      const body = JSON.stringify({
-        system: "sys",
-        messages: [
-          { role: "user", content: [{ type: "text", text: "part one" }, { type: "image", source: {} }, { type: "text", text: "part two" }] },
-        ],
+      expect(analyzeRequest(cc).title).toBe("fix the login bug");
+      // wrapper inline before the prompt in ONE string (Claude Code ide_selection style)
+      const inline = JSON.stringify({
+        messages: [{ role: "user", content: "<ide_selection>lines 119 to 131</ide_selection>\n\nrefactor this loop" }],
       });
-      const v = conversationOf(body, "");
-      expect(v.title).toBe("part one part two");
-      expect(v.key).toBe(conversationOf(JSON.stringify({ messages: [{ role: "user", content: "part one part two" }] }), "").key);
+      expect(analyzeRequest(inline).title).toBe("refactor this loop");
+      // a message that is ONLY a wrapper → nothing left to title
+      expect(analyzeRequest(JSON.stringify({ messages: [{ role: "user", content: "<system-reminder>only this</system-reminder>" }] })).title).toBe("");
     });
 
-    it("reads the responses wire — input as string and as message array", () => {
-      const asString = conversationOf(JSON.stringify({ input: "fix the bug" }), "");
-      const asArray = conversationOf(JSON.stringify({ input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "fix the bug" }] }] }), "");
-      expect(firstUserText(JSON.parse(JSON.stringify({ input: "fix the bug" })))).toBe("fix the bug");
-      expect(asArray.title).toBe("fix the bug");
-      expect(asString.key).toBe(asArray.key);
-    });
-
-    it("unidentifiable bodies → empty key (caller makes solo groups) and the fallback title", () => {
-      expect(conversationOf("not json", "fb")).toEqual({ key: "", title: "fb" });
-      expect(conversationOf(JSON.stringify({ messages: [{ role: "assistant", content: "only" }] }), "fb")).toEqual({ key: "", title: "fb" });
+    it("conversationGroupsOf returns ids and shapes aligned with the input", () => {
+      const { ids, shapes } = conversationGroupsOf([chat(["a"]), chat(["a", "b"]), "garbage"]);
+      expect(ids).toHaveLength(3);
+      expect(shapes).toHaveLength(3);
+      expect(ids[0]).toBe(ids[1]);
+      expect(ids[2]).not.toBe(ids[0]);
+      expect(shapes[0].title).toBe("a");
     });
   });
 });
