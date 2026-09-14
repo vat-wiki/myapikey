@@ -368,7 +368,7 @@ async function copy(s: string | undefined) {
                 class="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-muted/50"
                 @click="openConversation(g)"
               >
-                <span class="w-12 shrink-0 font-mono text-xs text-muted-foreground">{{ time(g.lastTs) }}</span>
+                <span class="w-16 shrink-0 font-mono text-xs text-muted-foreground">{{ time(g.lastTs) }}</span>
                 <span class="min-w-0 flex-1 truncate" :title="g.title">{{ g.title }}</span>
                 <Badge v-if="g.fails" variant="destructive" class="shrink-0 text-[10px]">
                   {{ t("models.debugConvFails", { n: g.fails }) }}
@@ -386,7 +386,7 @@ async function copy(s: string | undefined) {
                 class="flex w-full cursor-pointer flex-wrap items-center gap-x-2 gap-y-0.5 px-3 py-1.5 text-left transition-colors hover:bg-muted/50"
                 @click="openFlat(r)"
               >
-                <span class="w-12 shrink-0 font-mono text-xs text-muted-foreground">{{ time(r.c.ts) }}</span>
+                <span class="w-16 shrink-0 font-mono text-xs text-muted-foreground">{{ time(r.c.ts) }}</span>
                 <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="providerColor(r.c.providerId).solid" />
                 <span class="min-w-0 max-w-40 truncate font-medium">{{ r.c.provider }}</span>
                 <span v-if="r.c.upstreamModel" class="min-w-0 max-w-40 truncate font-mono text-xs text-muted-foreground" :title="r.c.upstreamModel">› {{ r.c.upstreamModel }}</span>
