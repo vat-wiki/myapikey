@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { tmpStore } from "../helpers/store";
@@ -121,6 +121,29 @@ describe("server/app", () => {
         const res = await createApp(store, { webDir: dir }).request("/");
         expect(res.status).toBe(200);
         expect(await res.text()).toBe(html);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("HTML responses are no-cache so updates survive a plain reload", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "myapikey-web-"));
+      writeFileSync(join(dir, "index.html"), "<!doctype html><html><body>ui</body></html>");
+      mkdirSync(join(dir, "assets"));
+      writeFileSync(join(dir, "assets", "index-abc123.js"), "console.log(1)");
+      try {
+        const app = createApp(store, { webDir: dir });
+        // root index.html …
+        const root = await app.request("/");
+        expect(root.headers.get("cache-control")).toBe("no-cache");
+        // … the SPA fallback (deep link) …
+        const deep = await app.request("/some/deep/link");
+        expect(deep.status).toBe(200);
+        expect(deep.headers.get("content-type")).toContain("text/html");
+        expect(deep.headers.get("cache-control")).toBe("no-cache");
+        // … and hashed assets cache forever (they never change under a name).
+        const asset = await app.request("/assets/index-abc123.js");
+        expect(asset.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }

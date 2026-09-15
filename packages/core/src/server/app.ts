@@ -59,6 +59,19 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono {
 
   // Web UI: serve built SPA when available.
   if (opts.webDir && existsSync(opts.webDir)) {
+    // Cache discipline is what makes an update visible after a plain reload:
+    // index.html (any HTML response — root or SPA fallback) must always be
+    // revalidated, while /assets/* filenames are content-hashed and immutable.
+    // Without this, browsers heuristic-cache the old index.html and keep
+    // booting the previous build until a hard refresh.
+    app.use("/*", async (c, next) => {
+      await next();
+      if ((c.res.headers.get("content-type") ?? "").startsWith("text/html")) {
+        c.res.headers.set("Cache-Control", "no-cache");
+      } else if (c.req.path.startsWith("/assets/")) {
+        c.res.headers.set("Cache-Control", "public, max-age=31536000, immutable");
+      }
+    });
     app.use("/*", serveStatic({ root: opts.webDir }));
     app.get("*", async (c) => {
       try {
