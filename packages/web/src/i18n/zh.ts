@@ -238,7 +238,7 @@ export default {
     testSource: "测试该来源",
     testSourceHint: "把一次调用钉在这个槽位上直测,不走故障转移;显示该来源在该协议下的真实状态。",
     routeDisabled: "已停用",
-    chainPopHint: "最近实际路由到的源与模型——点击查看完整链路",
+    chainExpandHint: "最近实际路由到的源与模型——展开完整链路,每个源可单独连通测试",
     chainActiveHint: "最近实际路由",
     chainFailHint: "最近一次失败——点击查看真实报错",
     renameModel: "重命名",

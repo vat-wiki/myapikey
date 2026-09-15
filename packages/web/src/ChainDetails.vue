@@ -20,9 +20,9 @@ import type { LastFail } from "@/api";
 import { FMT_ACCENT, FMT_META, providerColor } from "@/lib/format";
 
 /** One chain line rendered in FULL — every slot as a numbered capsule with
- *  per-slot probe affordances. The popover content behind the collapsed
- *  "in-use" chip on both Models views; probe state comes from the owner.
- *  `active` marks the slot that actually served most recently (ring);
+ *  per-slot probe affordances. Rendered inline under a model row (cards and
+ *  table views both expand it on the page itself); probe state comes from the
+ *  owner. `active` marks the slot that actually served most recently (ring);
  *  `fails` flags slots with a recent failed call — click the marker for the
  *  real error text. */
 const props = defineProps<{
@@ -98,13 +98,14 @@ function toggleErr(si: number) {
             >
               <TriangleAlert class="h-3 w-3" />{{ failFor(si)!.status || "?" }}
             </button>
+            <!-- stop: the expansion lives inside the clickable model card/row -->
             <button
               v-if="slotState(model, line, si)?.state !== 'testing'"
               type="button"
               class="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-muted-foreground/40 transition-colors hover:bg-accent hover:text-accent-foreground"
               :title="t('models.testSourceHint')"
               :aria-label="`${t('models.testSource')} · ${s.name}`"
-              @click="probeSlot(model, line, si)"
+              @click.stop="probeSlot(model, line, si)"
             >
               <Zap class="h-3 w-3" />
             </button>

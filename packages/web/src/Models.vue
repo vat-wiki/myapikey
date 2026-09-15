@@ -14,7 +14,6 @@ import { Card, CardContent } from "@/components/ui/card";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
 import {
   Search, Plus, Loader2, Copy, Zap, Gauge, MoreHorizontal, Pencil, Trash2,
@@ -355,6 +354,20 @@ function slotProbeTitle(m: ModelView, line: ChainLine, i: number): string {
   }).join("\n");
 }
 
+// --- inline chain expansion ---
+// The list collapses each chain to its serving slot; expanding it right on the
+// page (instead of a popover) is what puts per-SOURCE tests on the models list:
+// every slot gets its own probe, because the aggregate model test only answers
+// "some route works" and hides a dead source behind failover.
+
+const chainOpen = ref<Record<string, boolean>>({});
+const chainKey = (m: ModelView, line: ChainLine): string => `${m.name}|${line.key}`;
+
+function toggleChain(m: ModelView, line: ChainLine) {
+  const k = chainKey(m, line);
+  chainOpen.value[k] = !chainOpen.value[k];
+}
+
 async function copyName(name: string) {
   const ok = await copyText(name);
   toast(ok ? t("connect.copied") : t("connect.copyFailed"), ok ? "success" : "error");
@@ -509,68 +522,63 @@ async function copyName(name: string) {
             </div>
           </div>
 
-          <!-- routing chain: per line, format toggles + the ACTUALLY-SERVED
-               slot as a chip that pops the FULL chain (all slots + probes)
-               — no container-level click.stop: empty space bubbles up to the
-               card's open-editor click; the chips stop it themselves -->
+          <!-- routing chain: per line, format toggles + a served-slot chip that
+               EXPANDS THE FULL CHAIN INLINE (all slots, each individually
+               probeable — per-source tests live on the page itself). The
+               chips/expansion stop their own clicks; empty space still opens
+               the editor via the card click -->
           <div class="min-w-0 flex-1 space-y-1.5">
             <template v-if="chainLines(m).length">
-              <div
-                v-for="line in chainLines(m)"
-                :key="line.key"
-                class="flex flex-wrap items-center gap-x-1.5 gap-y-1"
-                :class="{ 'opacity-60': !line.enabled }"
-              >
-                <button
-                  v-for="f in line.fs"
-                  :key="f"
-                  type="button"
-                  :title="chipTitle(m, f)"
-                  :aria-label="chipTitle(m, f)"
-                  class="inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-medium transition-colors"
-                  :class="chipClass(m, f)"
-                  @click.stop="toggleFmt(m, f)"
-                >
-                  {{ t(FMT_META[f].label) }}
-                </button>
-                <span class="h-4 w-px shrink-0 bg-border" aria-hidden="true" />
-                <Popover>
-                  <PopoverTrigger as-child>
-                    <button
-                      type="button"
-                      class="inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs transition-colors hover:bg-accent hover:text-accent-foreground"
-                      :class="slotChipClass(m, line, servedSlot(m, line).i)"
-                      :title="t('models.chainPopHint')"
-                      :aria-label="t('models.chainPopHint')"
-                      @click.stop
+              <div v-for="line in chainLines(m)" :key="line.key" class="space-y-1.5">
+                <div class="flex flex-wrap items-center gap-x-1.5 gap-y-1" :class="{ 'opacity-60': !line.enabled }">
+                  <button
+                    v-for="f in line.fs"
+                    :key="f"
+                    type="button"
+                    :title="chipTitle(m, f)"
+                    :aria-label="chipTitle(m, f)"
+                    class="inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-medium transition-colors"
+                    :class="chipClass(m, f)"
+                    @click.stop="toggleFmt(m, f)"
+                  >
+                    {{ t(FMT_META[f].label) }}
+                  </button>
+                  <span class="h-4 w-px shrink-0 bg-border" aria-hidden="true" />
+                  <button
+                    type="button"
+                    class="inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs transition-colors hover:bg-accent hover:text-accent-foreground"
+                    :class="slotChipClass(m, line, servedSlot(m, line).i)"
+                    :title="t('models.chainExpandHint')"
+                    :aria-label="t('models.chainExpandHint')"
+                    :aria-expanded="chainOpen[chainKey(m, line)] ? 'true' : 'false'"
+                    @click.stop="toggleChain(m, line)"
+                  >
+                    <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="providerColor(servedSlot(m, line).s.id).solid" />
+                    <span class="shrink-0 font-medium">{{ servedSlot(m, line).s.name }}</span>
+                    <span v-if="servedSlot(m, line).s.model" class="min-w-0 truncate font-mono text-muted-foreground" :title="servedSlot(m, line).s.model">› {{ servedSlot(m, line).s.model }}</span>
+                    <span
+                      v-if="servedSlot(m, line).s.thinking"
+                      class="inline-flex shrink-0 items-center gap-0.5 font-mono text-[10px] text-muted-foreground"
+                      :title="t('models.editor.thinkingLabel')"
                     >
-                      <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="providerColor(servedSlot(m, line).s.id).solid" />
-                      <span class="shrink-0 font-medium">{{ servedSlot(m, line).s.name }}</span>
-                      <span v-if="servedSlot(m, line).s.model" class="min-w-0 truncate font-mono text-muted-foreground" :title="servedSlot(m, line).s.model">› {{ servedSlot(m, line).s.model }}</span>
-                      <span
-                        v-if="servedSlot(m, line).s.thinking"
-                        class="inline-flex shrink-0 items-center gap-0.5 font-mono text-[10px] text-muted-foreground"
-                        :title="t('models.editor.thinkingLabel')"
-                      >
-                        <Brain class="h-2.5 w-2.5" />{{ servedSlot(m, line).s.thinking }}
-                      </span>
-                      <ChevronDown class="h-3 w-3 shrink-0 text-muted-foreground/60" />
-                    </button>
-                  </PopoverTrigger>
-                  <PopoverContent align="start" class="w-auto max-w-sm p-3">
-                    <ChainDetails
-                      :model="m"
-                      :line="line"
-                      :active="servedSlot(m, line).actual ? servedSlot(m, line).i : undefined"
-                      :fails="lineFails(m, line)"
-                      :slot-state="slotProbeState"
-                      :slot-title="slotProbeTitle"
-                      :slot-class="slotChipClass"
-                      :probe-slot="testSlot"
-                    />
-                  </PopoverContent>
-                </Popover>
-                <span v-if="!line.enabled" class="text-xs text-muted-foreground">· {{ t("models.routeDisabled") }}</span>
+                      <Brain class="h-2.5 w-2.5" />{{ servedSlot(m, line).s.thinking }}
+                    </span>
+                    <ChevronDown class="h-3 w-3 shrink-0 text-muted-foreground/60 transition-transform" :class="{ 'rotate-180': chainOpen[chainKey(m, line)] }" />
+                  </button>
+                  <span v-if="!line.enabled" class="text-xs text-muted-foreground">· {{ t("models.routeDisabled") }}</span>
+                </div>
+                <div v-if="chainOpen[chainKey(m, line)]" @click.stop>
+                  <ChainDetails
+                    :model="m"
+                    :line="line"
+                    :active="servedSlot(m, line).actual ? servedSlot(m, line).i : undefined"
+                    :fails="lineFails(m, line)"
+                    :slot-state="slotProbeState"
+                    :slot-title="slotProbeTitle"
+                    :slot-class="slotChipClass"
+                    :probe-slot="testSlot"
+                  />
+                </div>
               </div>
             </template>
             <div v-else class="rounded-md border border-dashed px-2.5 py-2 text-xs text-muted-foreground">
@@ -632,58 +640,52 @@ async function copyName(name: string) {
             </TableCell>
             <TableCell>
               <div v-if="chainLines(m).length" class="min-w-0 space-y-1">
-                <div
-                  v-for="line in chainLines(m)"
-                  :key="line.key"
-                  class="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1"
-                  :class="{ 'opacity-60': !line.enabled }"
-                >
-                  <template v-if="chainLines(m).length > 1">
-                    <span
-                      v-for="f in line.fs"
-                      :key="f"
-                      class="h-1.5 w-1.5 shrink-0 rounded-full"
-                      :class="FMT_ACCENT[f].solid"
-                      :title="t(FMT_META[f].label)"
-                    />
-                  </template>
-                  <Popover>
-                    <PopoverTrigger as-child>
-                      <button
-                        type="button"
-                        class="inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs transition-colors hover:bg-accent hover:text-accent-foreground"
-                        :class="slotChipClass(m, line, servedSlot(m, line).i)"
-                        :title="t('models.chainPopHint')"
-                        :aria-label="t('models.chainPopHint')"
-                        @click.stop
-                      >
-                        <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="providerColor(servedSlot(m, line).s.id).solid" />
-                        <span class="shrink-0 font-medium">{{ servedSlot(m, line).s.name }}</span>
-                        <span v-if="servedSlot(m, line).s.model" class="min-w-0 truncate font-mono text-muted-foreground" :title="servedSlot(m, line).s.model">› {{ servedSlot(m, line).s.model }}</span>
-                        <span
-                          v-if="servedSlot(m, line).s.thinking"
-                          class="inline-flex shrink-0 items-center gap-0.5 font-mono text-[10px] text-muted-foreground"
-                          :title="t('models.editor.thinkingLabel')"
-                        >
-                          <Brain class="h-2.5 w-2.5" />{{ servedSlot(m, line).s.thinking }}
-                        </span>
-                        <ChevronDown class="h-3 w-3 shrink-0 text-muted-foreground/60" />
-                      </button>
-                    </PopoverTrigger>
-                    <PopoverContent align="start" class="w-auto max-w-sm p-3">
-                      <ChainDetails
-                        :model="m"
-                        :line="line"
-                        :active="servedSlot(m, line).actual ? servedSlot(m, line).i : undefined"
-                        :fails="lineFails(m, line)"
-                        :slot-state="slotProbeState"
-                        :slot-title="slotProbeTitle"
-                        :slot-class="slotChipClass"
-                        :probe-slot="testSlot"
+                <div v-for="line in chainLines(m)" :key="line.key" class="min-w-0 space-y-1">
+                  <div class="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1" :class="{ 'opacity-60': !line.enabled }">
+                    <template v-if="chainLines(m).length > 1">
+                      <span
+                        v-for="f in line.fs"
+                        :key="f"
+                        class="h-1.5 w-1.5 shrink-0 rounded-full"
+                        :class="FMT_ACCENT[f].solid"
+                        :title="t(FMT_META[f].label)"
                       />
-                    </PopoverContent>
-                  </Popover>
-                  <span v-if="!line.enabled" class="text-xs text-muted-foreground">· {{ t("models.routeDisabled") }}</span>
+                    </template>
+                    <button
+                      type="button"
+                      class="inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs transition-colors hover:bg-accent hover:text-accent-foreground"
+                      :class="slotChipClass(m, line, servedSlot(m, line).i)"
+                      :title="t('models.chainExpandHint')"
+                      :aria-label="t('models.chainExpandHint')"
+                      :aria-expanded="chainOpen[chainKey(m, line)] ? 'true' : 'false'"
+                      @click.stop="toggleChain(m, line)"
+                    >
+                      <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="providerColor(servedSlot(m, line).s.id).solid" />
+                      <span class="shrink-0 font-medium">{{ servedSlot(m, line).s.name }}</span>
+                      <span v-if="servedSlot(m, line).s.model" class="min-w-0 truncate font-mono text-muted-foreground" :title="servedSlot(m, line).s.model">› {{ servedSlot(m, line).s.model }}</span>
+                      <span
+                        v-if="servedSlot(m, line).s.thinking"
+                        class="inline-flex shrink-0 items-center gap-0.5 font-mono text-[10px] text-muted-foreground"
+                        :title="t('models.editor.thinkingLabel')"
+                      >
+                        <Brain class="h-2.5 w-2.5" />{{ servedSlot(m, line).s.thinking }}
+                      </span>
+                      <ChevronDown class="h-3 w-3 shrink-0 text-muted-foreground/60 transition-transform" :class="{ 'rotate-180': chainOpen[chainKey(m, line)] }" />
+                    </button>
+                    <span v-if="!line.enabled" class="text-xs text-muted-foreground">· {{ t("models.routeDisabled") }}</span>
+                  </div>
+                  <div v-if="chainOpen[chainKey(m, line)]" @click.stop>
+                    <ChainDetails
+                      :model="m"
+                      :line="line"
+                      :active="servedSlot(m, line).actual ? servedSlot(m, line).i : undefined"
+                      :fails="lineFails(m, line)"
+                      :slot-state="slotProbeState"
+                      :slot-title="slotProbeTitle"
+                      :slot-class="slotChipClass"
+                      :probe-slot="testSlot"
+                    />
+                  </div>
                 </div>
               </div>
               <span v-else class="text-xs text-muted-foreground">{{ t("models.unroutedHint") }}</span>
