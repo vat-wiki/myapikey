@@ -238,7 +238,7 @@ export default {
     testSource: "Test this source",
     testSourceHint: "One loopback call pinned to this slot — no failover; reports this source's real status under this protocol.",
     routeDisabled: "Disabled",
-    chainExpandHint: "Last serving source — expand the full chain to connectivity-test each source",
+    chainListHint: "Last serving source — open the source list and test each source individually",
     chainActiveHint: "most recently served",
     chainFailHint: "Recent failure — click for the actual error",
     renameModel: "Rename",
