@@ -297,7 +297,7 @@ export default {
       helpThinking: "「思考等级」在每行的「更多操作」菜单里设置;已设置则覆盖请求自带的思考参数,不设置则透传。",
       helpSampling: "每个槽位还可在同一菜单里设置默认采样参数(temperature、top_p、top_k、惩罚系数、seed):已填字段覆盖请求自带的同名参数,留空透传。部分后端不一定支持所有字段。",
       advancedToggle: "高级选项",
-      enabledLabel: "启用该协议",
+      fmtSummary: "{n} 个来源",
       emptyChain: "未配置来源",
       paceLabel: "匀速限速(次/分钟)",
       pacePh: "不限",

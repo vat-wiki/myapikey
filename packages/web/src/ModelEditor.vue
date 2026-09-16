@@ -9,7 +9,6 @@ import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
@@ -109,7 +108,14 @@ const { t } = useI18n();
 
 const name = ref("");
 const fmtSlots = ref<Record<Fmt, DraftSlot[]>>({ openai: [], anthropic: [], responses: [] });
+/** No switch in the UI: a protocol is "used" iff it has slots. The flag stays
+ *  internal so a route the card chip disabled (enabled:false with slots)
+ *  survives an editor save — it only flips when the user edits that chain
+ *  here (adds a slot → on, empties it → off). */
 const fmtEnabled = ref<Record<Fmt, boolean>>({ openai: false, anthropic: false, responses: false });
+/** Per-protocol section expand state — collapsed by default; the header
+ *  summary (slot count) tells configured chains apart at a glance. */
+const expanded = ref<Record<Fmt, boolean>>({ openai: false, anthropic: false, responses: false });
 const pace = ref("");
 const saving = ref(false);
 const nameErr = ref("");
@@ -143,6 +149,7 @@ function init() {
   showHelp.value = false;
   fmtSlots.value = { openai: [], anthropic: [], responses: [] };
   fmtEnabled.value = { openai: false, anthropic: false, responses: false };
+  expanded.value = { openai: false, anthropic: false, responses: false };
   const m = props.model;
   if (!m) {
     advancedOpen.value = false;
@@ -165,11 +172,13 @@ watch(open, (o) => {
 
 function addSlot(f: Fmt) {
   fmtSlots.value[f].push(makeSlot({ id: props.providers[0]?.id ?? "" }));
+  fmtEnabled.value[f] = true;
 }
 function removeSlot(f: Fmt, uid: number) {
   const i = fmtSlots.value[f].findIndex((s) => s.uid === uid);
   if (i === -1) return;
   fmtSlots.value[f].splice(i, 1);
+  if (!fmtSlots.value[f].length) fmtEnabled.value[f] = false;
   delete rowErr.value[f];
 }
 /** Changing the provider resets the upstream fields — the old upstream name,
@@ -357,6 +366,12 @@ async function save() {
 }
 
 const hasProviders = computed(() => props.providers.length > 0);
+/** Sections shown: hide a protocol the user can neither use nor has already
+ *  configured ("if we support it, it just works") — an orphaned chain (slots
+ *  but no supporting source left) stays visible so it can be fixed. */
+const visibleFormats = computed(() =>
+  FORMATS.filter((f) => fmtSlots.value[f].length > 0 || props.providers.some((p) => supports(p.id, f))),
+);
 </script>
 
 <template>
@@ -414,16 +429,28 @@ const hasProviders = computed(() => props.providers.length > 0);
               <Label>{{ t("models.editor.chainTitle") }}</Label>
               <span class="text-xs text-muted-foreground">{{ t("models.editor.chainPriority") }}</span>
             </div>
-            <div v-for="f in FORMATS" :key="f" class="space-y-1 rounded-md border bg-muted/30 p-2">
-              <div class="flex items-center gap-1.5">
+            <div v-for="f in visibleFormats" :key="f" class="rounded-md border bg-muted/30 p-2">
+              <!-- collapsible section header: click to expand; the summary keeps
+                   configured chains legible while collapsed -->
+              <button
+                type="button"
+                class="flex w-full cursor-pointer items-center gap-1.5 text-left"
+                :aria-expanded="expanded[f]"
+                @click="expanded[f] = !expanded[f]"
+              >
                 <span class="h-2 w-2 rounded-full" :class="FMT_ACCENT[f].solid" />
                 <span class="text-xs font-semibold">{{ t(FMT_META[f].label) }}</span>
                 <span class="font-mono text-[11px] text-muted-foreground">{{ FMT_META[f].endpoint }}</span>
-                <Switch v-model="fmtEnabled[f]" class="ml-auto" :aria-label="t('models.editor.enabledLabel')" />
-              </div>
-              <div v-if="!fmtSlots[f].length" class="px-1 py-0.5 text-xs text-muted-foreground">{{ t("models.editor.emptyChain") }}</div>
+                <TriangleAlert v-if="rowErr[f]" class="h-3 w-3 shrink-0 text-destructive" :title="rowErr[f]" />
+                <span v-if="fmtSlots[f].length" class="ml-auto shrink-0 text-[11px] text-muted-foreground">
+                  {{ t("models.editor.fmtSummary", { n: fmtSlots[f].length }) }}
+                </span>
+                <ChevronDown class="h-3.5 w-3.5 shrink-0 text-muted-foreground/70 transition-transform" :class="{ 'rotate-180': expanded[f] }" />
+              </button>
+              <div v-if="expanded[f] && !fmtSlots[f].length" class="px-1 py-0.5 pt-1.5 text-xs text-muted-foreground">{{ t("models.editor.emptyChain") }}</div>
               <TransitionGroup
                 v-else
+                v-show="expanded[f]"
                 tag="div"
                 name="slots"
                 class="space-y-1"
@@ -541,10 +568,11 @@ const hasProviders = computed(() => props.providers.length > 0);
                   </template>
                 </div>
               </TransitionGroup>
-              <span v-if="rowErr[f]" class="inline-flex items-center gap-1 px-1 text-[11px] text-destructive">
+              <span v-if="rowErr[f] && expanded[f]" class="inline-flex items-center gap-1 px-1 text-[11px] text-destructive">
                 <TriangleAlert class="h-3 w-3" />{{ rowErr[f] }}
               </span>
               <Button
+                v-show="expanded[f]"
                 variant="outline"
                 size="sm"
                 class="h-7 w-full border-dashed text-xs"

@@ -297,7 +297,7 @@ export default {
       helpThinking: "Set each slot's default thinking level from the row's \"more actions\" menu; a configured level overrides the request's own thinking parameters, none passes through.",
       helpSampling: "Each slot can also carry default sampling params (temperature, top_p, top_k, penalties, seed) in the same menu: a filled field overrides the request's own value, blank passes through. Not every backend accepts every field.",
       advancedToggle: "Advanced",
-      enabledLabel: "Enable this protocol",
+      fmtSummary: "{n} source(s)",
       emptyChain: "No sources",
       paceLabel: "Even pacing (requests/min)",
       pacePh: "Unlimited",
