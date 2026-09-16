@@ -27,7 +27,7 @@ function set(key: string, v: unknown) {
 </script>
 
 <template>
-  <div class="grid grid-cols-2 gap-x-3 gap-y-1">
+  <div class="grid gap-y-1.5">
     <div v-for="f in FIELDS" :key="f.key" class="flex items-center gap-1.5">
       <span class="inline-flex shrink-0 items-center gap-0.5 font-mono text-xs text-foreground/80">
         {{ f.key }}
