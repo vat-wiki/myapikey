@@ -12,23 +12,28 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
+import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import Combobox from "@/components/Combobox.vue";
-import { Plus, Loader2, ServerCog, Brain, TriangleAlert, Info, ChevronDown, SlidersHorizontal, GripVertical, MoreHorizontal, Check, Trash2 } from "lucide-vue-next";
+import SamplingPanel from "@/SamplingPanel.vue";
+import { Plus, Loader2, ServerCog, Brain, TriangleAlert, Info, ChevronDown, SlidersHorizontal, GripVertical, MoreHorizontal, Check, Trash2, Settings2 } from "lucide-vue-next";
 
 /** The three routing families, each with its own independently configured chain. */
 const FORMATS: Fmt[] = ["openai", "anthropic", "responses"];
 
-/** The sampling fields offered in the row menu — the wire-agnostic names, the
+/** Sampling fields offered in the per-slot panel — the wire-agnostic names, the
  *  same set the server whitelists. A filled field overrides the request's own
- *  value of that name; blank passes it through. */
-const SAMPLING_FIELDS: { key: string; ph: string }[] = [
-  { key: "temperature", ph: "temp" },
-  { key: "top_p", ph: "top_p" },
-  { key: "top_k", ph: "top_k" },
-  { key: "presence_penalty", ph: "pres" },
-  { key: "frequency_penalty", ph: "freq" },
-  { key: "seed", ph: "seed" },
+ *  value of that name; blank passes it through. `min` marks fields with a
+ *  bounded range (temperature/top_p/penalties are [0..max); top_k and seed are
+ *  unbounded) — an open upper end means "just below", so the boundary value
+ *  itself is rejected with a hint. */
+const SAMPLING_FIELDS: { key: string; bounded: boolean }[] = [
+  { key: "temperature", bounded: true },
+  { key: "top_p", bounded: true },
+  { key: "top_k", bounded: false },
+  { key: "presence_penalty", bounded: true },
+  { key: "frequency_penalty", bounded: true },
+  { key: "seed", bounded: false },
 ];
 function blankSampling(): Record<string, string> {
   return Object.fromEntries(SAMPLING_FIELDS.map((f) => [f.key, ""]));
@@ -37,6 +42,9 @@ const samplingFilled = (s: DraftSlot): boolean => SAMPLING_FIELDS.some((f) => s.
 function clearSampling(slot: DraftSlot) {
   for (const f of SAMPLING_FIELDS) slot.sampling[f.key] = "";
 }
+/** Which slot's settings panel is open — one at a time, `${fmt}:${uid}` keyed. */
+const panelFor = ref<string | null>(null);
+const panelKey = (f: Fmt, uid: number) => `${f}:${uid}`;
 
 /** One editable chain slot in the draft. Blank model = identity (send the
  *  public name upstream); thinking is the slot's default level (effort token
@@ -56,7 +64,10 @@ function makeSlot(s: { id: string; model?: string; thinking?: string; sampling?:
   const sampling = blankSampling();
   for (const f of SAMPLING_FIELDS) {
     const v = s.sampling?.[f.key];
-    if (v !== undefined && v !== null) sampling[f.key] = String(v);
+    // Number.prototype.toString is exact but noisy for float32 round-trips
+    // ("0.20000000298023224") — sample values travel as JSON numbers, so
+    // JSON.stringify's shortest-round-trip form is the faithful rendering.
+    if (v !== undefined && v !== null) sampling[f.key] = typeof v === "number" ? JSON.stringify(v) : String(v);
   }
   return { uid: ++uidSeq, pid: s.id, model: s.model ?? "", thinking: s.thinking ?? "", sampling };
 }
@@ -267,15 +278,28 @@ function validate(): boolean {
       return false;
     }
   }
-  // Sampling defaults must be numbers (seed an integer) — the same whitelist on
-  // every route. One error per section, first offender wins.
+  // Sampling defaults must be numbers inside their API-legal range. OpenAI
+  // documents temperature as (0,2) — the open upper end means "just below",
+  // so the boundary itself is rejected; penalties are [-2,2] inclusive;
+  // top_p ∈ [0,1]; top_k/seed ≥ 0, seed an integer.
+  const RANGE: Record<string, [number, number, boolean]> = {
+    temperature: [0, 2, true],
+    top_p: [0, 1, false],
+    presence_penalty: [-2, 2, false],
+    frequency_penalty: [-2, 2, false],
+  };
   for (const f of FORMATS) {
     for (const s of fmtSlots.value[f]) {
-      for (const { key } of SAMPLING_FIELDS) {
+      for (const { key, bounded } of SAMPLING_FIELDS) {
         const raw = s.sampling[key]?.trim();
         if (!raw) continue;
         const n = Number(raw);
-        if (!Number.isFinite(n) || (key === "seed" && !Number.isInteger(n))) {
+        const bounds = RANGE[key];
+        if (!Number.isFinite(n) || (bounds && (n < bounds[0] || (bounds[2] ? n >= bounds[1] : n > bounds[1])))) {
+          rowErr.value[f] = bounded ? t("models.editor.errSamplingRange", { key }) : t("models.editor.errSampling");
+          return false;
+        }
+        if (key === "seed" && !Number.isInteger(n)) {
           rowErr.value[f] = t("models.editor.errSampling");
           return false;
         }
@@ -477,24 +501,30 @@ const hasProviders = computed(() => props.providers.length > 0);
                         </div>
                         <DropdownMenuSeparator />
                         <div class="px-2 py-1 text-[11px] font-medium text-muted-foreground">{{ t("models.editor.samplingLabel") }}</div>
-                        <DropdownMenuItem @select="clearSampling(item.slot)">
-                          <Check v-if="!samplingFilled(item.slot)" />
-                          <span v-else class="size-4 shrink-0" aria-hidden="true" />
-                          {{ t("models.editor.samplingClear") }}
-                        </DropdownMenuItem>
-                        <div class="grid grid-cols-3 gap-1 px-2 pb-1.5 pt-0.5" @click.stop @keydown="onMenuKeydown">
-                          <Input
-                            v-for="sf in SAMPLING_FIELDS"
-                            :key="sf.key"
-                            v-model="item.slot.sampling[sf.key]"
-                            type="number"
-                            step="any"
-                            class="h-7 px-1.5 font-mono text-xs"
-                            :placeholder="sf.ph"
-                            :aria-label="`${t('models.editor.samplingLabel')} · ${sf.key}`"
-                            :title="sf.key"
-                          />
-                        </div>
+                        <Popover :open="panelFor === panelKey(f, item.slot.uid)" @update:open="(o) => (panelFor = o ? panelKey(f, item.slot.uid) : null)">
+                          <PopoverTrigger as-child>
+                            <DropdownMenuItem :text-value="'sampling-pick'" @select.prevent>
+                              <Check v-if="!samplingFilled(item.slot)" class="opacity-0" />
+                              <Check v-else />
+                              <span class="size-4 shrink-0" aria-hidden="true" />
+                              {{ samplingFilled(item.slot) ? t("models.editor.samplingEdit") : t("models.editor.samplingOff") }}
+                              <Settings2 class="ml-auto h-3.5 w-3.5 text-muted-foreground" />
+                            </DropdownMenuItem>
+                          </PopoverTrigger>
+                          <PopoverContent side="left" align="start" class="w-64 space-y-1 p-3">
+                            <div class="flex items-center justify-between">
+                              <div class="text-[11px] font-medium text-muted-foreground">{{ t("models.editor.samplingLabel") }}</div>
+                              <button
+                                type="button"
+                                class="text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+                                @click="clearSampling(item.slot)"
+                              >
+                                {{ t("models.editor.samplingClear") }}
+                              </button>
+                            </div>
+                            <SamplingPanel v-model="item.slot.sampling" />
+                          </PopoverContent>
+                        </Popover>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem class="text-destructive focus:bg-destructive/10 focus:text-destructive" @select="removeSlot(f, item.slot.uid)">
                           <Trash2 />
