@@ -6,9 +6,6 @@ import { defineConfig } from "vitest/config";
  * `// @vitest-environment jsdom` line. Vitest resolves the extensionless `.ts`
  * source imports via its own (vite) resolver, so no compile step is needed — the
  * same property that lets `tsx serve` run the gateway directly.
- *
- * E2E tests live under ./e2e and run under Playwright (see playwright.config.ts),
- * NOT here, so the two runners never collide.
  */
 export default defineConfig({
   test: {

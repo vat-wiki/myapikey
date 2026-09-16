@@ -48,17 +48,15 @@ npm run typecheck      # core src + core tests (tsc) + web (vue-tsc)
 npm test               # vitest run  (unit + integration, ~200 tests)
 npm run test:watch     # vitest in watch mode
 npm run test:coverage  # vitest with v8 coverage
-npm run test:e2e       # playwright (real gateway process + mock upstream)
 ```
 
 ## Testing
 
-Three tiers, run by default as part of `npm test` + `npm run test:e2e`:
+Two tiers, run by default as part of `npm test`:
 
 - **Unit / integration (Vitest)** — `packages/core/test/**` + `packages/web/test/**`. Vitest resolves the extensionless `.ts` source the same way tsx does (no compile step). Explicit imports only (`import { describe, it, expect, vi } from "vitest"`) — no globals. Web tests that touch `localStorage`/`document` opt into jsdom with a leading `// @vitest-environment jsdom` line.
   - Shared helpers live in `packages/core/test/helpers/`: `store.ts` (temp-dir `Store` factories), `mock.ts` (`mockFetch(routes)` — replaces `globalThis.fetch` with a recording spy returning real `Response`s; `.restore()` in `afterEach`), `fixtures.ts` (`makeProvider`/`fe`/`makeModel`/`makeLog`/`buildConfig`/`seedStore`), `json.ts` (typed `json<T>(res)` for response bodies). Hono apps are driven in-process via `app.request(...)` — no port.
   - Coverage: `shared/config`, `auth` (+ cross-secret isolation), `app` wiring/webDir fallback, `store` (migrations v1→v4, logs tail-read/trim, stats aggregation, circuit-breaker escalation), `proxy.dispatch` (failover, model-mapping, circuit skip, `/openai/v1/models` + `/anthropic/v1/models`), the full `/admin` CRUD, CLI `client`/`config`, and web `api`/`lib`.
-- **End-to-end (Playwright)** — `tests/e2e/`. `world.ts` boots a REAL `tsx … serve` child process (own process group, torn down cleanly) on `:7807` against a throwaway data dir, plus a scripted mock upstream on `:7808`; `gateway.spec.ts` drives real HTTP (health, the two auth surfaces' isolation, routing, failover, `/openai/v1/models`). Not under Vitest's `include`, so the two runners never collide.
 - **Typecheck covers tests too** — `packages/core/tsconfig.test.json` (src+test) is wired into `npm run typecheck`, so latent type errors in tests fail the gate (Vitest's esbuild strips types without checking).
 
 Three subtle behaviors the suite pinned down (asserted as the code actually behaves, not as one might assume):

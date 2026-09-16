@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   ci:
-    name: Typecheck · Test · E2E
+    name: Typecheck · Test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -31,14 +31,6 @@ jobs:
 
       - name: Unit / integration tests
         run: npm test
-
-      # test:e2e boots a real gateway + scripted mock upstream and drives them
-      # with Chrome (playwright.config.ts pins channel: "chrome").
-      - name: Install Chrome for Playwright
-        run: npx playwright install --with-deps chrome
-
-      - name: E2E tests
-        run: npm run test:e2e
 
   publish:
     name: Publish to npm

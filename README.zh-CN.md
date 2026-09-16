@@ -124,7 +124,6 @@ npm run build:web      # 把 Vue 界面构建到 packages/web/dist
 npm run dev            # 网关,带 watch 热重载
 npm run dev:web        # vite 开发服务器(API 代理到 :7800)
 npm test               # vitest 单测 + 集成
-npm run test:e2e       # playwright 打真实网关进程
 npm run typecheck      # tsc + vue-tsc
 ```
 

@@ -124,7 +124,6 @@ npm run build:web      # build the Vue UI into packages/web/dist
 npm run dev            # gateway with watch reload
 npm run dev:web        # vite dev server (proxies API calls to :7800)
 npm test               # vitest unit + integration
-npm run test:e2e       # playwright against a real gateway process
 npm run typecheck      # tsc + vue-tsc
 ```
 
