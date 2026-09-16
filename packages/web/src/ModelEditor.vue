@@ -525,7 +525,7 @@ const hasProviders = computed(() => props.providers.length > 0);
                                 {{ t("models.editor.samplingClear") }}
                               </button>
                             </div>
-                            <SamplingPanel v-model="item.slot.sampling" />
+                            <SamplingPanel v-model="item.slot.sampling" :format="f" />
                           </div>
                           <div class="border-t" />
                           <button

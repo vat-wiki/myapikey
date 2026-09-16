@@ -2,11 +2,12 @@
 import { useI18n } from "vue-i18n";
 import { Input } from "@/components/ui/input";
 import { CircleHelp } from "lucide-vue-next";
+import type { Fmt } from "@/lib/format";
 
 /** Per-slot default sampling parameters, one LABELED row per field — name +
  *  a help icon (hover for the explanation) + the value box. A filled field
  *  overrides the request's own value of that name; blank passes it through. */
-const props = defineProps<{ modelValue: Record<string, string> }>();
+const props = defineProps<{ modelValue: Record<string, string>; format: Fmt }>();
 
 const { t } = useI18n();
 
@@ -21,6 +22,11 @@ const FIELDS: { key: string; helpKey: string; ph: string }[] = [
   { key: "seed", helpKey: "models.editor.samplingTipSeed", ph: "integer" },
 ];
 
+/** The Anthropic wire has no penalties and no seed — don't offer them on
+ *  anthropic slots (the openai-family rows keep the full set). */
+const ANTHROPIC_UNSUPPORTED = new Set(["presence_penalty", "frequency_penalty", "seed"]);
+const visible = props.format === "anthropic" ? FIELDS.filter((f) => !ANTHROPIC_UNSUPPORTED.has(f.key)) : FIELDS;
+
 function set(key: string, v: unknown) {
   props.modelValue[key] = String(v ?? "");
 }
@@ -28,7 +34,7 @@ function set(key: string, v: unknown) {
 
 <template>
   <div class="grid gap-y-1.5">
-    <div v-for="f in FIELDS" :key="f.key" class="flex items-center gap-1.5">
+    <div v-for="f in visible" :key="f.key" class="flex items-center gap-1.5">
       <span class="inline-flex shrink-0 items-center gap-0.5 font-mono text-xs text-foreground/80" :title="t(f.helpKey)">
         {{ f.key }}
         <CircleHelp class="h-3 w-3 opacity-60" :aria-label="`${f.key}: ${t(f.helpKey)}`" />
