@@ -92,6 +92,11 @@ export interface ModelProvider {
    *  tokens (integer) on anthropic routes. When set it OVERRIDES whatever
    *  thinking parameters the request carried. */
   thinking?: string;
+  /** Default sampling parameters for this slot on this route (undefined = pure
+   *  passthrough). Wire-agnostic names (temperature/top_p/top_k/penalties/seed);
+   *  each set field OVERRIDES the request's own value of that name, unset
+   *  fields pass through. */
+  sampling?: Record<string, unknown>;
 }
 export interface FormatView {
   enabled: boolean;
@@ -153,6 +158,8 @@ export interface DebugCapture {
   truncated?: boolean;
   error?: string;
   thinking?: { value: string; from: "client" | "default" };
+  /** The sampling parameters injected this attempt (the slot's configured defaults). */
+  sampling?: Record<string, unknown>;
 }
 
 /** One provider's circuit-breaker state (GET /admin/circuit). Mirrors the

@@ -11,9 +11,9 @@ import type { Store } from "../../src/server/store";
  *  element instead of `unknown`. */
 type FlatModel = {
   name: string;
-  openai: { enabled: boolean; providers: Array<{ id: string; name?: string; model?: string; thinking?: string }> };
-  anthropic?: { enabled: boolean; providers: Array<{ id: string; name?: string; model?: string; thinking?: string }> };
-  responses?: { enabled: boolean; providers: Array<{ id: string; name?: string; model?: string; thinking?: string }> };
+  openai: { enabled: boolean; providers: Array<{ id: string; name?: string; model?: string; thinking?: string; sampling?: Record<string, unknown> }> };
+  anthropic?: { enabled: boolean; providers: Array<{ id: string; name?: string; model?: string; thinking?: string; sampling?: Record<string, unknown> }> };
+  responses?: { enabled: boolean; providers: Array<{ id: string; name?: string; model?: string; thinking?: string; sampling?: Record<string, unknown> }> };
   paceRpm?: number;
   debugCapture?: boolean;
   lastRoute?: Array<{ format: string; providerId: string; model: string; ts: number }>;
@@ -824,6 +824,54 @@ describe("server/admin", () => {
       expect(range.status).toBe(400);
     });
 
+    it("PUT /admin/models/:name/sampling sets the slot defaults (strings coerced), visible via GET", async () => {
+      const a = makeProvider({ formats: ["openai"] });
+      await seedStore(store, { providers: [a], models: { "gpt-4o": makeModel({ openai: fe([a.id]) }) } });
+      const app = createApp(store);
+      const res = await app.request("/admin/models/gpt-4o/sampling", {
+        method: "PUT", headers: H, body: JSON.stringify({ format: "openai", index: 0, sampling: { temperature: "0.2", seed: 42 } }),
+      });
+      expect(res.status).toBe(200);
+      expect((await json<{ sampling?: Record<string, number> }>(res)).sampling).toEqual({ temperature: 0.2, seed: 42 });
+      const m = find(await modelsOf(app), "gpt-4o")!;
+      expect(m.openai.providers[0].sampling).toEqual({ temperature: 0.2, seed: 42 });
+    });
+
+    it("PUT /admin/models/:name/sampling rejects unknown keys, non-numeric values and fractional seeds", async () => {
+      const a = makeProvider({ formats: ["openai"] });
+      await seedStore(store, { providers: [a], models: { "gpt-4o": makeModel({ openai: fe([a.id]) }) } });
+      const app = createApp(store);
+      for (const bad of [{ weird: 1 }, { temperature: "hot" }, { seed: 1.5 }, [1, 2]]) {
+        const res = await app.request("/admin/models/gpt-4o/sampling", {
+          method: "PUT", headers: H, body: JSON.stringify({ format: "openai", index: 0, sampling: bad }),
+        });
+        expect(res.status).toBe(400);
+      }
+    });
+
+    it("PUT /admin/models/:name/sampling clears on empty/absent, 404/400s bad targets", async () => {
+      const a = makeProvider({ formats: ["openai"] });
+      await seedStore(store, { providers: [a], models: { "gpt-4o": makeModel({ openai: fe([a.id]) }) } });
+      const app = createApp(store);
+      const set = await app.request("/admin/models/gpt-4o/sampling", {
+        method: "PUT", headers: H, body: JSON.stringify({ format: "openai", index: 0, sampling: { temperature: 0.2 } }),
+      });
+      expect(set.status).toBe(200);
+      const clear = await app.request("/admin/models/gpt-4o/sampling", {
+        method: "PUT", headers: H, body: JSON.stringify({ format: "openai", index: 0, sampling: {} }),
+      });
+      expect(clear.status).toBe(200);
+      expect(find(await modelsOf(app), "gpt-4o")!.openai.providers[0].sampling).toBeUndefined();
+      const missing = await createApp(store).request("/admin/models/nope/sampling", {
+        method: "PUT", headers: H, body: JSON.stringify({ format: "openai", index: 0, sampling: { temperature: 0.2 } }),
+      });
+      expect(missing.status).toBe(404);
+      const range = await app.request("/admin/models/gpt-4o/sampling", {
+        method: "PUT", headers: H, body: JSON.stringify({ format: "openai", index: 1, sampling: { temperature: 0.2 } }),
+      });
+      expect(range.status).toBe(400);
+    });
+
     it("POST /admin/models/:name/disable disables that slot", async () => {
       const a = makeProvider({ formats: ["openai"] });
       await seedStore(store, { providers: [a], models: { "gpt-4o": makeModel({ openai: fe([a.id]) }) } });
@@ -1115,6 +1163,22 @@ describe("server/admin", () => {
         });
         expect(ok.status).toBe(201); // "m" didn't exist yet → created
         expect(store.get().models["m"].anthropic.providers[0].thinking).toBe("8192");
+      });
+
+      it("validates slot sampling like /sampling does and stores the cleaned record", async () => {
+        await seedStore(store, { providers: [dual()] });
+        const app = createApp(store);
+        const bad = await app.request("/admin/models/m", {
+          method: "PUT", headers: H,
+          body: JSON.stringify({ openai: { slots: [{ id: "prv_dual", sampling: { temperature: "hot" } }] } }),
+        });
+        expect(bad.status).toBe(400);
+        const ok = await app.request("/admin/models/m", {
+          method: "PUT", headers: H,
+          body: JSON.stringify({ openai: { slots: [{ id: "prv_dual", sampling: { temperature: " 0.2 ", seed: 42 } }] } }),
+        });
+        expect(ok.status).toBe(201); // "m" didn't exist yet → created
+        expect(store.get().models["m"].openai.providers[0].sampling).toEqual({ temperature: 0.2, seed: 42 });
       });
 
       it("sets and clears paceRpm; empty upstream model → identity (no model key)", async () => {

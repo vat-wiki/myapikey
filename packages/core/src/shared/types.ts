@@ -81,6 +81,15 @@ export interface ChainSlot {
    *  ("low"/"medium"/"high"/…) on openai/responses slots, a thinking budget
    *  in tokens (positive integer) on anthropic slots. */
   thinking?: string;
+  /** Default sampling parameters for this slot. Unlike thinking (which owns
+   *  EVERY thinking switch, since a forced level plus a stale client switch
+   *  would contradict), each configured field here replaces ONLY the request's
+   *  same-named value — an unconfigured field passes through untouched.
+   *  temperature=0.2 with the client's own top_p intact is coherent, so the
+   *  override is per-field. Keys are the wire-agnostic names (temperature,
+   *  top_p, top_k, presence_penalty, frequency_penalty, seed) — identical on
+   *  all three wires, so no per-format dialect. Absent = pure passthrough. */
+  sampling?: Record<string, unknown>;
 }
 
 /** A model's routing dimensions — one per forwarding endpoint. /chat/completions
@@ -180,6 +189,12 @@ export interface LogEntry {
    *  ran, OVERRIDING whatever the request carried. Absent when neither
    *  applied (no default configured, request carried nothing). */
   thinking?: { value: string; from: "client" | "default" };
+  /** The sampling parameters the gateway injected on this call (the answering
+   *  slot's configured `sampling` defaults). Absent when the slot had none —
+   *  the request's own parameters then ran untouched. (Deliberately no
+   *  "client" variant: logging every passthrough call's sampling values would
+   *  be noise; the debug capture holds the exact forwarded body anyway.) */
+  sampling?: Record<string, unknown>;
   /** Row kind. Absent on legacy lines → treated as a normal call. "cooldown"
    *  marks a circuit-breaker event (a provider just entered cooldown), shown
    *  distinctly in the timeline alongside the failures that caused it. */
@@ -194,7 +209,7 @@ export interface LogEntry {
  *  persisted to logs.jsonl or data.json; see ModelEntry.debugCapture). One
  *  client call that fails over produces several entries, one per attempt,
  *  because each attempt's forwarded body can differ (per-slot model rewrite +
- *  thinking injection). Bodies are captured VERBATIM: `request` is the exact
+ *  thinking/sampling injection). Bodies are captured VERBATIM: `request` is the exact
  *  JSON string sent upstream, `response` the upstream body as it flowed (raw
  *  SSE text for streams). Headers are never captured — provider api keys stay
  *  out of the buffer. */
@@ -223,4 +238,6 @@ export interface DebugCapture {
   error?: string;
   /** The thinking level this attempt ran with (same shape as LogEntry.thinking). */
   thinking?: { value: string; from: "client" | "default" };
+  /** The sampling parameters injected this attempt (same shape as LogEntry.sampling). */
+  sampling?: Record<string, unknown>;
 }

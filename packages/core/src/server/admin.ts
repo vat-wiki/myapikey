@@ -44,6 +44,31 @@ function providerSpeaks(p: Provider, key: RouteKey): boolean {
   return key === "responses" ? !!p.supportsResponses : p.formats.includes(key);
 }
 
+/** The body fields a chain slot's sampling default may set — the wire-agnostic
+ *  names, identical on all three routes (see applySlotSampling in proxy.ts). */
+const SAMPLING_KEYS = ["temperature", "top_p", "top_k", "presence_penalty", "frequency_penalty", "seed"] as const;
+
+/** Validate a slot's sampling default: whitelisted keys only, every value a
+ *  finite number (`seed` an integer). Numeric strings are coerced (form fields
+ *  send strings). Returns the cleaned record; undefined when absent/empty
+ *  (clear); null = invalid (unknown key, non-numeric value, fractional seed). */
+function sanitizeSampling(v: unknown): Record<string, number> | undefined | null {
+  if (v === undefined || v === null) return undefined;
+  if (typeof v !== "object" || Array.isArray(v)) return null;
+  const out: Record<string, number> = {};
+  for (const [k, raw] of Object.entries(v as Record<string, unknown>)) {
+    if (!(SAMPLING_KEYS as readonly string[]).includes(k)) return null;
+    const n = typeof raw === "string" ? Number(raw.trim()) : raw;
+    if (typeof n !== "number" || !Number.isFinite(n)) return null;
+    if (k === "seed" && !Number.isInteger(n)) return null;
+    out[k] = n;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+const SAMPLING_ERR =
+  "sampling: keys must be temperature/top_p/top_k/presence_penalty/frequency_penalty/seed with finite numeric values (seed an integer)";
+
 /** Inverse of proxy's encodeTag: the probe's x-myapikey-provider header carries
  *  a %-encoded provider name (HTTP headers are Latin-1, so a name like "商汤"
  *  can't travel raw). Decode it back for display; fall back to the raw value if
@@ -155,6 +180,8 @@ function projectModel(name: string, e: ModelEntry, byId: Map<string, Provider>) 
       model: s.model,
       // Default thinking level for this slot (undefined = pure passthrough).
       thinking: s.thinking,
+      // Default sampling parameters for this slot (undefined = pure passthrough).
+      sampling: s.sampling,
     })),
   });
   return {
@@ -514,7 +541,7 @@ export function adminApi(store: Store, auth: MiddlewareHandler, openai: Hono, an
       if (!raw) continue;
       const chain: ChainSlot[] = [];
       for (const s of Array.isArray(raw.slots) ? raw.slots : []) {
-        const slot = s as { id?: unknown; model?: unknown; thinking?: unknown };
+        const slot = s as { id?: unknown; model?: unknown; thinking?: unknown; sampling?: unknown };
         const pid = typeof slot?.id === "string" ? slot.id : "";
         const p = cfg.providers.find((x) => x.id === pid);
         if (!p) return c.json({ error: { message: `provider not found: ${pid || "(empty)"}` } }, 400);
@@ -526,9 +553,12 @@ export function adminApi(store: Store, auth: MiddlewareHandler, openai: Hono, an
           return c.json({ error: { message: "anthropic thinking default must be a positive integer (thinking budget tokens, e.g. 8192)" } }, 400);
         if (thinkRaw && key !== "anthropic" && thinkRaw.length > 32)
           return c.json({ error: { message: "thinking default too long (max 32 chars)" } }, 400);
+        const sampling = sanitizeSampling(slot.sampling);
+        if (sampling === null) return c.json({ error: { message: SAMPLING_ERR } }, 400);
         const cs: ChainSlot = { id: pid };
         if (model) cs.model = model;
         if (thinkRaw) cs.thinking = key === "anthropic" ? String(Number(thinkRaw)) : thinkRaw;
+        if (sampling) cs.sampling = sampling;
         chain.push(cs);
       }
       parsed[key] = { enabled: raw.enabled !== false, providers: chain };
@@ -825,6 +855,45 @@ app.delete("/models/:name/debug/fails", (c) => {
     if (errStatus === 404) return c.json({ error: { message: errMsg } }, 404);
     if (errStatus === 400) return c.json({ error: { message: errMsg } }, 400);
     return c.json({ ok: true, thinking: value || undefined });
+  });
+
+  // Set (or clear) the default sampling parameters for ONE chain slot (addressed
+  // by `index`, like /thinking above). The value is a JSON object of wire-agnostic
+  // sampling fields — temperature/top_p/top_k/presence_penalty/frequency_penalty/
+  // seed, each a finite number (seed an integer). On dispatch each configured
+  // field REPLACES the request's own same-named parameter; unconfigured fields
+  // pass through. An absent or empty object clears it (pure passthrough).
+  app.put("/models/:name/sampling", async (c) => {
+    const name = c.req.param("name");
+    const body = await readJson<{ format?: RouteKey; index?: number; sampling?: unknown }>(c.req.raw);
+    if (!body?.format) return c.json({ error: { message: "format is required" } }, 400);
+    if (!Number.isInteger(body?.index) || (body?.index ?? -1) < 0)
+      return c.json({ error: { message: "index (non-negative integer) is required" } }, 400);
+    const value = sanitizeSampling(body.sampling);
+    if (value === null) return c.json({ error: { message: SAMPLING_ERR } }, 400);
+    const format = body.format;
+    const index = body.index!;
+    let errStatus = 0;
+    let errMsg = "";
+    await store.update((d) => {
+      const entry = d.models[name];
+      if (!entry) {
+        errStatus = 404;
+        errMsg = "model not found";
+        return;
+      }
+      const fe = entry[format];
+      if (index >= fe.providers.length) {
+        errStatus = 400;
+        errMsg = "index out of range for this model's chain";
+        return;
+      }
+      if (value) fe.providers[index].sampling = value;
+      else delete fe.providers[index].sampling;
+    });
+    if (errStatus === 404) return c.json({ error: { message: errMsg } }, 404);
+    if (errStatus === 400) return c.json({ error: { message: errMsg } }, 400);
+    return c.json({ ok: true, sampling: value ?? undefined });
   });
 
   app.post("/models/:name/disable", async (c) => {

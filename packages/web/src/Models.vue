@@ -4,7 +4,7 @@ import { useI18n } from "vue-i18n";
 import { req, type ModelView, type ModelProvider, type ProviderPublic } from "@/api";
 import type { Fmt } from "@/lib/format";
 import { FMT_ACCENT, FMT_META, providerColor } from "@/lib/format";
-import { providerModelList } from "@/lib/models";
+import { providerModelList, samplingSummary } from "@/lib/models";
 import { toast } from "@/lib/toast";
 import { copyText } from "@/lib/clipboard";
 import { Button } from "@/components/ui/button";
@@ -18,7 +18,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
 import {
   Search, Plus, Loader2, Copy, Zap, Gauge, MoreHorizontal, Pencil, Trash2,
-  Cpu, ServerCog, TriangleAlert, Brain, LayoutGrid, Table2, ChevronDown, Bug,
+  Cpu, ServerCog, TriangleAlert, Brain, SlidersHorizontal, LayoutGrid, Table2, ChevronDown, Bug,
 } from "lucide-vue-next";
 import ModelEditor from "@/ModelEditor.vue";
 import ModelDebugDialog from "@/ModelDebugDialog.vue";
@@ -166,7 +166,7 @@ function enabledFormats(m: ModelView): Fmt[] {
  *  own labeled line. `fs` lists every format the line stands for; per-slot
  *  probes fan out over them. */
 const chainLines = (m: ModelView): ChainLine[] => {
-  const key = (slots: ModelProvider[]) => slots.map((s) => `${s.id}|${s.model ?? ""}|${s.thinking ?? ""}`).join(">");
+  const key = (slots: ModelProvider[]) => slots.map((s) => `${s.id}|${s.model ?? ""}|${s.thinking ?? ""}|${JSON.stringify(s.sampling ?? {})}`).join(">");
   const merged: ChainLine[] = [];
   for (const f of FORMATS) {
     if (!m[f].providers.length) continue;
@@ -226,6 +226,7 @@ async function toggleFmt(m: ModelView, f: Fmt) {
     id: s.id,
     ...(s.model ? { model: s.model } : {}),
     ...(s.thinking ? { thinking: s.thinking } : {}),
+    ...(s.sampling && Object.keys(s.sampling).length ? { sampling: s.sampling } : {}),
   }));
   try {
     await req("PUT", `/admin/models/${enc(m.name)}`, { [f]: { enabled: !m[f].enabled, slots } });
@@ -555,6 +556,13 @@ async function copyName(name: string) {
                       >
                         <Brain class="h-2.5 w-2.5" />{{ servedSlot(m, line).s.thinking }}
                       </span>
+                      <span
+                        v-if="samplingSummary(servedSlot(m, line).s.sampling)"
+                        class="inline-flex shrink-0 items-center gap-0.5 font-mono text-[10px] text-muted-foreground"
+                        :title="t('models.editor.samplingLabel')"
+                      >
+                        <SlidersHorizontal class="h-2.5 w-2.5" />{{ samplingSummary(servedSlot(m, line).s.sampling) }}
+                      </span>
                       <ChevronDown class="h-3 w-3 shrink-0 text-muted-foreground/60" />
                     </button>
                   </PopoverTrigger>
@@ -667,6 +675,13 @@ async function copyName(name: string) {
                           :title="t('models.editor.thinkingLabel')"
                         >
                           <Brain class="h-2.5 w-2.5" />{{ servedSlot(m, line).s.thinking }}
+                        </span>
+                        <span
+                          v-if="samplingSummary(servedSlot(m, line).s.sampling)"
+                          class="inline-flex shrink-0 items-center gap-0.5 font-mono text-[10px] text-muted-foreground"
+                          :title="t('models.editor.samplingLabel')"
+                        >
+                          <SlidersHorizontal class="h-2.5 w-2.5" />{{ samplingSummary(servedSlot(m, line).s.sampling) }}
                         </span>
                         <ChevronDown class="h-3 w-3 shrink-0 text-muted-foreground/60" />
                       </button>

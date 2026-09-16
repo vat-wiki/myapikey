@@ -3,7 +3,7 @@ import { ref, computed, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { req, type ModelView, type ProviderPublic } from "@/api";
 import type { Fmt } from "@/lib/format";
-import { FMT_ACCENT, providerColor } from "@/lib/format";
+import { FMT_ACCENT, FMT_META, providerColor } from "@/lib/format";
 import { providerModelList } from "@/lib/models";
 import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
@@ -11,21 +11,54 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import Combobox from "@/components/Combobox.vue";
-import { Plus, Trash2, ArrowUp, ArrowDown, Loader2, ServerCog, ArrowRight, Brain, TriangleAlert, Info, ChevronDown, SlidersHorizontal } from "lucide-vue-next";
+import { Plus, Loader2, ServerCog, Brain, TriangleAlert, Info, ChevronDown, SlidersHorizontal, GripVertical, MoreHorizontal, Check, Trash2 } from "lucide-vue-next";
 
-/** The three routing families. A unified chain fans a slot out to every one of
- *  these the slot's provider supports; per-format mode overrides each. */
+/** The three routing families, each with its own independently configured chain. */
 const FORMATS: Fmt[] = ["openai", "anthropic", "responses"];
+
+/** The sampling fields offered in the row menu — the wire-agnostic names, the
+ *  same set the server whitelists. A filled field overrides the request's own
+ *  value of that name; blank passes it through. */
+const SAMPLING_FIELDS: { key: string; ph: string }[] = [
+  { key: "temperature", ph: "temp" },
+  { key: "top_p", ph: "top_p" },
+  { key: "top_k", ph: "top_k" },
+  { key: "presence_penalty", ph: "pres" },
+  { key: "frequency_penalty", ph: "freq" },
+  { key: "seed", ph: "seed" },
+];
+function blankSampling(): Record<string, string> {
+  return Object.fromEntries(SAMPLING_FIELDS.map((f) => [f.key, ""]));
+}
+const samplingFilled = (s: DraftSlot): boolean => SAMPLING_FIELDS.some((f) => s.sampling[f.key].trim() !== "");
+function clearSampling(slot: DraftSlot) {
+  for (const f of SAMPLING_FIELDS) slot.sampling[f.key] = "";
+}
 
 /** One editable chain slot in the draft. Blank model = identity (send the
  *  public name upstream); thinking is the slot's default level (effort token
- *  on openai/responses, budget tokens on anthropic). */
+ *  on openai/responses, budget tokens on anthropic); sampling holds the slot's
+ *  default sampling params as editable strings (blank = pass that field
+ *  through) — both set from the row's "more actions" menu. uid keeps v-for
+ *  keys stable across reorders. */
 interface DraftSlot {
+  uid: number;
   pid: string;
   model: string;
   thinking: string;
+  sampling: Record<string, string>;
+}
+let uidSeq = 0;
+function makeSlot(s: { id: string; model?: string; thinking?: string; sampling?: Record<string, unknown> }): DraftSlot {
+  const sampling = blankSampling();
+  for (const f of SAMPLING_FIELDS) {
+    const v = s.sampling?.[f.key];
+    if (v !== undefined && v !== null) sampling[f.key] = String(v);
+  }
+  return { uid: ++uidSeq, pid: s.id, model: s.model ?? "", thinking: s.thinking ?? "", sampling };
 }
 
 const props = defineProps<{
@@ -41,8 +74,6 @@ const emit = defineEmits<{ saved: [ModelView] }>();
 const { t } = useI18n();
 
 const name = ref("");
-const perFmt = ref(false);
-const unified = ref<DraftSlot[]>([]);
 const fmtSlots = ref<Record<Fmt, DraftSlot[]>>({ openai: [], anthropic: [], responses: [] });
 const fmtEnabled = ref<Record<Fmt, boolean>>({ openai: false, anthropic: false, responses: false });
 const pace = ref("");
@@ -71,29 +102,11 @@ function discoveredFor(pid: string): string[] {
 
 // --- draft lifecycle -------------------------------------------------------
 
-function toDraft(s: { id: string; model?: string; thinking?: string }): DraftSlot {
-  return { pid: s.id, model: s.model ?? "", thinking: s.thinking ?? "" };
-}
-function slotKey(s: { id?: string; pid?: string; model?: string; thinking?: string }): string {
-  return `${s.id ?? s.pid}|${s.model ?? ""}|${s.thinking ?? ""}`;
-}
-/** What a unified chain save would write for `slots`, per format. */
-function fanout(slots: DraftSlot[]): Record<Fmt, { enabled: boolean; slots: string[] }> {
-  const out = {} as Record<Fmt, { enabled: boolean; slots: string[] }>;
-  for (const f of FORMATS) {
-    const landed = slots.filter((s) => supports(s.pid, f));
-    out[f] = { enabled: landed.length > 0, slots: landed.map(slotKey) };
-  }
-  return out;
-}
-
 function init() {
   nameErr.value = "";
   rowErr.value = {};
   pace.value = "";
-  perFmt.value = false;
   showHelp.value = false;
-  unified.value = [];
   fmtSlots.value = { openai: [], anthropic: [], responses: [] };
   fmtEnabled.value = { openai: false, anthropic: false, responses: false };
   const m = props.model;
@@ -105,21 +118,9 @@ function init() {
   pace.value = m.paceRpm ? String(m.paceRpm) : "";
   advancedOpen.value = !!m.paceRpm;
   for (const f of FORMATS) {
-    fmtSlots.value[f] = m[f].providers.map(toDraft);
+    fmtSlots.value[f] = m[f].providers.map(makeSlot);
     fmtEnabled.value[f] = m[f].enabled;
   }
-  // Unified mode only when rendering the openai chain through the fan-out
-  // reproduces every format's chain exactly (slots, order, mappings, enabled
-  // flags). Any divergence — per-format providers, a disabled route, differing
-  // thinking defaults — flips the editor into per-format mode.
-  const src = [m.openai.providers, m.anthropic.providers, m.responses.providers].find((c) => c.length) ?? m.openai.providers;
-  const candidate = src.map(toDraft);
-  const projected = fanout(candidate);
-  perFmt.value = FORMATS.some((f) => {
-    const want = m[f];
-    return projected[f].enabled !== want.enabled || projected[f].slots.join(">") !== want.providers.map(slotKey).join(">");
-  });
-  unified.value = candidate;
 }
 
 watch(open, (o) => {
@@ -128,54 +129,119 @@ watch(open, (o) => {
 
 // --- slot row operations ---------------------------------------------------
 
-function addSlot(target: "unified" | Fmt) {
-  const first = props.providers[0]?.id ?? "";
-  if (target === "unified") unified.value.push({ pid: first, model: "", thinking: "" });
-  else fmtSlots.value[target].push({ pid: first, model: "", thinking: "" });
+function addSlot(f: Fmt) {
+  fmtSlots.value[f].push(makeSlot({ id: props.providers[0]?.id ?? "" }));
 }
-function removeSlot(target: "unified" | Fmt, i: number) {
-  if (target === "unified") unified.value.splice(i, 1);
-  else fmtSlots.value[target].splice(i, 1);
-  delete rowErr.value[target];
+function removeSlot(f: Fmt, uid: number) {
+  const i = fmtSlots.value[f].findIndex((s) => s.uid === uid);
+  if (i === -1) return;
+  fmtSlots.value[f].splice(i, 1);
+  delete rowErr.value[f];
 }
-function moveSlot(target: "unified" | Fmt, i: number, dir: -1 | 1) {
-  const arr = target === "unified" ? unified.value : fmtSlots.value[target];
-  const j = i + dir;
-  if (j < 0 || j >= arr.length) return;
-  [arr[i], arr[j]] = [arr[j], arr[i]];
-}
-/** Changing the provider resets the upstream fields — the old upstream name and
- *  thinking belong to the previous backend. */
+/** Changing the provider resets the upstream fields — the old upstream name,
+ *  thinking and sampling belong to the previous backend. */
 function onProviderChange(slot: DraftSlot) {
   slot.model = "";
   slot.thinking = "";
+  slot.sampling = blankSampling();
+}
+/** Typing in a menu input must not trigger the menu's keyboard nav
+ *  (arrows/space would jump between items) — but Escape must still reach the
+ *  menu so it can close. */
+function onMenuKeydown(e: KeyboardEvent) {
+  if (e.key !== "Escape") e.stopPropagation();
 }
 
-/** Routes a unified slot would land on — shown as chips under the row, but only
- *  when the picture is not the default "all three" (progressive disclosure). */
-function landsOn(s: DraftSlot): Fmt[] {
-  return FORMATS.filter((f) => supports(s.pid, f));
+/** Quick thinking presets offered in the row menu: effort words on the
+ *  openai-family routes, token budgets on anthropic. A custom value can always
+ *  be typed into the menu's input. */
+const EFFORT_LEVELS = ["low", "medium", "high", "xhigh"];
+const BUDGET_PRESETS = ["1024", "4096", "8192", "16384"];
+function thinkingPresets(f: Fmt): string[] {
+  return f === "anthropic" ? BUDGET_PRESETS : EFFORT_LEVELS;
 }
-/** Render the slot's footnote row: partial protocol support or a row error. */
-function slotNoteworthy(s: DraftSlot): boolean {
-  return landsOn(s).length < FORMATS.length || !!rowErr.value.unified;
+
+// --- drag & drop reorder (HTML5 DnD, armed by the row's handle) ------------
+
+const dragArm = ref<string | null>(null); // `${fmt}:${i}` armed by handle mousedown
+const drag = ref<{ fmt: Fmt; from: number; to: number } | null>(null);
+
+const armed = (f: Fmt, i: number) => dragArm.value === `${f}:${i}`;
+const isDragRow = (f: Fmt, i: number) => drag.value?.fmt === f && drag.value.from === i;
+function rowCls(f: Fmt, i: number): string {
+  return isDragRow(f, i) ? "bg-background/60 opacity-40" : "bg-background/60";
 }
-/** Protocols the unified chain would actually serve — the union of every
- *  slot's landing set. Surfaced as a "fans out to N independent chains"
- *  line so the one-list UI still teaches the per-protocol model. */
-const chainUnion = computed<Fmt[]>(() => {
-  const set = new Set<Fmt>();
-  for (const s of unified.value) for (const f of landsOn(s)) set.add(f);
-  return FORMATS.filter((f) => set.has(f));
-});
+
+/** Rows interleaved with the drop placeholder: the placeholder sits before row
+ *  `to` (or after the last row when to = length). One element per key keeps
+ *  TransitionGroup's FLIP move animation working. */
+interface RenderItem {
+  key: string | number;
+  ph: boolean;
+  slot: DraftSlot;
+  i: number;
+}
+function renderList(f: Fmt): RenderItem[] {
+  const arr = fmtSlots.value[f];
+  const to = drag.value && drag.value.fmt === f ? drag.value.to : null;
+  const out: RenderItem[] = [];
+  const ph = (i: number): RenderItem => ({ key: "ph", ph: true, slot: arr[0], i });
+  const row = (slot: DraftSlot, i: number): RenderItem => ({ key: slot.uid, ph: false, slot, i });
+  for (let i = 0; i < arr.length; i++) {
+    if (to === i) out.push(ph(i));
+    out.push(row(arr[i], i));
+  }
+  if (to !== null && to >= arr.length) out.push(ph(arr.length));
+  return out;
+}
+
+function armDrag(key: string) {
+  dragArm.value = key;
+}
+function disarmDrag() {
+  dragArm.value = null;
+}
+function onDragStart(f: Fmt, i: number, e: DragEvent) {
+  if (dragArm.value !== `${f}:${i}`) {
+    e.preventDefault(); // drags may only start from the handle
+    return;
+  }
+  drag.value = { fmt: f, from: i, to: i };
+  e.dataTransfer?.setData("text/plain", ""); // Firefox won't start a drag without data
+  if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+}
+function onDragOver(f: Fmt, i: number, e: DragEvent) {
+  if (!drag.value || drag.value.fmt !== f) return;
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+  const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+  drag.value.to = e.clientY > r.top + r.height / 2 ? i + 1 : i;
+}
+/** The container's own empty space (below the last row) accepts drops too. */
+function onDragOverList(f: Fmt, e: DragEvent) {
+  if (!drag.value || drag.value.fmt !== f) return;
+  if (e.target !== e.currentTarget) return;
+  e.preventDefault();
+  drag.value.to = fmtSlots.value[f].length;
+}
+function onDrop(f: Fmt) {
+  const d = drag.value;
+  drag.value = null;
+  disarmDrag();
+  if (!d || d.fmt !== f) return;
+  if (d.to === d.from || d.to === d.from + 1) return; // landed where it started
+  const arr = fmtSlots.value[f];
+  const [slot] = arr.splice(d.from, 1);
+  arr.splice(d.to > d.from ? d.to - 1 : d.to, 0, slot);
+}
+function onDragEnd() {
+  drag.value = null;
+  disarmDrag();
+}
 
 // --- validation + save -----------------------------------------------------
 
-const canSave = computed(() => {
-  if (saving.value) return false;
-  if (!props.model && !name.value.trim()) return false;
-  return true;
-});
+const canSave = computed(() => !saving.value && (!!props.model || !!name.value.trim()));
 
 function validate(): boolean {
   nameErr.value = "";
@@ -193,33 +259,50 @@ function validate(): boolean {
     nameErr.value = t("models.editor.errNameExists", { name: n });
     return false;
   }
-  let ok = true;
-  // In unified mode a slot's thinking reaches the anthropic chain too, where the
-  // value must be a budget in tokens — an effort word can't be shared. Per-format
-  // mode checks the anthropic section's own rows. One error per section.
-  const checkAnthropicBudget = (target: "unified" | "anthropic", slots: DraftSlot[]) => {
-    for (const s of slots) {
-      if (s.thinking.trim() && !/^\d+$/.test(s.thinking.trim())) {
-        rowErr.value[target] = t("models.editor.errThinkingBudget");
-        ok = false;
-        return;
+  // An anthropic slot's thinking IS a budget in tokens — an effort word can't
+  // be sent there. One error per section.
+  for (const s of fmtSlots.value.anthropic) {
+    if (s.thinking.trim() && !/^\d+$/.test(s.thinking.trim())) {
+      rowErr.value.anthropic = t("models.editor.errThinkingBudget");
+      return false;
+    }
+  }
+  // Sampling defaults must be numbers (seed an integer) — the same whitelist on
+  // every route. One error per section, first offender wins.
+  for (const f of FORMATS) {
+    for (const s of fmtSlots.value[f]) {
+      for (const { key } of SAMPLING_FIELDS) {
+        const raw = s.sampling[key]?.trim();
+        if (!raw) continue;
+        const n = Number(raw);
+        if (!Number.isFinite(n) || (key === "seed" && !Number.isInteger(n))) {
+          rowErr.value[f] = t("models.editor.errSampling");
+          return false;
+        }
       }
     }
-  };
-  if (!perFmt.value) {
-    const landsAnthropic = unified.value.filter((s) => landsOn(s).includes("anthropic"));
-    checkAnthropicBudget("unified", landsAnthropic);
-  } else {
-    checkAnthropicBudget("anthropic", fmtSlots.value.anthropic);
   }
-  return ok;
+  return true;
+}
+
+/** The sampling record the save body carries: filled fields as numbers,
+ *  blanks dropped; undefined when nothing is set (the key is omitted). */
+function samplingBody(m: Record<string, string>): Record<string, number> | undefined {
+  const out: Record<string, number> = {};
+  for (const f of SAMPLING_FIELDS) {
+    const raw = m[f.key]?.trim();
+    if (raw) out[f.key] = Number(raw);
+  }
+  return Object.keys(out).length ? out : undefined;
 }
 
 function bodySlots(slots: DraftSlot[]) {
   return slots.map((s) => {
-    const out: Record<string, string> = { id: s.pid };
+    const out: Record<string, unknown> = { id: s.pid };
     if (s.model.trim()) out.model = s.model.trim();
     if (s.thinking.trim()) out.thinking = s.thinking.trim();
+    const sampling = samplingBody(s.sampling);
+    if (sampling) out.sampling = sampling;
     return out;
   });
 }
@@ -229,15 +312,7 @@ async function save() {
   saving.value = true;
   try {
     const body: Record<string, unknown> = {};
-    if (perFmt.value) {
-      for (const f of FORMATS)
-        body[f] = { enabled: fmtEnabled.value[f], slots: bodySlots(fmtSlots.value[f]) };
-    } else {
-      for (const f of FORMATS) {
-        const landed = unified.value.filter((s) => supports(s.pid, f));
-        body[f] = { enabled: landed.length > 0, slots: bodySlots(landed) };
-      }
-    }
+    for (const f of FORMATS) body[f] = { enabled: fmtEnabled.value[f], slots: bodySlots(fmtSlots.value[f]) };
     body.paceRpm = Number(pace.value) || 0;
     const r = await req<{ model: ModelView }>("PUT", `/admin/models/${enc(name.value.trim())}`, body);
     toast(t("models.editor.savedToast", { name: r.model.name }), "success");
@@ -251,21 +326,22 @@ async function save() {
 }
 
 const hasProviders = computed(() => props.providers.length > 0);
-const FMT_META: Record<Fmt, { label: string; endpoint: string }> = {
-  openai: { label: "models.fmtOpenai", endpoint: "/chat/completions" },
-  anthropic: { label: "models.fmtAnthropic", endpoint: "/messages" },
-  responses: { label: "models.fmtResponses", endpoint: "/responses" },
-};
 </script>
 
 <template>
   <Dialog v-model:open="open">
-    <DialogContent class="max-w-3xl">
+    <DialogContent class="max-w-lg">
       <datalist id="thinking-words">
         <option value="low"></option>
         <option value="medium"></option>
         <option value="high"></option>
         <option value="xhigh"></option>
+      </datalist>
+      <datalist id="thinking-budgets">
+        <option value="1024"></option>
+        <option value="4096"></option>
+        <option value="8192"></option>
+        <option value="16384"></option>
       </datalist>
       <div class="flex shrink-0 items-center gap-2 pr-8">
         <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/15 text-primary">
@@ -277,7 +353,7 @@ const FMT_META: Record<Fmt, { label: string; endpoint: string }> = {
         </div>
       </div>
 
-      <div class="min-h-0 flex-1 space-y-4 overflow-y-auto px-1 py-1.5">
+      <div class="min-h-0 flex-1 space-y-3 overflow-y-auto px-1 py-1.5">
         <!-- name -->
         <div class="space-y-1.5">
           <Label for="m-name">{{ t("models.editor.nameLabel") }}</Label>
@@ -301,155 +377,151 @@ const FMT_META: Record<Fmt, { label: string; endpoint: string }> = {
         </div>
 
         <template v-else>
-          <!-- unified chain -->
-          <div v-if="!perFmt" class="space-y-2">
+          <!-- one independent chain per protocol -->
+          <div class="space-y-2">
             <div class="flex items-center justify-between">
               <Label>{{ t("models.editor.chainTitle") }}</Label>
               <span class="text-xs text-muted-foreground">{{ t("models.editor.chainPriority") }}</span>
             </div>
-            <!-- fan-out summary: the one list above expands into one
-                 independent chain per protocol — say so, with the actual set -->
-            <div v-if="chainUnion.length" class="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
-              <span>{{ t("models.editor.fanoutLine", { n: chainUnion.length }) }}</span>
-              <span
-                v-for="f in chainUnion"
-                :key="f"
-                class="inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium"
-                :class="FMT_ACCENT[f].chip"
-              >{{ t(FMT_META[f].label) }}</span>
-            </div>
-            <div class="space-y-1.5">
-              <div v-for="(s, i) in unified" :key="i" class="space-y-1 rounded-md border bg-muted/30 p-2">
-                <div class="flex items-center gap-1.5">
-                  <span class="w-4 shrink-0 text-right text-xs text-muted-foreground">{{ i + 1 }}</span>
-                  <Select v-model="s.pid" @update:model-value="onProviderChange(s)">
-                    <SelectTrigger class="h-8 w-36 shrink-0" size="sm">
-                      <SelectValue :placeholder="t('models.editor.providerPh')" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem v-for="p in providers" :key="p.id" :value="p.id">
-                        <span class="flex items-center gap-1.5">
-                          <span class="h-1.5 w-1.5 rounded-full" :class="providerColor(p.id).solid" />
-                          {{ p.name }}
-                        </span>
-                      </SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <ArrowRight class="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                  <div class="min-w-0 flex-1">
-                    <Combobox
-                      v-model="s.model"
-                      :options="discoveredFor(s.pid)"
-                      :placeholder="t('models.editor.upstreamPh')"
-                    />
-                  </div>
-                  <div class="relative w-28 shrink-0">
-                    <Brain class="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/70" />
-                    <Input
-                      v-model="s.thinking"
-                      :placeholder="t('models.editor.thinkingPh')"
-                      class="h-8 pl-7 font-mono text-xs"
-                      spellcheck="false"
-                      list="thinking-words"
-                      :aria-label="t('models.editor.thinkingLabel')"
-                    />
-                  </div>
-                  <div class="flex shrink-0 items-center">
-                    <Button variant="ghost" size="icon" class="h-7 w-7" :disabled="i === 0" :aria-label="t('models.moveUpAria')" @click="moveSlot('unified', i, -1)">
-                      <ArrowUp class="h-3.5 w-3.5" />
-                    </Button>
-                    <Button variant="ghost" size="icon" class="h-7 w-7" :disabled="i === unified.length - 1" :aria-label="t('models.moveDownAria')" @click="moveSlot('unified', i, 1)">
-                      <ArrowDown class="h-3.5 w-3.5" />
-                    </Button>
-                    <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-destructive" :aria-label="t('models.editor.removeSlot')" @click="removeSlot('unified', i)">
-                      <Trash2 class="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-                </div>
-                <!-- where this slot lands: only shown when it deviates from
-                     "lands on every protocol" or carries an error -->
-                <div v-if="slotNoteworthy(s)" class="flex items-center gap-2 pl-6">
-                  <span class="text-[11px] text-muted-foreground">{{ t("models.editor.landsOn") }}</span>
-                  <span
-                    v-for="f in landsOn(s)"
-                    :key="f"
-                    class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium"
-                    :class="FMT_ACCENT[f].chip"
-                  >{{ t(FMT_META[f].label) }}</span>
-                  <span v-if="!landsOn(s).length" class="text-[11px] text-destructive">{{ t("models.editor.landsNone") }}</span>
-                  <span v-if="rowErr.unified" class="inline-flex items-center gap-1 text-[11px] text-destructive">
-                    <TriangleAlert class="h-3 w-3" />{{ rowErr.unified }}
-                  </span>
-                </div>
-              </div>
-            </div>
-            <Button variant="outline" size="sm" class="w-full border-dashed" @click="addSlot('unified')">
-              <Plus class="h-4 w-4" />{{ t("models.editor.addSlot") }}
-            </Button>
-          </div>
-
-          <!-- per-format chains -->
-          <div v-else class="space-y-3">
-            <div v-for="f in FORMATS" :key="f" class="space-y-1.5 rounded-md border bg-muted/30 p-2.5">
-              <div class="flex items-center gap-2">
+            <div v-for="f in FORMATS" :key="f" class="space-y-1 rounded-md border bg-muted/30 p-2">
+              <div class="flex items-center gap-1.5">
                 <span class="h-2 w-2 rounded-full" :class="FMT_ACCENT[f].solid" />
                 <span class="text-xs font-semibold">{{ t(FMT_META[f].label) }}</span>
                 <span class="font-mono text-[11px] text-muted-foreground">{{ FMT_META[f].endpoint }}</span>
                 <Switch v-model="fmtEnabled[f]" class="ml-auto" :aria-label="t('models.editor.enabledLabel')" />
               </div>
-              <div v-if="!fmtSlots[f].length" class="px-1 py-1 text-xs text-muted-foreground">{{ t("models.editor.emptyChain") }}</div>
-              <div v-for="(s, i) in fmtSlots[f]" :key="i" class="flex items-center gap-1.5 rounded bg-background/60 p-1.5">
-                <span class="w-4 shrink-0 text-right text-xs text-muted-foreground">{{ i + 1 }}</span>
-                <Select v-model="s.pid" @update:model-value="onProviderChange(s)">
-                  <SelectTrigger class="h-8 w-36 shrink-0" size="sm">
-                    <SelectValue :placeholder="t('models.editor.providerPh')" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem v-for="p in providers.filter((x) => supports(x.id, f))" :key="p.id" :value="p.id">
-                      <span class="flex items-center gap-1.5">
-                        <span class="h-1.5 w-1.5 rounded-full" :class="providerColor(p.id).solid" />
-                        {{ p.name }}
-                      </span>
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
-                <ArrowRight class="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                <div class="min-w-0 flex-1">
-                  <Combobox v-model="s.model" :options="discoveredFor(s.pid)" :placeholder="t('models.editor.upstreamPh')" />
+              <div v-if="!fmtSlots[f].length" class="px-1 py-0.5 text-xs text-muted-foreground">{{ t("models.editor.emptyChain") }}</div>
+              <TransitionGroup
+                v-else
+                tag="div"
+                name="slots"
+                class="space-y-1"
+                @dragover="onDragOverList(f, $event)"
+                @drop.prevent="onDrop(f)"
+              >
+                <div
+                  v-for="item in renderList(f)"
+                  :key="item.key"
+                  class="flex items-center gap-1 rounded px-1 py-0.5"
+                  :class="item.ph ? 'ph h-8 shrink-0 border border-dashed border-primary/50 bg-primary/10' : rowCls(f, item.i)"
+                  :draggable="!item.ph && armed(f, item.i)"
+                  @dragstart="onDragStart(f, item.i, $event)"
+                  @dragover="onDragOver(f, item.i, $event)"
+                  @drop.prevent="onDrop(f)"
+                  @dragend="onDragEnd"
+                  @mouseup="disarmDrag"
+                >
+                  <template v-if="!item.ph">
+                    <button
+                      type="button"
+                      class="shrink-0 cursor-grab rounded p-0.5 text-muted-foreground/60 hover:text-foreground active:cursor-grabbing"
+                      :aria-label="t('models.editor.dragAria')"
+                      :title="t('models.editor.dragAria')"
+                      @mousedown="armDrag(`${f}:${item.i}`)"
+                    >
+                      <GripVertical class="h-3.5 w-3.5" />
+                    </button>
+                    <span class="w-3.5 shrink-0 text-right text-[11px] tabular-nums text-muted-foreground">{{ item.i + 1 }}</span>
+                    <Select v-model="item.slot.pid" @update:model-value="onProviderChange(item.slot)">
+                      <SelectTrigger class="h-7 w-28 shrink-0 px-2 text-xs">
+                        <SelectValue :placeholder="t('models.editor.providerPh')" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem v-for="p in providers.filter((x) => supports(x.id, f))" :key="p.id" :value="p.id" class="text-xs">
+                          <span class="flex items-center gap-1.5">
+                            <span class="h-1.5 w-1.5 rounded-full" :class="providerColor(p.id).solid" />
+                            {{ p.name }}
+                          </span>
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <div class="w-44 shrink-0 [&_input]:h-7 [&_input]:text-xs">
+                      <Combobox v-model="item.slot.model" :options="discoveredFor(item.slot.pid)" :placeholder="t('models.editor.upstreamPh')" />
+                    </div>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger as-child>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          class="ml-auto h-7 w-7 shrink-0"
+                          :class="item.slot.thinking.trim() || samplingFilled(item.slot) ? 'text-primary' : 'text-muted-foreground/70 hover:text-foreground'"
+                          :aria-label="t('models.editor.moreActions')"
+                          :title="t('models.editor.moreActions')"
+                        >
+                          <Brain v-if="item.slot.thinking.trim()" class="h-3.5 w-3.5" />
+                          <SlidersHorizontal v-else-if="samplingFilled(item.slot)" class="h-3.5 w-3.5" />
+                          <MoreHorizontal v-else class="h-3.5 w-3.5" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" class="w-56">
+                        <div class="px-2 py-1 text-[11px] font-medium text-muted-foreground">{{ t("models.editor.thinkingLabel") }}</div>
+                        <DropdownMenuItem @select="item.slot.thinking = ''">
+                          <Check v-if="!item.slot.thinking.trim()" />
+                          <span v-else class="size-4 shrink-0" aria-hidden="true" />
+                          {{ t("models.editor.thinkingClear") }}
+                        </DropdownMenuItem>
+                        <DropdownMenuItem v-for="v in thinkingPresets(f)" :key="v" @select="item.slot.thinking = v">
+                          <Check v-if="item.slot.thinking.trim() === v" />
+                          <span v-else class="size-4 shrink-0" aria-hidden="true" />
+                          <span class="font-mono text-xs">{{ v }}</span>
+                        </DropdownMenuItem>
+                        <div class="px-2 pb-1.5 pt-0.5" @click.stop @keydown="onMenuKeydown">
+                          <Input
+                            v-model="item.slot.thinking"
+                            class="h-7 font-mono text-xs"
+                            spellcheck="false"
+                            :placeholder="f === 'anthropic' ? t('models.editor.thinkingPhBudget') : t('models.editor.thinkingPh')"
+                            :list="f === 'anthropic' ? 'thinking-budgets' : 'thinking-words'"
+                            :aria-label="t('models.editor.thinkingLabel')"
+                          />
+                        </div>
+                        <DropdownMenuSeparator />
+                        <div class="px-2 py-1 text-[11px] font-medium text-muted-foreground">{{ t("models.editor.samplingLabel") }}</div>
+                        <DropdownMenuItem @select="clearSampling(item.slot)">
+                          <Check v-if="!samplingFilled(item.slot)" />
+                          <span v-else class="size-4 shrink-0" aria-hidden="true" />
+                          {{ t("models.editor.samplingClear") }}
+                        </DropdownMenuItem>
+                        <div class="grid grid-cols-3 gap-1 px-2 pb-1.5 pt-0.5" @click.stop @keydown="onMenuKeydown">
+                          <Input
+                            v-for="sf in SAMPLING_FIELDS"
+                            :key="sf.key"
+                            v-model="item.slot.sampling[sf.key]"
+                            type="number"
+                            step="any"
+                            class="h-7 px-1.5 font-mono text-xs"
+                            :placeholder="sf.ph"
+                            :aria-label="`${t('models.editor.samplingLabel')} · ${sf.key}`"
+                            :title="sf.key"
+                          />
+                        </div>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem class="text-destructive focus:bg-destructive/10 focus:text-destructive" @select="removeSlot(f, item.slot.uid)">
+                          <Trash2 />
+                          {{ t("models.editor.removeSlot") }}
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </template>
                 </div>
-                <div class="relative w-28 shrink-0">
-                  <Brain class="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/70" />
-                  <Input
-                    v-model="s.thinking"
-                    :placeholder="f === 'anthropic' ? t('models.editor.thinkingPhBudget') : t('models.editor.thinkingPh')"
-                    class="h-8 pl-7 font-mono text-xs"
-                    spellcheck="false"
-                    :list="f === 'anthropic' ? undefined : 'thinking-words'"
-                  />
-                </div>
-                <div class="flex shrink-0 items-center">
-                  <Button variant="ghost" size="icon" class="h-7 w-7" :disabled="i === 0" :aria-label="t('models.moveUpAria')" @click="moveSlot(f, i, -1)">
-                    <ArrowUp class="h-3.5 w-3.5" />
-                  </Button>
-                  <Button variant="ghost" size="icon" class="h-7 w-7" :disabled="i === fmtSlots[f].length - 1" :aria-label="t('models.moveDownAria')" @click="moveSlot(f, i, 1)">
-                    <ArrowDown class="h-3.5 w-3.5" />
-                  </Button>
-                  <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-destructive" :aria-label="t('models.editor.removeSlot')" @click="removeSlot(f, i)">
-                    <Trash2 class="h-3.5 w-3.5" />
-                  </Button>
-                </div>
-              </div>
-              <span v-if="rowErr.anthropic && f === 'anthropic'" class="inline-flex items-center gap-1 px-1 text-[11px] text-destructive">
-                <TriangleAlert class="h-3 w-3" />{{ rowErr.anthropic }}
+              </TransitionGroup>
+              <span v-if="rowErr[f]" class="inline-flex items-center gap-1 px-1 text-[11px] text-destructive">
+                <TriangleAlert class="h-3 w-3" />{{ rowErr[f] }}
               </span>
-              <Button variant="outline" size="sm" class="w-full border-dashed" :disabled="!providers.some((x) => supports(x.id, f))" @click="addSlot(f)">
-                <Plus class="h-4 w-4" />{{ t("models.editor.addSlot") }}
+              <Button
+                variant="outline"
+                size="sm"
+                class="h-7 w-full border-dashed text-xs"
+                :disabled="!providers.some((x) => supports(x.id, f))"
+                @click="addSlot(f)"
+              >
+                <Plus class="h-3.5 w-3.5" />{{ t("models.editor.addSlot") }}
               </Button>
             </div>
           </div>
 
-          <!-- quiet controls: explanation left, chain-mode link right -->
-          <div class="flex items-center justify-between gap-2">
+          <!-- quiet controls: explanation toggle -->
+          <div class="flex items-center">
             <button
               type="button"
               class="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
@@ -459,20 +531,11 @@ const FMT_META: Record<Fmt, { label: string; endpoint: string }> = {
               <Info class="h-3.5 w-3.5" />
               {{ t("models.editor.helpToggle") }}
             </button>
-            <button
-              type="button"
-              class="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
-              @click="perFmt = !perFmt"
-            >
-              <SlidersHorizontal class="h-3.5 w-3.5" />
-              {{ perFmt ? t("models.editor.perFmtOff") : t("models.editor.perFmtOn") }}
-            </button>
           </div>
           <div v-if="showHelp" class="space-y-1 rounded-md border bg-muted/30 p-3 text-xs leading-relaxed text-muted-foreground">
-            <p>{{ t("models.editor.helpFanout") }}</p>
             <p>{{ t("models.editor.helpUpstream") }}</p>
             <p>{{ t("models.editor.helpThinking") }}</p>
-            <p>{{ t("models.editor.helpPerFmt") }}</p>
+            <p>{{ t("models.editor.helpSampling") }}</p>
           </div>
 
           <!-- advanced -->
@@ -506,3 +569,25 @@ const FMT_META: Record<Fmt, { label: string; endpoint: string }> = {
     </DialogContent>
   </Dialog>
 </template>
+
+<style scoped>
+/* drag placeholder: expands + fades in, and re-plays each time it hops to a
+   new position (re-inserting a node restarts CSS animations) */
+.ph {
+  animation: ph-in 160ms ease-out;
+}
+@keyframes ph-in {
+  from {
+    opacity: 0;
+    transform: scaleY(0.4);
+  }
+  to {
+    opacity: 1;
+    transform: scaleY(1);
+  }
+}
+/* FLIP: while dragging, rows (and the placeholder) slide to their new spots */
+.slots-move {
+  transition: transform 160ms ease;
+}
+</style>

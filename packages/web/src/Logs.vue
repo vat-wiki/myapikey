@@ -3,6 +3,7 @@ import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 import { useI18n } from "vue-i18n";
 import { req, type CircuitProvider, type Usage } from "@/api";
 import { FMT_ACCENT, fmtLabel, type Fmt } from "@/lib/format";
+import { samplingPairs, samplingSummary } from "@/lib/models";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,7 +11,7 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@
 import { Input } from "@/components/ui/input";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
-import { Activity, RefreshCw, Pause, Play, Loader2, Search, ChevronRight, ChevronDown, Filter, X, Timer, Gauge, Brain } from "lucide-vue-next";
+import { Activity, RefreshCw, Pause, Play, Loader2, Search, ChevronRight, ChevronDown, Filter, X, Timer, Gauge, Brain, SlidersHorizontal } from "lucide-vue-next";
 
 const { t } = useI18n();
 
@@ -41,6 +42,9 @@ interface LogEntry {
    *  request carried; "client" = no default on that slot, so the request's
    *  own setting ran (forwarded untouched). Absent when neither applied. */
   thinking?: { value: string; from: "client" | "default" };
+  /** Sampling parameters the gateway injected (the answering slot's configured
+   *  defaults). Absent when the slot had none. */
+  sampling?: Record<string, unknown>;
 }
 
 const logs = ref<LogEntry[]>([]);
@@ -504,6 +508,9 @@ onUnmounted(stopPolling);
                     >
                       <Brain class="h-3 w-3" />{{ l.thinking.value }}
                     </Badge>
+                    <Badge v-if="l.sampling" variant="muted" class="gap-1 font-mono text-[10px]" :title="t('logs.detail.sampling')">
+                      <SlidersHorizontal class="h-3 w-3" />{{ samplingSummary(l.sampling) }}
+                    </Badge>
                   </span>
                 </TableCell>
                 <TableCell class="text-right font-mono text-xs text-muted-foreground">{{ fmtMs(l.ms) }}</TableCell>
@@ -530,6 +537,10 @@ onUnmounted(stopPolling);
                         {{ l.thinking.value }}
                         <Badge variant="muted" class="text-[10px]">{{ l.thinking.from === "default" ? t("logs.thinkingDefault") : t("logs.thinkingClient") }}</Badge>
                       </dd>
+                    </template>
+                    <template v-if="l.sampling">
+                      <dt class="text-muted-foreground">{{ t("logs.detail.sampling") }}</dt>
+                      <dd class="break-all font-mono">{{ samplingPairs(l.sampling) }}</dd>
                     </template>
                     <template v-if="l.usage">
                       <dt class="text-muted-foreground">{{ t("logs.detail.tokens") }}</dt>

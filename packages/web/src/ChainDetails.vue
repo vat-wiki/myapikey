@@ -14,10 +14,11 @@ export interface ChainLine {
 <script setup lang="ts">
 import { ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { Brain, Check, Loader2, TriangleAlert, Zap } from "lucide-vue-next";
+import { Brain, Check, Loader2, SlidersHorizontal, TriangleAlert, Zap } from "lucide-vue-next";
 import type { ModelView } from "@/api";
 import type { LastFail } from "@/api";
 import { FMT_ACCENT, FMT_META, providerColor } from "@/lib/format";
+import { samplingSummary } from "@/lib/models";
 
 /** One chain line rendered in FULL — every slot as ONE LIST ROW (number,
  *  source, upstream mapping, thinking, per-source probe), shown in a popover
@@ -74,7 +75,7 @@ function toggleErr(si: number) {
           <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="providerColor(s.id).solid" />
           <div class="min-w-0 flex-1 leading-tight">
             <div class="truncate text-xs font-medium">{{ s.name }}</div>
-            <div v-if="s.model || s.thinking" class="flex min-w-0 items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
+            <div v-if="s.model || s.thinking || samplingSummary(s.sampling)" class="flex min-w-0 items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
               <span v-if="s.model" class="min-w-0 truncate" :title="s.model">› {{ s.model }}</span>
               <span
                 v-if="s.thinking"
@@ -82,6 +83,13 @@ function toggleErr(si: number) {
                 :title="t('models.editor.thinkingLabel')"
               >
                 <Brain class="h-2.5 w-2.5" />{{ s.thinking }}
+              </span>
+              <span
+                v-if="samplingSummary(s.sampling)"
+                class="inline-flex shrink-0 items-center gap-0.5"
+                :title="t('models.editor.samplingLabel')"
+              >
+                <SlidersHorizontal class="h-2.5 w-2.5" />{{ samplingSummary(s.sampling) }}
               </span>
             </div>
           </div>

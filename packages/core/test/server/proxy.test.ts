@@ -679,6 +679,89 @@ describe("proxy", () => {
     });
   });
 
+  describe("dispatch sampling default", () => {
+    it("injects the slot's configured sampling fields when the request carries none, and logs them", async () => {
+      await seedStore(store, {
+        models: { m: makeModel({ openai: fe([{ id: "prv_A", sampling: { temperature: 0.2, top_p: 0.9 } }]) }) },
+      });
+      mock = mockFetch([
+        { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "ok" } }] } } },
+      ]);
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      expect(res.status).toBe(200);
+      const up = JSON.parse(mock.calls[0].body);
+      expect(up.temperature).toBe(0.2);
+      expect(up.top_p).toBe(0.9);
+      await res.text(); // drain so the success row's onSettle fires + logs
+      const log = store.getLogs().find((e) => e.model === "m" && !e.kind);
+      expect(log?.sampling).toEqual({ temperature: 0.2, top_p: 0.9 });
+    });
+
+    it("overrides ONLY the configured fields; unconfigured ones pass through untouched", async () => {
+      await seedStore(store, {
+        models: { m: makeModel({ openai: fe([{ id: "prv_A", sampling: { temperature: 0.2 } }]) }) },
+      });
+      mock = mockFetch([
+        { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "ok" } }] } } },
+      ]);
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [], temperature: 1, top_p: 0.5 });
+      await res.text();
+      const up = JSON.parse(mock.calls[0].body);
+      expect(up.temperature).toBe(0.2);
+      expect(up.top_p).toBe(0.5);
+      expect(store.getLogs().find((e) => e.model === "m")?.sampling).toEqual({ temperature: 0.2 });
+    });
+
+    it("without a default the request's sampling parameters pass through and are NOT logged", async () => {
+      await seedStore(store, {
+        models: { m: makeModel({ openai: fe([{ id: "prv_A" }]) }) },
+      });
+      mock = mockFetch([
+        { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "ok" } }] } } },
+      ]);
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [], temperature: 0.7 });
+      await res.text();
+      expect(JSON.parse(mock.calls[0].body).temperature).toBe(0.7);
+      expect(store.getLogs().find((e) => e.model === "m")?.sampling).toBeUndefined();
+    });
+
+    it("failover to a no-default slot restores the request's own sampling values", async () => {
+      await seedStore(store, {
+        models: { m: makeModel({ openai: fe([{ id: "prv_A", sampling: { temperature: 0.2 } }, { id: "prv_B" }]) }) },
+      });
+      mock = mockFetch([
+        { match: "/a/v1/chat/completions", response: { status: 503, body: { error: { message: "down" } } } },
+        { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "ok" } }] } } },
+      ]);
+      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [], temperature: 1 });
+      await res.text();
+      // Slot A was attempted WITH the forced default; B (which answered) ran the
+      // request's own value, restored after A's override.
+      expect(JSON.parse(mock.calls.find((c) => c.url.includes("/a/"))!.body).temperature).toBe(0.2);
+      expect(JSON.parse(mock.calls.find((c) => c.url.includes("/b/"))!.body).temperature).toBe(1);
+      // Each row reflects the slot it belongs to: B injected nothing, A's
+      // cooldown row did.
+      expect(store.getLogs().find((e) => e.model === "m" && e.status === 200)?.sampling).toBeUndefined();
+      expect(store.getLogs().find((e) => e.kind === "cooldown")?.sampling).toEqual({ temperature: 0.2 });
+    });
+
+    it("anthropic slot: injects the same wire-agnostic field names", async () => {
+      await seedStore(store, {
+        models: { m: makeModel({ anthropic: fe([{ id: "prv_A", sampling: { temperature: 0.5, top_k: 40 } }]) }) },
+      });
+      mock = mockFetch([
+        { match: "/a/v1/messages", response: { status: 200, body: { content: [{ type: "text", text: "ok" }] } } },
+      ]);
+      const res = await post("/anthropic/v1/messages", { model: "m", messages: [], max_tokens: 100 });
+      expect(res.status).toBe(200);
+      const up = JSON.parse(mock.calls[0].body);
+      expect(up.temperature).toBe(0.5);
+      expect(up.top_k).toBe(40);
+      await res.text();
+      expect(store.getLogs().find((e) => e.model === "m")?.sampling).toEqual({ temperature: 0.5, top_k: 40 });
+    });
+  });
+
   describe("dispatch duplicate slots (one source, several upstream models)", () => {
     it("fails over to a second slot under the SAME source, each sending its own upstream model", async () => {
       // coding → Ark:doubao-pro (slot 0) primary, Ark:doubao-lite (slot 1) fallback.

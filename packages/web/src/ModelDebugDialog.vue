@@ -3,6 +3,7 @@ import { ref, computed, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { req, type ModelView, type DebugCapture } from "@/api";
 import { fmtLabel, providerColor } from "@/lib/format";
+import { samplingSummary } from "@/lib/models";
 import { conversationGroupsOf } from "@/lib/conv";
 import { toast } from "@/lib/toast";
 import { copyText } from "@/lib/clipboard";
@@ -11,7 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import DebugContent from "./DebugContent.vue";
-import { ArrowLeft, Brain, Copy, Loader2, RefreshCw, Bug, X } from "lucide-vue-next";
+import { ArrowLeft, Brain, Copy, Loader2, RefreshCw, SlidersHorizontal, Bug, X } from "lucide-vue-next";
 
 /** Per-model debug capture (GET/PUT/DELETE /admin/models/:name/debug*).
  *  Two tiers, one timeline: failed upstream attempts are ALWAYS recorded (a
@@ -399,6 +400,13 @@ async function copy(s: string | undefined) {
                   :title="t('models.editor.thinkingLabel')"
                 >
                   <Brain class="h-2.5 w-2.5" />{{ r.c.thinking.value }}
+                </span>
+                <span
+                  v-if="samplingSummary(r.c.sampling)"
+                  class="inline-flex shrink-0 items-center gap-0.5 font-mono text-[10px] text-muted-foreground"
+                  :title="t('models.editor.samplingLabel')"
+                >
+                  <SlidersHorizontal class="h-2.5 w-2.5" />{{ samplingSummary(r.c.sampling) }}
                 </span>
                 <Badge v-if="r.auto" variant="secondary" class="shrink-0 text-[10px]">{{ t("models.debugAutoTag") }}</Badge>
                 <span class="ml-auto shrink-0 font-mono text-xs text-muted-foreground">{{ r.c.ms }}ms · {{ size(r.c.request) }}/{{ size(r.c.response) }}</span>

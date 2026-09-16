@@ -97,14 +97,15 @@ function parseResetFromBody(text: string): number | undefined {
 }
 
 /** One resolved routing slot: the provider to forward to plus THIS slot's
- *  optional upstream model name (absent = send the public model name) and
- *  default thinking level. The same provider may occupy several slots in a
- *  chain — each is an independent failover slot carrying its own upstream
- *  model. */
+ *  optional upstream model name (absent = send the public model name), default
+ *  thinking level and default sampling parameters. The same provider may occupy
+ *  several slots in a chain — each is an independent failover slot carrying its
+ *  own overrides. */
 interface CandidateSlot {
   provider: Provider;
   model?: string;
   thinking?: string;
+  sampling?: Record<string, unknown>;
 }
 
 /** Resolve the ordered, compatible provider slots for a model on a routing slot. */
@@ -120,7 +121,7 @@ function candidates(store: Store, model: string, key: RouteKey): CandidateSlot[]
   return fe.providers
     .map((s): CandidateSlot | null => {
       const p = byId.get(s.id);
-      return p ? { provider: p, model: s.model, thinking: s.thinking } : null;
+      return p ? { provider: p, model: s.model, thinking: s.thinking, sampling: s.sampling } : null;
     })
     .filter((slot): slot is CandidateSlot => {
       if (!slot) return false;
@@ -242,6 +243,54 @@ function applySlotThinking(
     body.reasoning_effort = def;
   }
   return { value: def, from: "default" };
+}
+
+// --- per-slot default sampling parameters -------------------------------------
+// Like the thinking level, each routing slot can carry default sampling
+// parameters — but the override semantics differ where the wires differ.
+// Thinking owns EVERY thinking switch (a forced level alongside a stale client
+// switch would contradict itself), while sampling overrides ONLY the fields it
+// configures: temperature=0.2 with the client's own top_p intact is coherent.
+// A configured field replaces the request's value; an unconfigured field — and
+// everything on a slot without defaults — passes through, restored verbatim
+// when an earlier failover slot overrode it. The names are identical on all
+// three wires (openai chat/completions, /responses, anthropic messages), so
+// there is no per-format dialect and no translation.
+
+/** The body fields a slot's sampling default may set — the wire-agnostic names,
+ *  the same set on every route. */
+const SAMPLING_FIELDS = ["temperature", "top_p", "top_k", "presence_penalty", "frequency_penalty", "seed"] as const;
+
+/** Apply THIS slot's sampling defaults to the body (mutating it), and return
+ *  the log row's `sampling` field: the fields the gateway injected. Undefined =
+ *  nothing injected (no default configured, or none of the fields set). A slot
+ *  WITH defaults overrides exactly those fields; all others restore the
+ *  request's originals — same recompute-per-attempt discipline as the model
+ *  rewrite and the thinking level, so slot A's values never leak into slot B. */
+function applySlotSampling(
+  body: Record<string, unknown>,
+  def: Record<string, unknown> | undefined,
+  orig: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  if (!def) {
+    for (const f of SAMPLING_FIELDS) {
+      if (orig[f] === undefined) delete body[f];
+      else body[f] = orig[f];
+    }
+    return undefined;
+  }
+  const applied: Record<string, unknown> = {};
+  for (const f of SAMPLING_FIELDS) {
+    const v = def[f];
+    if (v === undefined) {
+      if (orig[f] === undefined) delete body[f];
+      else body[f] = orig[f];
+    } else {
+      body[f] = v;
+      applied[f] = v;
+    }
+  }
+  return Object.keys(applied).length ? applied : undefined;
 }
 
 /** Auth headers for the Anthropic wire format. Sends BOTH x-api-key and
@@ -502,6 +551,10 @@ export function proxyApi(
       fields: Object.fromEntries(thinkingFields(key).map((f) => [f, body[f]])),
       maxTokens: body.max_tokens,
     };
+    // The request's own sampling parameters, snapshotted alongside the thinking
+    // switches (same reason: each attempt mutates the shared body, and a slot
+    // without defaults must restore these originals).
+    const samplingOrig: Record<string, unknown> = Object.fromEntries(SAMPLING_FIELDS.map((f) => [f, body[f]]));
     // The model-page "test" button drives dispatch via an in-process loopback
     // (adminApi calls v1.request). The probe is a real call in every respect —
     // including being logged — so we only tag it to report WHICH provider
@@ -545,6 +598,9 @@ export function proxyApi(
     // Thinking level of the most recent attempt (for the all-failed row after
     // the rounds loop; per-attempt rows capture the loop's own `think` const).
     let lastThink: { value: string; from: "client" | "default" } | undefined;
+    // Sampling fields the most recent attempt injected (for the all-failed row
+    // after the rounds loop; per-attempt rows capture the loop's own `sampling`).
+    let lastSampling: Record<string, unknown> | undefined;
     // Runtime log (console + server.log). Errors and notable events only — the
     // per-call history these lines summarize goes to pushLog/logs.jsonl anyway.
     // UI-triggered probes are excluded: their outcome is shown inline already.
@@ -640,6 +696,11 @@ export function proxyApi(
         // applySlotThinking), so slot A's level never leaks into slot B.
         const think = applySlotThinking(body, key, slot.thinking, thinkOrig);
         lastThink = think;
+        // Per-slot sampling defaults: same recompute-per-attempt discipline as
+        // the model rewrite and the thinking level (see applySlotSampling). A
+        // configured field overrides the request's own; the rest pass through.
+        const sampling = applySlotSampling(body, slot.sampling, samplingOrig);
+        lastSampling = sampling;
         // Count this attempt toward the source's RPM window — but not for a pinned
         // probe, which (like circuit state) takes no routing side-effects.
         if (pinIndex == null) store.recordDispatch(provider.id);
@@ -668,6 +729,7 @@ export function proxyApi(
             request: reqText,
             ...(upstreamModel ? { upstreamModel } : {}),
             ...(think ? { thinking: think } : {}),
+            ...(sampling ? { sampling } : {}),
             ...(response ? { response } : {}),
             ...(truncated ? { truncated: true } : {}),
             ...(error ? { error } : {}),
@@ -690,7 +752,7 @@ export function proxyApi(
           sayFailover(provider, "network error");
           const r = store.recordCircuitFailure(provider.id, lastStatus, lastErr);
           if (r.entered) {
-            store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, thinking: think, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: lastErr });
+            store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, thinking: think, sampling, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: lastErr });
             sayCooldown(provider, r);
           }
           continue;
@@ -728,14 +790,14 @@ export function proxyApi(
             onSettle: (info) => {
               if (info.ok) {
                 store.recordCircuitSuccess(provider.id);
-                store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: 200, ms: ttfb, stream, thinking: think, usage: info.usage });
+                store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: 200, ms: ttfb, stream, thinking: think, sampling, usage: info.usage });
                 capture(200, capAcc.text, capAcc.truncated);
               } else {
                 // A pinned per-source probe takes no circuit side-effects (a manual
                 // test must not trip the breaker) — mirrors the retryable branch.
                 if (pinIndex == null) store.recordCircuitFailure(provider.id, info.status, info.error || "stream failed");
                 if (!isProbe) rt.warn(`proxy stream failed: provider '${provider.name}' status=${info.status} (${info.error || "stream failed"})`);
-                store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: info.status, ms: ttfb, stream, thinking: think, error: info.error });
+                store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: info.status, ms: ttfb, stream, thinking: think, sampling, error: info.error });
                 capture(info.status, capAcc.text, capAcc.truncated, info.error);
               }
             },
@@ -765,13 +827,13 @@ export function proxyApi(
           const resetInMs = retryAfterMs ? undefined : parseResetFromBody(txt);
           const r = store.recordCircuitFailure(provider.id, lastStatus, lastErr, retryAfterMs ?? resetInMs, !!resetInMs);
           if (r.entered) {
-            store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, thinking: think, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: lastErr });
+            store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, thinking: think, sampling, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: lastErr });
             sayCooldown(provider, r);
           }
           continue;
         }
         // Non-retryable client error: return it to the caller as-is.
-        store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: upstream.status, ms: Date.now() - start, stream, thinking: think, error: lastErr });
+        store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: upstream.status, ms: Date.now() - start, stream, thinking: think, sampling, error: lastErr });
         return new Response(txt, { status: upstream.status, headers: downHeaders(upstream, isProbe ? provider.name : undefined) });
       }
 
@@ -784,7 +846,7 @@ export function proxyApi(
         return new Response(null, { status: 499 });
       }
       if (!isProbe) rt.error(`proxy all providers failed model=${model} (last status ${lastStatus})`);
-      store.pushLog({ ts: Date.now(), model, upstreamModel: lastUpstreamModel, provider: last.provider.name, providerId: last.provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, thinking: lastThink, error: lastErr || `all providers failed (last status ${lastStatus})` });
+      store.pushLog({ ts: Date.now(), model, upstreamModel: lastUpstreamModel, provider: last.provider.name, providerId: last.provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, thinking: lastThink, sampling: lastSampling, error: lastErr || `all providers failed (last status ${lastStatus})` });
       // A pinned (per-source) probe failed: surface the REAL upstream status the
       // one slot returned (429/500/…), not a collapsed 502, and tag it with
       // x-myapikey-provider so the source-row badge names the tested source.

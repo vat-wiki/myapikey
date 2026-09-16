@@ -181,7 +181,7 @@ model.command("list").action(async () => {
     console.log(m.name);
     for (const f of fmts) {
       const fe = m[f];
-      const chain = fe.providers.map((p: any) => `${p.model ? `${p.name}→${p.model}` : p.name}${p.thinking ? ` thinking=${p.thinking}` : ""}`).join(" → ") || "(none)";
+      const chain = fe.providers.map((p: any) => `${p.model ? `${p.name}→${p.model}` : p.name}${p.thinking ? ` thinking=${p.thinking}` : ""}${p.sampling ? ` sampling=${JSON.stringify(p.sampling)}` : ""}`).join(" → ") || "(none)";
       console.log(`  ${f.padEnd(9)} ${fe.enabled ? "✓" : "·"} ${chain}`);
     }
     if (m.paceRpm) console.log(`  pace      ${m.paceRpm}/min (one every ${Math.round(60 / m.paceRpm)}s)`);
@@ -275,6 +275,28 @@ model
       r.thinking
         ? `Default thinking for ${name} [${opts.format}] slot ${index}: ${r.thinking}.`
         : `Default thinking cleared for ${name} [${opts.format}] slot ${index}.`,
+    );
+  });
+
+model
+  .command("sampling <name> <index> [json]")
+  .description(`set/clear the default sampling parameters of one chain slot as a JSON object (e.g. '{"temperature":0.2,"top_p":0.9}'; each field overrides the request's own value; empty = clear)`)
+  .addOption(fmtOption())
+  .action(async (name: string, indexRaw: string, value: string | undefined, opts: { format: "openai" | "anthropic" | "responses" }) => {
+    const index = Number(indexRaw);
+    let sampling: Record<string, unknown> | undefined;
+    if (value !== undefined && value.trim()) {
+      try {
+        sampling = JSON.parse(value) as Record<string, unknown>;
+      } catch {
+        throw new Error(`sampling must be a JSON object, e.g. '{"temperature":0.2}'`);
+      }
+    }
+    const r = (await api(ctx(), "PUT", `/admin/models/${encodeURIComponent(name)}/sampling`, { format: opts.format, index, sampling })) as { sampling?: Record<string, unknown> };
+    console.log(
+      r.sampling
+        ? `Default sampling for ${name} [${opts.format}] slot ${index}: ${JSON.stringify(r.sampling)}.`
+        : `Default sampling cleared for ${name} [${opts.format}] slot ${index}.`,
     );
   });
 
