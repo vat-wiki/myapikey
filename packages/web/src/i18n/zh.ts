@@ -276,7 +276,7 @@ export default {
       thinkingPh: "思考等级",
       thinkingPhBudget: "预算 tokens(如 8192)",
       thinkingClear: "不设置(透传)",
-      slotDefaults: "默认值",
+      slotDefaults: "更多",
       thinkingTipBase: "已设置的档位会覆盖请求自带的思考参数(含 enable_thinking 等兼容开关);不设置则原样透传。",
       samplingLabel: "采样参数",
       samplingClear: "清空全部",

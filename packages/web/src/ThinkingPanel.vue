@@ -29,7 +29,7 @@ const presets = props.format === "anthropic" ? BUDGET_PRESETS : EFFORT_LEVELS;
       :key="v"
       type="button"
       class="rounded border px-2 py-0.5 font-mono text-xs transition-colors"
-      :class="value === v ? 'border-primary bg-primary/15 font-medium text-primary' : 'border-border bg-background/80 text-foreground/80 hover:text-foreground'"
+      :class="value === v ? 'border-primary bg-primary/15 font-medium text-primary' : 'border-border bg-background text-foreground/80 hover:text-foreground'"
       :aria-pressed="value === v"
       @click="value = value === v ? '' : v"
     >
@@ -38,7 +38,7 @@ const presets = props.format === "anthropic" ? BUDGET_PRESETS : EFFORT_LEVELS;
   </div>
   <Input
     :model-value="value"
-    class="h-7 w-48 font-mono text-xs"
+    class="h-7 w-48 bg-background font-mono text-xs"
     spellcheck="false"
     :placeholder="props.format === 'anthropic' ? t('models.editor.thinkingPhBudget') : t('models.editor.thinkingPh')"
     :list="props.format === 'anthropic' ? 'thinking-budgets' : 'thinking-words'"

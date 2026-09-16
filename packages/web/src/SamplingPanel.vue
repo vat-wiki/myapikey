@@ -41,7 +41,7 @@ function set(key: string, v: unknown) {
         :model-value="props.modelValue[f.key]"
         type="number"
         step="any"
-        class="ml-auto h-6 w-20 px-2 text-right font-mono text-xs"
+        class="ml-auto h-6 w-20 bg-background px-2 text-right font-mono text-xs"
         :placeholder="f.ph"
         spellcheck="false"
         :aria-label="f.key"
