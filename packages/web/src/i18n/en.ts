@@ -276,6 +276,7 @@ export default {
       thinkingPh: "Thinking level",
       thinkingPhBudget: "Budget tokens (e.g. 8192)",
       thinkingClear: "None (passthrough)",
+      slotDefaults: "Defaults",
       thinkingTipBase: "A configured level OVERRIDES the request's own thinking parameters (compat switches like enable_thinking included); leave it empty to pass the request through untouched.",
       samplingLabel: "Sampling params",
       samplingClear: "Clear all",
