@@ -38,7 +38,7 @@ const presets = props.format === "anthropic" ? BUDGET_PRESETS : EFFORT_LEVELS;
   </div>
   <Input
     :model-value="value"
-    class="h-7 font-mono text-xs"
+    class="h-7 w-48 font-mono text-xs"
     spellcheck="false"
     :placeholder="props.format === 'anthropic' ? t('models.editor.thinkingPhBudget') : t('models.editor.thinkingPh')"
     :list="props.format === 'anthropic' ? 'thinking-budgets' : 'thinking-words'"

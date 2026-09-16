@@ -279,8 +279,6 @@ export default {
       thinkingTipBase: "已设置的档位会覆盖请求自带的思考参数(含 enable_thinking 等兼容开关);不设置则原样透传。",
       samplingLabel: "采样参数",
       samplingClear: "清空全部",
-      samplingEdit: "去设置…",
-      samplingOff: "不设置(透传)",
       samplingTipTemp: "越高越随机,越低越确定。OpenAI 合法区间是 (0,2) 开区间——边界值本身不被接受。",
       samplingTipTopP: "核采样:只保留累计概率落在 top_p 内的 token。区间 [0,1]。",
       samplingTipTopK: "只在概率最高的 K 个 token 里采样。0 或留空 = 关闭。并非所有后端都支持。",

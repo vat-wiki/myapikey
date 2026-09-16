@@ -279,8 +279,6 @@ export default {
       thinkingTipBase: "A configured level OVERRIDES the request's own thinking parameters (compat switches like enable_thinking included); leave it empty to pass the request through untouched.",
       samplingLabel: "Sampling params",
       samplingClear: "Clear all",
-      samplingEdit: "Configure…",
-      samplingOff: "None (passthrough)",
       samplingTipTemp: "Higher ≈ more random, lower ≈ more focused. OpenAI's legal range is (0,2) — the exact boundary values are not accepted.",
       samplingTipTopP: "Nucleus sampling: keep tokens whose cumulative probability is within top_p. Range [0,1].",
       samplingTipTopK: "Only the K most likely tokens can be sampled. 0 or blank = off. Not all backends support it.",

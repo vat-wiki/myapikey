@@ -27,7 +27,7 @@ function set(key: string, v: unknown) {
 </script>
 
 <template>
-  <div class="space-y-1">
+  <div class="grid grid-cols-2 gap-x-3 gap-y-1">
     <div v-for="f in FIELDS" :key="f.key" class="flex items-center gap-1.5">
       <span class="inline-flex shrink-0 items-center gap-0.5 text-[11px] text-muted-foreground">
         {{ f.key }}
@@ -41,7 +41,7 @@ function set(key: string, v: unknown) {
         :model-value="props.modelValue[f.key]"
         type="number"
         step="any"
-        class="ml-auto h-6 w-28 px-2 text-right font-mono text-xs"
+        class="ml-auto h-6 w-20 px-2 text-right font-mono text-xs"
         :placeholder="f.ph"
         spellcheck="false"
         :aria-label="f.key"
