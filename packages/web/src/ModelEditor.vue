@@ -11,12 +11,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
-import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
+import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import Combobox from "@/components/Combobox.vue";
 import SamplingPanel from "@/SamplingPanel.vue";
 import ThinkingPanel from "@/ThinkingPanel.vue";
-import { Plus, Loader2, ServerCog, Brain, TriangleAlert, Info, ChevronDown, SlidersHorizontal, GripVertical, MoreHorizontal, Trash2, Settings2 } from "lucide-vue-next";
+import { Plus, Loader2, ServerCog, Brain, TriangleAlert, Info, ChevronDown, SlidersHorizontal, GripVertical, Trash2, Settings2 } from "lucide-vue-next";
 
 /** The three routing families, each with its own independently configured chain. */
 const FORMATS: Fmt[] = ["openai", "anthropic", "responses"];
@@ -42,15 +42,17 @@ const samplingFilled = (s: DraftSlot): boolean => SAMPLING_FIELDS.some((f) => s.
 function clearSampling(slot: DraftSlot) {
   for (const f of SAMPLING_FIELDS) slot.sampling[f.key] = "";
 }
-/** The slot's inline defaults panel (thinking + sampling) — ONE toggle per
- *  row, `${fmt}:${uid}` keyed. The toggle itself doubles as the state display:
- *  dashed "defaults" affordance when unset, a highlighted summary chip
- *  (🧠 level · t0.2 p0.9 s42) once anything is configured. */
+/** The slot's defaults popover (thinking + sampling + remove slot) — ONE
+ *  control per row, `${fmt}:${uid}` keyed. The control doubles as the state
+ *  display: dashed "defaults" affordance when unset, a highlighted summary
+ *  chip (🧠 level · t0.2 p0.9 s42) once anything is configured. */
 const panelFor = ref<string | null>(null);
 const panelKey = (f: Fmt, uid: number) => `${f}:${uid}`;
 const panelOpen = (f: Fmt, uid: number) => panelFor.value === panelKey(f, uid);
-function togglePanel(f: Fmt, uid: number) {
-  panelFor.value = panelFor.value === panelKey(f, uid) ? null : panelKey(f, uid);
+function setPanel(f: Fmt, uid: number, open: boolean) {
+  const key = panelKey(f, uid);
+  if (open) panelFor.value = key;
+  else if (panelFor.value === key) panelFor.value = null;
 }
 /** Compact summary of the draft's FILLED sampling fields (the draft record
  *  carries all six keys, blanks included — samplingSummary must not see them). */
@@ -468,82 +470,75 @@ const hasProviders = computed(() => props.providers.length > 0);
                       <div class="w-44 shrink-0 [&_input]:h-7 [&_input]:text-xs">
                         <Combobox v-model="item.slot.model" :options="discoveredFor(item.slot.pid)" :placeholder="t('models.editor.upstreamPh')" />
                       </div>
-                      <button
-                        type="button"
-                        class="ml-auto inline-flex h-7 max-w-44 min-w-0 shrink-0 items-center gap-1 rounded-md border px-2 text-[11px] transition-colors"
-                        :class="
-                          item.slot.thinking.trim() || samplingFilled(item.slot)
-                            ? 'border-primary/40 bg-primary/10 text-primary'
-                            : 'border-dashed text-muted-foreground/70 hover:border-foreground/30 hover:text-foreground'
-                        "
-                        :aria-expanded="panelOpen(f, item.slot.uid)"
-                        :title="defaultsTitle(item.slot)"
-                        @click="togglePanel(f, item.slot.uid)"
-                      >
-                        <template v-if="item.slot.thinking.trim() || samplingFilled(item.slot)">
-                          <template v-if="item.slot.thinking.trim()">
-                            <Brain class="h-3 w-3 shrink-0" />
-                            <span class="truncate font-mono">{{ item.slot.thinking.trim() }}</span>
-                          </template>
-                          <span v-if="item.slot.thinking.trim() && samplingFilled(item.slot)" class="opacity-40">·</span>
-                          <template v-if="samplingFilled(item.slot)">
-                            <SlidersHorizontal class="h-3 w-3 shrink-0" />
-                            <span class="truncate font-mono">{{ draftSamplingSummary(item.slot.sampling) }}</span>
-                          </template>
-                        </template>
-                        <template v-else>
-                          <Settings2 class="h-3 w-3 shrink-0" />
-                          {{ t("models.editor.slotDefaults") }}
-                        </template>
-                      </button>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger as-child>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            class="h-7 w-7 shrink-0 text-muted-foreground/70 hover:text-foreground"
-                            :aria-label="t('models.editor.moreActions')"
-                            :title="t('models.editor.moreActions')"
-                          >
-                            <MoreHorizontal class="h-3.5 w-3.5" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem class="text-destructive focus:bg-destructive/10 focus:text-destructive" @select="removeSlot(f, item.slot.uid)">
-                            <Trash2 />
-                            {{ t("models.editor.removeSlot") }}
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </div>
-                    <div v-if="panelOpen(f, item.slot.uid)" class="space-y-2.5 rounded-md border border-primary/30 bg-primary/[0.07] p-3 shadow-sm">
-                      <div class="space-y-1.5">
-                        <div class="flex items-center justify-between">
-                          <div class="text-xs font-medium text-foreground">{{ t("models.editor.thinkingLabel") }}</div>
+                      <Popover :open="panelOpen(f, item.slot.uid)" @update:open="(o) => setPanel(f, item.slot.uid, o)">
+                        <PopoverTrigger as-child>
                           <button
                             type="button"
-                            class="text-xs text-muted-foreground transition-colors hover:text-foreground"
-                            @click="item.slot.thinking = ''"
+                            class="ml-auto inline-flex h-7 max-w-44 min-w-0 shrink-0 cursor-pointer items-center gap-1 rounded-md border px-2 text-[11px] outline-none transition-colors"
+                            :class="
+                              item.slot.thinking.trim() || samplingFilled(item.slot)
+                                ? 'border-primary/40 bg-primary/10 text-primary'
+                                : 'border-dashed text-muted-foreground/70 hover:border-foreground/30 hover:text-foreground'
+                            "
+                            :title="defaultsTitle(item.slot)"
                           >
-                            {{ t("models.editor.thinkingClear") }}
+                            <template v-if="item.slot.thinking.trim() || samplingFilled(item.slot)">
+                              <template v-if="item.slot.thinking.trim()">
+                                <Brain class="h-3 w-3 shrink-0" />
+                                <span class="truncate font-mono">{{ item.slot.thinking.trim() }}</span>
+                              </template>
+                              <span v-if="item.slot.thinking.trim() && samplingFilled(item.slot)" class="opacity-40">·</span>
+                              <template v-if="samplingFilled(item.slot)">
+                                <SlidersHorizontal class="h-3 w-3 shrink-0" />
+                                <span class="truncate font-mono">{{ draftSamplingSummary(item.slot.sampling) }}</span>
+                              </template>
+                            </template>
+                            <template v-else>
+                              <Settings2 class="h-3 w-3 shrink-0" />
+                              {{ t("models.editor.slotDefaults") }}
+                            </template>
                           </button>
-                        </div>
-                        <ThinkingPanel v-model="item.slot.thinking" :format="f" />
-                      </div>
-                      <div class="border-t border-primary/15" />
-                      <div class="space-y-1">
-                        <div class="flex items-center justify-between">
-                          <div class="text-xs font-medium text-foreground">{{ t("models.editor.samplingLabel") }}</div>
+                        </PopoverTrigger>
+                        <PopoverContent align="end" class="w-96 rounded-md border-primary/30 p-1.5 shadow-lg">
+                          <div class="space-y-2.5 rounded-[5px] bg-primary/[0.08] p-2.5">
+                          <div class="space-y-1.5">
+                            <div class="flex items-center justify-between">
+                              <div class="text-xs font-medium text-foreground">{{ t("models.editor.thinkingLabel") }}</div>
+                              <button
+                                type="button"
+                                class="cursor-pointer text-xs text-muted-foreground transition-colors hover:text-foreground"
+                                @click="item.slot.thinking = ''"
+                              >
+                                {{ t("models.editor.thinkingClear") }}
+                              </button>
+                            </div>
+                            <ThinkingPanel v-model="item.slot.thinking" :format="f" />
+                          </div>
+                          <div class="border-t border-primary/15" />
+                          <div class="space-y-1">
+                            <div class="flex items-center justify-between">
+                              <div class="text-xs font-medium text-foreground">{{ t("models.editor.samplingLabel") }}</div>
+                              <button
+                                type="button"
+                                class="cursor-pointer text-xs text-muted-foreground transition-colors hover:text-foreground"
+                                @click="clearSampling(item.slot)"
+                              >
+                                {{ t("models.editor.samplingClear") }}
+                              </button>
+                            </div>
+                            <SamplingPanel v-model="item.slot.sampling" />
+                          </div>
+                          <div class="border-t border-primary/15" />
                           <button
                             type="button"
-                            class="text-xs text-muted-foreground transition-colors hover:text-foreground"
-                            @click="clearSampling(item.slot)"
+                            class="-mx-1 flex w-full cursor-pointer items-center gap-1.5 rounded px-1 py-1 text-xs text-destructive transition-colors hover:bg-destructive/10"
+                            @click="panelFor = null; removeSlot(f, item.slot.uid)"
                           >
-                            {{ t("models.editor.samplingClear") }}
+                            <Trash2 class="h-3.5 w-3.5" />{{ t("models.editor.removeSlot") }}
                           </button>
-                        </div>
-                        <SamplingPanel v-model="item.slot.sampling" />
-                      </div>
+                          </div>
+                        </PopoverContent>
+                      </Popover>
                     </div>
                   </template>
                 </div>
