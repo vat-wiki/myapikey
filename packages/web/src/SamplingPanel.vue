@@ -29,7 +29,7 @@ function set(key: string, v: unknown) {
 <template>
   <div class="grid grid-cols-2 gap-x-3 gap-y-1">
     <div v-for="f in FIELDS" :key="f.key" class="flex items-center gap-1.5">
-      <span class="inline-flex shrink-0 items-center gap-0.5 text-[11px] text-muted-foreground">
+      <span class="inline-flex shrink-0 items-center gap-0.5 font-mono text-xs text-foreground/80">
         {{ f.key }}
         <CircleHelp
           class="h-3 w-3 opacity-60"
@@ -49,5 +49,5 @@ function set(key: string, v: unknown) {
       />
     </div>
   </div>
-  <p class="pt-1.5 text-[11px] leading-relaxed text-muted-foreground">{{ t("models.editor.samplingTipBase") }}</p>
+  <p class="pt-1.5 text-xs leading-relaxed text-muted-foreground">{{ t("models.editor.samplingTipBase") }}</p>
 </template>

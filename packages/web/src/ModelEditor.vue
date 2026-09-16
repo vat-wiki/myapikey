@@ -516,13 +516,13 @@ const hasProviders = computed(() => props.providers.length > 0);
                         </DropdownMenuContent>
                       </DropdownMenu>
                     </div>
-                    <div v-if="panelOpen(f, item.slot.uid)" class="space-y-2 rounded-md border bg-background/70 p-2.5">
+                    <div v-if="panelOpen(f, item.slot.uid)" class="space-y-2.5 rounded-md border border-primary/30 bg-primary/[0.07] p-3 shadow-sm">
                       <div class="space-y-1.5">
                         <div class="flex items-center justify-between">
-                          <div class="text-[11px] font-medium text-muted-foreground">{{ t("models.editor.thinkingLabel") }}</div>
+                          <div class="text-xs font-medium text-foreground">{{ t("models.editor.thinkingLabel") }}</div>
                           <button
                             type="button"
-                            class="text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+                            class="text-xs text-muted-foreground transition-colors hover:text-foreground"
                             @click="item.slot.thinking = ''"
                           >
                             {{ t("models.editor.thinkingClear") }}
@@ -530,13 +530,13 @@ const hasProviders = computed(() => props.providers.length > 0);
                         </div>
                         <ThinkingPanel v-model="item.slot.thinking" :format="f" />
                       </div>
-                      <div class="border-t" />
+                      <div class="border-t border-primary/15" />
                       <div class="space-y-1">
                         <div class="flex items-center justify-between">
-                          <div class="text-[11px] font-medium text-muted-foreground">{{ t("models.editor.samplingLabel") }}</div>
+                          <div class="text-xs font-medium text-foreground">{{ t("models.editor.samplingLabel") }}</div>
                           <button
                             type="button"
-                            class="text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+                            class="text-xs text-muted-foreground transition-colors hover:text-foreground"
                             @click="clearSampling(item.slot)"
                           >
                             {{ t("models.editor.samplingClear") }}

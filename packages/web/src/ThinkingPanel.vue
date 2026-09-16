@@ -28,8 +28,8 @@ const presets = props.format === "anthropic" ? BUDGET_PRESETS : EFFORT_LEVELS;
       v-for="v in presets"
       :key="v"
       type="button"
-      class="rounded border px-1.5 py-0.5 font-mono text-[11px] transition-colors"
-      :class="value === v ? 'border-primary bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground'"
+      class="rounded border px-2 py-0.5 font-mono text-xs transition-colors"
+      :class="value === v ? 'border-primary bg-primary/15 font-medium text-primary' : 'border-border bg-background/80 text-foreground/80 hover:text-foreground'"
       :aria-pressed="value === v"
       @click="value = value === v ? '' : v"
     >
@@ -45,5 +45,5 @@ const presets = props.format === "anthropic" ? BUDGET_PRESETS : EFFORT_LEVELS;
     :aria-label="t('models.editor.thinkingLabel')"
     @update:model-value="(v) => (value = String(v ?? ''))"
   />
-  <p class="pt-1.5 text-[11px] leading-relaxed text-muted-foreground">{{ t("models.editor.thinkingTipBase") }}</p>
+  <p class="pt-1.5 text-xs leading-relaxed text-muted-foreground">{{ t("models.editor.thinkingTipBase") }}</p>
 </template>
