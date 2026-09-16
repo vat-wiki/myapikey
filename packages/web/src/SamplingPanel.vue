@@ -29,13 +29,9 @@ function set(key: string, v: unknown) {
 <template>
   <div class="grid gap-y-1.5">
     <div v-for="f in FIELDS" :key="f.key" class="flex items-center gap-1.5">
-      <span class="inline-flex shrink-0 items-center gap-0.5 font-mono text-xs text-foreground/80">
+      <span class="inline-flex shrink-0 items-center gap-0.5 font-mono text-xs text-foreground/80" :title="t(f.helpKey)">
         {{ f.key }}
-        <CircleHelp
-          class="h-3 w-3 opacity-60"
-          :aria-label="`${f.key}: ${t(f.helpKey)}`"
-          :title="t(f.helpKey)"
-        />
+        <CircleHelp class="h-3 w-3 opacity-60" :aria-label="`${f.key}: ${t(f.helpKey)}`" />
       </span>
       <Input
         :model-value="props.modelValue[f.key]"

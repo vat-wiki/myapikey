@@ -499,8 +499,7 @@ const hasProviders = computed(() => props.providers.length > 0);
                             </template>
                           </button>
                         </PopoverTrigger>
-                        <PopoverContent align="end" class="w-96 rounded-md border-primary/30 p-1.5 shadow-lg">
-                          <div class="space-y-2.5 rounded-[5px] bg-primary/[0.08] p-2.5">
+                        <PopoverContent align="end" class="w-96 space-y-2.5 rounded-md border-primary/30 p-3 shadow-lg">
                           <div class="space-y-1.5">
                             <div class="flex items-center justify-between">
                               <div class="text-xs font-medium text-foreground">{{ t("models.editor.thinkingLabel") }}</div>
@@ -514,7 +513,7 @@ const hasProviders = computed(() => props.providers.length > 0);
                             </div>
                             <ThinkingPanel v-model="item.slot.thinking" :format="f" />
                           </div>
-                          <div class="border-t border-primary/15" />
+                          <div class="border-t" />
                           <div class="space-y-1">
                             <div class="flex items-center justify-between">
                               <div class="text-xs font-medium text-foreground">{{ t("models.editor.samplingLabel") }}</div>
@@ -528,7 +527,7 @@ const hasProviders = computed(() => props.providers.length > 0);
                             </div>
                             <SamplingPanel v-model="item.slot.sampling" />
                           </div>
-                          <div class="border-t border-primary/15" />
+                          <div class="border-t" />
                           <button
                             type="button"
                             class="-mx-1 flex w-full cursor-pointer items-center gap-1.5 rounded px-1 py-1 text-xs text-destructive transition-colors hover:bg-destructive/10"
@@ -536,7 +535,6 @@ const hasProviders = computed(() => props.providers.length > 0);
                           >
                             <Trash2 class="h-3.5 w-3.5" />{{ t("models.editor.removeSlot") }}
                           </button>
-                          </div>
                         </PopoverContent>
                       </Popover>
                     </div>
