@@ -16,6 +16,7 @@ import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import Combobox from "@/components/Combobox.vue";
 import SamplingPanel from "@/SamplingPanel.vue";
+import ThinkingPanel from "@/ThinkingPanel.vue";
 import { Plus, Loader2, ServerCog, Brain, TriangleAlert, Info, ChevronDown, SlidersHorizontal, GripVertical, MoreHorizontal, Check, Trash2, Settings2 } from "lucide-vue-next";
 
 /** The three routing families, each with its own independently configured chain. */
@@ -44,7 +45,7 @@ function clearSampling(slot: DraftSlot) {
 }
 /** Which slot's settings panel is open — one at a time, `${fmt}:${uid}` keyed. */
 const panelFor = ref<string | null>(null);
-const panelKey = (f: Fmt, uid: number) => `${f}:${uid}`;
+const panelKey = (kind: "think" | "samp", f: Fmt, uid: number) => `${kind}:${f}:${uid}`;
 
 /** One editable chain slot in the draft. Blank model = identity (send the
  *  public name upstream); thinking is the slot's default level (effort token
@@ -156,22 +157,6 @@ function onProviderChange(slot: DraftSlot) {
   slot.thinking = "";
   slot.sampling = blankSampling();
 }
-/** Typing in a menu input must not trigger the menu's keyboard nav
- *  (arrows/space would jump between items) — but Escape must still reach the
- *  menu so it can close. */
-function onMenuKeydown(e: KeyboardEvent) {
-  if (e.key !== "Escape") e.stopPropagation();
-}
-
-/** Quick thinking presets offered in the row menu: effort words on the
- *  openai-family routes, token budgets on anthropic. A custom value can always
- *  be typed into the menu's input. */
-const EFFORT_LEVELS = ["low", "medium", "high", "xhigh"];
-const BUDGET_PRESETS = ["1024", "4096", "8192", "16384"];
-function thinkingPresets(f: Fmt): string[] {
-  return f === "anthropic" ? BUDGET_PRESETS : EFFORT_LEVELS;
-}
-
 // --- drag & drop reorder (HTML5 DnD, armed by the row's handle) ------------
 
 const dragArm = ref<string | null>(null); // `${fmt}:${i}` armed by handle mousedown
@@ -467,41 +452,42 @@ const hasProviders = computed(() => props.providers.length > 0);
                         <Button
                           variant="ghost"
                           size="icon"
-                          class="ml-auto h-7 w-7 shrink-0"
+                          class="ml-auto h-7 min-w-7 shrink-0 px-1"
                           :class="item.slot.thinking.trim() || samplingFilled(item.slot) ? 'text-primary' : 'text-muted-foreground/70 hover:text-foreground'"
                           :aria-label="t('models.editor.moreActions')"
                           :title="t('models.editor.moreActions')"
                         >
                           <Brain v-if="item.slot.thinking.trim()" class="h-3.5 w-3.5" />
-                          <SlidersHorizontal v-else-if="samplingFilled(item.slot)" class="h-3.5 w-3.5" />
-                          <MoreHorizontal v-else class="h-3.5 w-3.5" />
+                          <SlidersHorizontal v-if="samplingFilled(item.slot)" class="h-3.5 w-3.5" />
+                          <MoreHorizontal v-if="!item.slot.thinking.trim() && !samplingFilled(item.slot)" class="h-3.5 w-3.5" />
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end" class="w-56">
-                        <div class="px-2 py-1 text-[11px] font-medium text-muted-foreground">{{ t("models.editor.thinkingLabel") }}</div>
-                        <DropdownMenuItem @select="item.slot.thinking = ''">
-                          <Check v-if="!item.slot.thinking.trim()" />
-                          <span v-else class="size-4 shrink-0" aria-hidden="true" />
-                          {{ t("models.editor.thinkingClear") }}
-                        </DropdownMenuItem>
-                        <DropdownMenuItem v-for="v in thinkingPresets(f)" :key="v" @select="item.slot.thinking = v">
-                          <Check v-if="item.slot.thinking.trim() === v" />
-                          <span v-else class="size-4 shrink-0" aria-hidden="true" />
-                          <span class="font-mono text-xs">{{ v }}</span>
-                        </DropdownMenuItem>
-                        <div class="px-2 pb-1.5 pt-0.5" @click.stop @keydown="onMenuKeydown">
-                          <Input
-                            v-model="item.slot.thinking"
-                            class="h-7 font-mono text-xs"
-                            spellcheck="false"
-                            :placeholder="f === 'anthropic' ? t('models.editor.thinkingPhBudget') : t('models.editor.thinkingPh')"
-                            :list="f === 'anthropic' ? 'thinking-budgets' : 'thinking-words'"
-                            :aria-label="t('models.editor.thinkingLabel')"
-                          />
-                        </div>
-                        <DropdownMenuSeparator />
-                        <div class="px-2 py-1 text-[11px] font-medium text-muted-foreground">{{ t("models.editor.samplingLabel") }}</div>
-                        <Popover :open="panelFor === panelKey(f, item.slot.uid)" @update:open="(o) => (panelFor = o ? panelKey(f, item.slot.uid) : null)">
+                        <Popover :open="panelFor === panelKey('think', f, item.slot.uid)" @update:open="(o) => (panelFor = o ? panelKey('think', f, item.slot.uid) : null)">
+                          <PopoverTrigger as-child>
+                            <DropdownMenuItem :text-value="'thinking-pick'" @select.prevent>
+                              <Check v-if="!item.slot.thinking.trim()" class="opacity-0" />
+                              <Check v-else />
+                              <span class="size-4 shrink-0" aria-hidden="true" />
+                              {{ item.slot.thinking.trim() || t("models.editor.thinkingClear") }}
+                              <Brain class="ml-auto h-3.5 w-3.5 text-muted-foreground" />
+                            </DropdownMenuItem>
+                          </PopoverTrigger>
+                          <PopoverContent side="left" align="start" class="w-64 space-y-1.5 p-3">
+                            <div class="flex items-center justify-between">
+                              <div class="text-[11px] font-medium text-muted-foreground">{{ t("models.editor.thinkingLabel") }}</div>
+                              <button
+                                type="button"
+                                class="text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+                                @click="item.slot.thinking = ''"
+                              >
+                                {{ t("models.editor.thinkingClear") }}
+                              </button>
+                            </div>
+                            <ThinkingPanel v-model="item.slot.thinking" :format="f" />
+                          </PopoverContent>
+                        </Popover>
+                        <Popover :open="panelFor === panelKey('samp', f, item.slot.uid)" @update:open="(o) => (panelFor = o ? panelKey('samp', f, item.slot.uid) : null)">
                           <PopoverTrigger as-child>
                             <DropdownMenuItem :text-value="'sampling-pick'" @select.prevent>
                               <Check v-if="!samplingFilled(item.slot)" class="opacity-0" />
