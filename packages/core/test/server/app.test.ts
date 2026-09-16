@@ -79,6 +79,38 @@ describe("server/app", () => {
     });
   });
 
+  describe("admin auth dev bypass (NODE_ENV=development)", () => {
+    // `npm run dev` sets NODE_ENV=development so iterating on the UI/CLI
+    // against scratch data dirs doesn't fight a fresh random password.
+    const withDevEnv = async (fn: () => Promise<void>) => {
+      const prev = process.env.NODE_ENV;
+      process.env.NODE_ENV = "development";
+      try {
+        await fn();
+      } finally {
+        if (prev === undefined) delete process.env.NODE_ENV;
+        else process.env.NODE_ENV = prev;
+      }
+    };
+
+    it("admits /admin without credentials when NODE_ENV=development", async () => {
+      await withDevEnv(async () => {
+        const res = await createApp(store).request("/admin/account");
+        expect(res.status).toBe(200);
+      });
+    });
+
+    it("still gates /v1 — the bypass covers the admin login only", async () => {
+      await withDevEnv(async () => {
+        const res = await createApp(store).request("/openai/v1/chat/completions", {
+          method: "POST",
+          body: JSON.stringify({ model: "m", messages: [] }),
+        });
+        expect(res.status).toBe(401);
+      });
+    });
+  });
+
   describe("API-prefix miss → JSON 404 (never the SPA's HTML)", () => {
     it("answers a doubled path like /openai/v1/v1/models with JSON", async () => {
       // With the api key: passes the sub-app's auth, then nothing matches →
