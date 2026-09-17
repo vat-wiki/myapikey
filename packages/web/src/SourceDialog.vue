@@ -7,7 +7,6 @@ import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Separator } from "@/components/ui/separator";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Loader2, ServerCog, ChevronDown, Info, SlidersHorizontal } from "lucide-vue-next";
@@ -34,11 +33,14 @@ const advancedOpen = ref(false);
 const err = ref("");
 const saving = ref(false);
 
-/** Toggle a format checkbox, but never let both be turned off. */
+/** Toggle a format checkbox, but never let both be turned off. Turning openai
+ *  off also unchecks responses — it has no base URL to stand on then, and a
+ *  checked-but-disabled box would misrepresent what would be saved. */
 function toggleFmt(which: "openai" | "anthropic") {
   if (which === "openai") {
     if (fmtOpenai.value && !fmtAnthropic.value) return;
     fmtOpenai.value = !fmtOpenai.value;
+    if (!fmtOpenai.value) responses.value = false;
   } else {
     if (fmtAnthropic.value && !fmtOpenai.value) return;
     fmtAnthropic.value = !fmtAnthropic.value;
@@ -146,37 +148,39 @@ async function save() {
 
         <div class="space-y-1.5">
           <Label>{{ t("sources.formats") }}</Label>
-          <div class="space-y-2 rounded-md border bg-background/50 p-3">
-            <div class="space-y-2">
+          <div class="space-y-2.5 rounded-md border bg-background/50 p-3">
+            <!-- Three PARALLEL protocol rows — the agent surfaces are independent
+                 now; responses only leans on openai for its base URL + key. -->
+            <div class="flex items-center gap-2.5">
+              <Checkbox
+                :model-value="fmtOpenai"
+                :disabled="fmtOpenai && !fmtAnthropic"
+                aria-label="openai"
+                @update:model-value="toggleFmt('openai')"
+              />
+              <span class="text-sm font-medium leading-none">{{ FMT_LABEL.openai }}</span>
+              <span class="text-xs text-muted-foreground">/chat/completions</span>
+            </div>
+            <div class="space-y-1">
               <div class="flex items-center gap-2.5">
-                <Checkbox
-                  :model-value="fmtOpenai"
-                  :disabled="fmtOpenai && !fmtAnthropic"
-                  aria-label="openai"
-                  @update:model-value="toggleFmt('openai')"
-                />
-                <span class="text-sm font-medium leading-none">{{ FMT_LABEL.openai }}</span>
-                <span class="text-xs text-muted-foreground">/chat/completions</span>
-              </div>
-              <div class="flex items-center gap-2.5 pl-7">
-                <Checkbox v-model="responses" :disabled="!fmtOpenai" :aria-label="t('sources.responses')" />
-                <span class="text-sm leading-none" :class="fmtOpenai ? '' : 'text-muted-foreground'">{{ t("sources.responses") }}</span>
+                <Checkbox v-model="responses" :disabled="!fmtOpenai" :aria-label="FMT_LABEL.responses" />
+                <span class="text-sm font-medium leading-none" :class="fmtOpenai ? '' : 'text-muted-foreground'">{{ FMT_LABEL.responses }}</span>
                 <span class="text-xs text-muted-foreground">/responses</span>
               </div>
+              <p class="pl-7 text-xs leading-none text-muted-foreground">{{ t("sources.responsesShared") }}</p>
             </div>
-            <Separator />
-              <div class="flex items-center gap-2.5">
-                <Checkbox
-                  :model-value="fmtAnthropic"
-                  :disabled="fmtAnthropic && !fmtOpenai"
-                  aria-label="anthropic"
-                  @update:model-value="toggleFmt('anthropic')"
-                />
-                <span class="text-sm font-medium leading-none">{{ FMT_LABEL.anthropic }}</span>
-                <span class="text-xs text-muted-foreground">/messages</span>
-              </div>
+            <div class="flex items-center gap-2.5">
+              <Checkbox
+                :model-value="fmtAnthropic"
+                :disabled="fmtAnthropic && !fmtOpenai"
+                aria-label="anthropic"
+                @update:model-value="toggleFmt('anthropic')"
+              />
+              <span class="text-sm font-medium leading-none">{{ FMT_LABEL.anthropic }}</span>
+              <span class="text-xs text-muted-foreground">/messages</span>
             </div>
           </div>
+        </div>
 
           <div v-if="fmtOpenai" class="space-y-1.5">
           <Label for="s-url-openai">{{ t("sources.urlLabelOpenai") }}</Label>

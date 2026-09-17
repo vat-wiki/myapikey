@@ -122,6 +122,7 @@ export default {
     rpmBadgeHint: "Capped at {n} requests/min; excess requests fail over to the next source. (Source-level: applies to every model routed through it.)",
     formats: "Formats",
     responses: "Supports OpenAI Responses",
+    responsesShared: "Shares the OpenAI base URL and API key",
     saveBtn: "Save",
     remove: "Remove source",
     moreActions: "More actions",

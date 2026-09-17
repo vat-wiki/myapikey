@@ -122,6 +122,7 @@ export default {
     rpmBadgeHint: "限制为每分钟 {n} 次,超出的请求会切换到下一个来源。(来源级:对该来源的所有模型生效。)",
     formats: "格式",
     responses: "支持 OpenAI Responses",
+    responsesShared: "共用 OpenAI 的 Base URL 与密钥",
     saveBtn: "保存",
     remove: "移除来源",
     moreActions: "更多操作",
