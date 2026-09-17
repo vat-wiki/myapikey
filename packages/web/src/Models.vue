@@ -237,31 +237,29 @@ async function toggleFmt(m: ModelView, f: Fmt) {
   }
 }
 
-/** Swap a slot's source straight from the chain list. Same semantics as the
- *  editor's provider change — the upstream mapping, thinking and sampling
- *  belong to the old backend, so the swapped slot starts clean (public name
- *  verbatim). A merged line stands for several formats with an IDENTICAL
+/** Make a slot the serving source straight from the chain list: move it to
+ *  the FRONT of the chain, keeping everyone else's order, so dispatch tries
+ *  it first and failover to the rest stays intact. Slot payloads (mapping,
+ *  thinking, sampling) ride along untouched — they belong to the slot, not
+ *  its position. A merged line stands for several formats with an IDENTICAL
  *  chain, so one PUT carries every format in `line.fs`. */
-async function setSlotProvider(m: ModelView, line: ChainLine, si: number, providerId: string) {
-  const slots = line.slots.map((s, i) => {
-    if (i === si) return { id: providerId };
-    return {
-      id: s.id,
-      ...(s.model ? { model: s.model } : {}),
-      ...(s.thinking ? { thinking: s.thinking } : {}),
-      ...(s.sampling && Object.keys(s.sampling).length ? { sampling: s.sampling } : {}),
-    };
-  });
+async function useSlotSource(m: ModelView, line: ChainLine, si: number) {
+  if (si === 0 || si >= line.slots.length) return;
+  const slots = [line.slots[si], ...line.slots.filter((_, i) => i !== si)].map((s) => ({
+    id: s.id,
+    ...(s.model ? { model: s.model } : {}),
+    ...(s.thinking ? { thinking: s.thinking } : {}),
+    ...(s.sampling && Object.keys(s.sampling).length ? { sampling: s.sampling } : {}),
+  }));
   const body: Record<string, unknown> = {};
   for (const f of line.fs) body[f] = { enabled: m[f].enabled, slots };
-  const name = providers.value.find((p) => p.id === providerId)?.name ?? providerId;
   try {
     await req("PUT", `/admin/models/${enc(m.name)}`, body);
-    const fresh: ModelProvider = { id: providerId, name };
     for (const f of line.fs) {
-      if (m[f].providers[si]) m[f].providers[si] = fresh;
+      const arr = m[f].providers;
+      if (arr.length === line.slots.length) m[f].providers = [arr[si], ...arr.filter((_, i) => i !== si)];
     }
-    toast(t("models.chainSourceSetToast", { name: m.name, provider: name }), "success");
+    toast(t("models.chainUseToast", { name: m.name, provider: line.slots[si].name }), "success");
   } catch (e) {
     toast((e as Error).message, "error");
   }
@@ -549,7 +547,7 @@ async function copyName(name: string) {
             <template v-if="chainLines(m).length">
               <div
                 v-for="line in chainLines(m)"
-                :key="line.key"
+                :key="line.fs.join('|')"
                 class="flex flex-wrap items-center gap-x-1.5 gap-y-1"
                 :class="{ 'opacity-60': !line.enabled }"
               >
@@ -606,8 +604,7 @@ async function copyName(name: string) {
                       :slot-title="slotProbeTitle"
                       :slot-class="slotChipClass"
                       :probe-slot="testSlot"
-                      :providers="providers"
-                      :set-provider="setSlotProvider"
+                      :use-slot="useSlotSource"
                     />
                   </PopoverContent>
                 </Popover>
@@ -675,7 +672,7 @@ async function copyName(name: string) {
               <div v-if="chainLines(m).length" class="min-w-0 space-y-1">
                 <div
                   v-for="line in chainLines(m)"
-                  :key="line.key"
+                  :key="line.fs.join('|')"
                   class="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1"
                   :class="{ 'opacity-60': !line.enabled }"
                 >
@@ -728,8 +725,7 @@ async function copyName(name: string) {
                         :slot-title="slotProbeTitle"
                         :slot-class="slotChipClass"
                         :probe-slot="testSlot"
-                        :providers="providers"
-                        :set-provider="setSlotProvider"
+                        :use-slot="useSlotSource"
                       />
                     </PopoverContent>
                   </Popover>

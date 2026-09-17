@@ -14,9 +14,9 @@ export interface ChainLine {
 <script setup lang="ts">
 import { ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { Brain, Check, Loader2, SlidersHorizontal, TriangleAlert, Zap } from "lucide-vue-next";
+import { Brain, Check, Loader2, Pin, SlidersHorizontal, TriangleAlert, Zap } from "lucide-vue-next";
 import type { ModelView } from "@/api";
-import type { LastFail, ProviderPublic } from "@/api";
+import type { LastFail } from "@/api";
 import { FMT_ACCENT, FMT_META, providerColor } from "@/lib/format";
 import { samplingSummary } from "@/lib/models";
 
@@ -25,22 +25,19 @@ import { samplingSummary } from "@/lib/models";
  *  off the collapsed serving chip on both Models views. Probe state comes
  *  from the owner. `active` marks the slot that actually served most recently
  *  (ring); `fails` flags slots with a recent failed call — click the marker
- *  for the real error text. The row's source name is clickable: an INLINE
- *  expansion (no second floating layer) lists the compatible sources to swap
- *  the slot's provider on the spot; saving goes through the owner's
- *  `setProvider` (same semantics as the editor's provider change — upstream
- *  fields belong to the old backend and are reset). */
+ *  for the real error text. Each non-first row carries a pin: `useSlot`
+ *  makes that source the serving one by moving it to the front of the chain
+ *  (failover order for the rest is kept). */
 const props = defineProps<{
   model: ModelView;
   line: ChainLine;
-  providers: ProviderPublic[];
   active?: number;
   fails?: LastFail[];
   slotState: (m: ModelView, line: ChainLine, i: number) => { state: "testing" | "ok" | "fail"; status?: number; provider?: string; error?: string } | null;
   slotTitle: (m: ModelView, line: ChainLine, i: number) => string;
   slotClass: (m: ModelView, line: ChainLine, i: number) => string;
   probeSlot: (m: ModelView, line: ChainLine, i: number) => void;
-  setProvider: (m: ModelView, line: ChainLine, si: number, providerId: string) => void;
+  useSlot: (m: ModelView, line: ChainLine, si: number) => void;
 }>();
 
 const { t } = useI18n();
@@ -55,37 +52,6 @@ function failFor(si: number): LastFail | undefined {
 const errOpen = ref<number | null>(null);
 function toggleErr(si: number) {
   errOpen.value = errOpen.value === si ? null : si;
-}
-
-// --- source swap (inline, one open at a time) ---
-
-/** Whether a provider can serve a routing family (responses needs the opt-in) —
- *  same rule as the editor's provider dropdown. */
-function supports(p: ProviderPublic, fmt: Fmt): boolean {
-  return fmt === "responses" ? !!p.supportsResponses : p.formats.includes(fmt);
-}
-
-/** Swap candidates for slot `si`: sources serving EVERY format this line
- *  stands for, plus the slot's current source (so an orphaned chain stays
- *  visible and a swap can be undone without leaving the list). */
-function srcOptions(si: number): ProviderPublic[] {
-  const cur = props.line.slots[si];
-  const compatible = props.providers.filter((p) => props.line.fs.every((f) => supports(p, f)));
-  if (compatible.some((p) => p.id === cur.id)) return compatible;
-  const orphan = props.providers.find((p) => p.id === cur.id);
-  return orphan ? [orphan, ...compatible] : compatible;
-}
-
-/** Which slot's source list is expanded (one at a time). */
-const srcOpen = ref<number | null>(null);
-function toggleSrc(si: number) {
-  srcOpen.value = srcOpen.value === si ? null : si;
-}
-
-function commitSrc(si: number, p: ProviderPublic) {
-  srcOpen.value = null;
-  if (p.id === props.line.slots[si].id) return;
-  props.setProvider(props.model, props.line, si, p.id);
 }
 </script>
 
@@ -111,17 +77,7 @@ function commitSrc(si: number, p: ProviderPublic) {
           <span class="w-3 shrink-0 text-right text-[10px] tabular-nums text-muted-foreground/60">{{ si + 1 }}</span>
           <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="providerColor(s.id).solid" />
           <div class="min-w-0 flex-1 leading-tight">
-            <div class="min-w-0 truncate text-xs font-medium">
-              <!-- source name: click to swap this slot's provider in place -->
-              <button
-                type="button"
-                class="-mx-0.5 inline-flex max-w-full items-center rounded px-0.5 transition-colors hover:bg-accent hover:text-accent-foreground"
-                :class="srcOpen === si ? 'bg-accent text-accent-foreground' : ''"
-                :title="t('models.chainSourceTip')"
-                :aria-label="`${t('models.chainSourceTip')} · ${s.name}`"
-                @click.stop="toggleSrc(si)"
-              >{{ s.name }}</button>
-            </div>
+            <div class="truncate text-xs font-medium">{{ s.name }}</div>
             <div v-if="s.model || s.thinking || samplingSummary(s.sampling)" class="flex min-w-0 items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
               <span v-if="s.model" class="min-w-0 truncate" :title="s.model">› {{ s.model }}</span>
               <span
@@ -140,6 +96,18 @@ function commitSrc(si: number, p: ProviderPublic) {
               </span>
             </div>
           </div>
+          <!-- set as serving source: moves this slot to the front of the
+               chain — later calls try it first; failover order is kept -->
+          <button
+            v-if="si !== 0"
+            type="button"
+            class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/40 transition-colors hover:bg-accent hover:text-accent-foreground"
+            :title="t('models.chainUseTip')"
+            :aria-label="`${t('models.chainUseTip')} · ${s.name}`"
+            @click.stop="useSlot(model, line, si)"
+          >
+            <Pin class="h-3 w-3" />
+          </button>
           <template v-if="line.enabled">
             <Check v-if="slotState(model, line, si)?.state === 'ok'" class="h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
             <span
@@ -176,21 +144,6 @@ function commitSrc(si: number, p: ProviderPublic) {
           class="rounded-md bg-destructive/10 px-2 py-1.5 font-mono text-[11px] break-all whitespace-pre-wrap text-destructive"
         >
           <span class="opacity-70">HTTP {{ failFor(si)!.status }} · </span>{{ failFor(si)!.error || t("models.probeFail") }}
-        </div>
-        <!-- source swap: compatible sources only (same rule as the editor's
-             provider dropdown); the current one stays listed and marked -->
-        <div v-if="srcOpen === si" class="max-h-44 space-y-0.5 overflow-y-auto rounded-md border bg-muted/30 p-1">
-          <button
-            v-for="p in srcOptions(si)"
-            :key="p.id"
-            type="button"
-            class="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left text-xs transition-colors hover:bg-accent"
-            @click="commitSrc(si, p)"
-          >
-            <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="providerColor(p.id).solid" />
-            <span class="min-w-0 truncate" :class="p.id === s.id ? 'text-primary' : ''">{{ p.name }}</span>
-            <Check v-if="p.id === s.id" class="ml-auto h-3 w-3 shrink-0 text-primary" />
-          </button>
         </div>
       </template>
     </div>
