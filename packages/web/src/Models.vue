@@ -237,28 +237,31 @@ async function toggleFmt(m: ModelView, f: Fmt) {
   }
 }
 
-/** Switch a slot's upstream mapping straight from the chain list. A merged
- *  line stands for several formats with an IDENTICAL chain, so one PUT carries
- *  every format in `line.fs`; thinking/sampling ride along untouched.
- *  `model === undefined` drops the mapping (send the public name verbatim). */
-async function setSlotModel(m: ModelView, line: ChainLine, si: number, model?: string) {
-  const slots = line.slots.map((s, i) => ({
-    id: s.id,
-    ...(i === si && model ? { model } : s.model ? { model: s.model } : {}),
-    ...(s.thinking ? { thinking: s.thinking } : {}),
-    ...(s.sampling && Object.keys(s.sampling).length ? { sampling: s.sampling } : {}),
-  }));
+/** Swap a slot's source straight from the chain list. Same semantics as the
+ *  editor's provider change — the upstream mapping, thinking and sampling
+ *  belong to the old backend, so the swapped slot starts clean (public name
+ *  verbatim). A merged line stands for several formats with an IDENTICAL
+ *  chain, so one PUT carries every format in `line.fs`. */
+async function setSlotProvider(m: ModelView, line: ChainLine, si: number, providerId: string) {
+  const slots = line.slots.map((s, i) => {
+    if (i === si) return { id: providerId };
+    return {
+      id: s.id,
+      ...(s.model ? { model: s.model } : {}),
+      ...(s.thinking ? { thinking: s.thinking } : {}),
+      ...(s.sampling && Object.keys(s.sampling).length ? { sampling: s.sampling } : {}),
+    };
+  });
   const body: Record<string, unknown> = {};
   for (const f of line.fs) body[f] = { enabled: m[f].enabled, slots };
+  const name = providers.value.find((p) => p.id === providerId)?.name ?? providerId;
   try {
     await req("PUT", `/admin/models/${enc(m.name)}`, body);
+    const fresh: ModelProvider = { id: providerId, name };
     for (const f of line.fs) {
-      const slot = m[f].providers[si];
-      if (!slot) continue;
-      if (model) slot.model = model;
-      else delete slot.model;
+      if (m[f].providers[si]) m[f].providers[si] = fresh;
     }
-    toast(t("models.upstreamSetToast", { name: m.name, model: model ?? m.name }), "success");
+    toast(t("models.chainSourceSetToast", { name: m.name, provider: name }), "success");
   } catch (e) {
     toast((e as Error).message, "error");
   }
@@ -599,12 +602,12 @@ async function copyName(name: string) {
                       :line="line"
                       :active="servedSlot(m, line).actual ? servedSlot(m, line).i : undefined"
                       :fails="lineFails(m, line)"
-                      :providers="providers"
                       :slot-state="slotProbeState"
                       :slot-title="slotProbeTitle"
                       :slot-class="slotChipClass"
                       :probe-slot="testSlot"
-                      :set-model="setSlotModel"
+                      :providers="providers"
+                      :set-provider="setSlotProvider"
                     />
                   </PopoverContent>
                 </Popover>
@@ -721,12 +724,12 @@ async function copyName(name: string) {
                         :line="line"
                         :active="servedSlot(m, line).actual ? servedSlot(m, line).i : undefined"
                         :fails="lineFails(m, line)"
-                        :providers="providers"
                         :slot-state="slotProbeState"
                         :slot-title="slotProbeTitle"
                         :slot-class="slotChipClass"
                         :probe-slot="testSlot"
-                        :set-model="setSlotModel"
+                        :providers="providers"
+                        :set-provider="setSlotProvider"
                       />
                     </PopoverContent>
                   </Popover>

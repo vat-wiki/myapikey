@@ -12,24 +12,24 @@ export interface ChainLine {
 </script>
 
 <script setup lang="ts">
-import { ref, computed, nextTick } from "vue";
+import { ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { Brain, Check, ChevronRight, Loader2, Search, SlidersHorizontal, TriangleAlert, Zap } from "lucide-vue-next";
-import { Input } from "@/components/ui/input";
+import { Brain, Check, Loader2, SlidersHorizontal, TriangleAlert, Zap } from "lucide-vue-next";
 import type { ModelView } from "@/api";
 import type { LastFail, ProviderPublic } from "@/api";
 import { FMT_ACCENT, FMT_META, providerColor } from "@/lib/format";
-import { providerModelList, samplingSummary } from "@/lib/models";
+import { samplingSummary } from "@/lib/models";
 
 /** One chain line rendered in FULL — every slot as ONE LIST ROW (number,
  *  source, upstream mapping, thinking, per-source probe), shown in a popover
  *  off the collapsed serving chip on both Models views. Probe state comes
  *  from the owner. `active` marks the slot that actually served most recently
  *  (ring); `fails` flags slots with a recent failed call — click the marker
- *  for the real error text. The row's upstream name is clickable: an INLINE
- *  expansion (no second floating layer) lists the source's model union to
- *  switch the slot's mapping on the spot; saving goes through the owner's
- *  `setModel`. */
+ *  for the real error text. The row's source name is clickable: an INLINE
+ *  expansion (no second floating layer) lists the compatible sources to swap
+ *  the slot's provider on the spot; saving goes through the owner's
+ *  `setProvider` (same semantics as the editor's provider change — upstream
+ *  fields belong to the old backend and are reset). */
 const props = defineProps<{
   model: ModelView;
   line: ChainLine;
@@ -40,7 +40,7 @@ const props = defineProps<{
   slotTitle: (m: ModelView, line: ChainLine, i: number) => string;
   slotClass: (m: ModelView, line: ChainLine, i: number) => string;
   probeSlot: (m: ModelView, line: ChainLine, i: number) => void;
-  setModel: (m: ModelView, line: ChainLine, si: number, model?: string) => void;
+  setProvider: (m: ModelView, line: ChainLine, si: number, providerId: string) => void;
 }>();
 
 const { t } = useI18n();
@@ -57,43 +57,35 @@ function toggleErr(si: number) {
   errOpen.value = errOpen.value === si ? null : si;
 }
 
-// --- upstream-model switch (inline, one open at a time) ---
+// --- source swap (inline, one open at a time) ---
 
-/** The name actually sent upstream: the slot's mapping, or the public name verbatim. */
-function effective(s: ModelProvider): string {
-  return s.model ?? props.model.name;
+/** Whether a provider can serve a routing family (responses needs the opt-in) —
+ *  same rule as the editor's provider dropdown. */
+function supports(p: ProviderPublic, fmt: Fmt): boolean {
+  return fmt === "responses" ? !!p.supportsResponses : p.formats.includes(fmt);
 }
 
-/** Which slot's picker is expanded + the filter text. The filter doubles as
- *  free-text entry — Enter commits the typed name even when no candidate
- *  matches (same escape hatch as the source-models dialog's add box). */
-const pickOpen = ref<number | null>(null);
-const pickQ = ref("");
-const pickInput = ref<InstanceType<typeof Input> | null>(null);
-
-const pickRows = computed(() => {
-  const si = pickOpen.value;
-  if (si === null) return [];
-  const list = providerModelList(props.providers.find((p) => p.id === props.line.slots[si].id));
-  const s = pickQ.value.trim().toLowerCase();
-  return s ? list.filter((n) => n.toLowerCase().includes(s)) : list;
-});
-
-async function togglePick(si: number) {
-  pickOpen.value = pickOpen.value === si ? null : si;
-  pickQ.value = "";
-  if (pickOpen.value !== null) {
-    await nextTick();
-    pickInput.value?.$el?.focus();
-  }
+/** Swap candidates for slot `si`: sources serving EVERY format this line
+ *  stands for, plus the slot's current source (so an orphaned chain stays
+ *  visible and a swap can be undone without leaving the list). */
+function srcOptions(si: number): ProviderPublic[] {
+  const cur = props.line.slots[si];
+  const compatible = props.providers.filter((p) => props.line.fs.every((f) => supports(p, f)));
+  if (compatible.some((p) => p.id === cur.id)) return compatible;
+  const orphan = props.providers.find((p) => p.id === cur.id);
+  return orphan ? [orphan, ...compatible] : compatible;
 }
 
-/** Commit a picked/typed name: picking the public name clears the mapping
- *  (verbatim again), anything else becomes the slot's mapping. */
-function commitPick(si: number, name: string) {
-  pickOpen.value = null;
-  if (!name || (name === effective(props.line.slots[si]) && !props.line.slots[si].model)) return;
-  props.setModel(props.model, props.line, si, name === props.model.name ? undefined : name);
+/** Which slot's source list is expanded (one at a time). */
+const srcOpen = ref<number | null>(null);
+function toggleSrc(si: number) {
+  srcOpen.value = srcOpen.value === si ? null : si;
+}
+
+function commitSrc(si: number, p: ProviderPublic) {
+  srcOpen.value = null;
+  if (p.id === props.line.slots[si].id) return;
+  props.setProvider(props.model, props.line, si, p.id);
 }
 </script>
 
@@ -119,20 +111,19 @@ function commitPick(si: number, name: string) {
           <span class="w-3 shrink-0 text-right text-[10px] tabular-nums text-muted-foreground/60">{{ si + 1 }}</span>
           <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="providerColor(s.id).solid" />
           <div class="min-w-0 flex-1 leading-tight">
-            <div class="truncate text-xs font-medium">{{ s.name }}</div>
-            <div class="flex min-w-0 items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
-              <!-- effective upstream name: click to switch the slot's mapping in place -->
+            <div class="min-w-0 truncate text-xs font-medium">
+              <!-- source name: click to swap this slot's provider in place -->
               <button
                 type="button"
-                class="-mx-0.5 inline-flex min-w-0 items-center rounded px-0.5 transition-colors hover:bg-accent hover:text-accent-foreground"
-                :class="pickOpen === si ? 'bg-accent text-accent-foreground' : s.model ? 'text-foreground/80' : ''"
-                :title="t('models.chainModelTip')"
-                :aria-label="t('models.chainModelTip')"
-                @click.stop="togglePick(si)"
-              >
-                <ChevronRight class="h-2.5 w-2.5 shrink-0" />
-                <span class="min-w-0 truncate">{{ effective(s) }}</span>
-              </button>
+                class="-mx-0.5 inline-flex max-w-full items-center rounded px-0.5 transition-colors hover:bg-accent hover:text-accent-foreground"
+                :class="srcOpen === si ? 'bg-accent text-accent-foreground' : ''"
+                :title="t('models.chainSourceTip')"
+                :aria-label="`${t('models.chainSourceTip')} · ${s.name}`"
+                @click.stop="toggleSrc(si)"
+              >{{ s.name }}</button>
+            </div>
+            <div v-if="s.model || s.thinking || samplingSummary(s.sampling)" class="flex min-w-0 items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
+              <span v-if="s.model" class="min-w-0 truncate" :title="s.model">› {{ s.model }}</span>
               <span
                 v-if="s.thinking"
                 class="inline-flex shrink-0 items-center gap-0.5"
@@ -186,44 +177,20 @@ function commitPick(si: number, name: string) {
         >
           <span class="opacity-70">HTTP {{ failFor(si)!.status }} · </span>{{ failFor(si)!.error || t("models.probeFail") }}
         </div>
-        <!-- upstream-model switch: filter doubles as free-text entry (Enter
-             commits the typed name), the mapped slot can drop back to verbatim -->
-        <div v-if="pickOpen === si" class="space-y-1 rounded-md border bg-muted/30 p-1.5">
-          <div class="relative">
-            <Search class="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              ref="pickInput"
-              v-model="pickQ"
-              class="h-7 pl-7 font-mono text-xs"
-              :placeholder="t('models.chainPickPh')"
-              autocomplete="off"
-              spellcheck="false"
-              @keydown.enter.prevent="pickQ.trim() && commitPick(si, pickQ.trim())"
-              @keydown.esc.stop.prevent="togglePick(si)"
-            />
-          </div>
-          <div class="max-h-44 overflow-y-auto">
-            <button
-              v-if="s.model"
-              type="button"
-              class="flex w-full items-center gap-1 rounded px-1.5 py-1 text-left text-xs transition-colors hover:bg-accent"
-              @click="commitPick(si, model.name)"
-            >
-              <span class="truncate">{{ t("models.chainPickVerbatim") }}</span>
-              <span class="ml-auto min-w-0 truncate font-mono text-muted-foreground">{{ model.name }}</span>
-            </button>
-            <button
-              v-for="n in pickRows"
-              :key="n"
-              type="button"
-              class="flex w-full items-center gap-1 rounded px-1.5 py-1 text-left font-mono text-xs transition-colors hover:bg-accent"
-              @click="commitPick(si, n)"
-            >
-              <Check v-if="n === effective(s)" class="h-3 w-3 shrink-0 text-primary" />
-              <span class="min-w-0 truncate" :class="n === effective(s) ? 'text-primary' : ''">{{ n }}</span>
-            </button>
-            <p v-if="!pickRows.length && !s.model" class="px-1.5 py-2 text-center text-[11px] text-muted-foreground">{{ t("models.chainPickEmpty") }}</p>
-          </div>
+        <!-- source swap: compatible sources only (same rule as the editor's
+             provider dropdown); the current one stays listed and marked -->
+        <div v-if="srcOpen === si" class="max-h-44 space-y-0.5 overflow-y-auto rounded-md border bg-muted/30 p-1">
+          <button
+            v-for="p in srcOptions(si)"
+            :key="p.id"
+            type="button"
+            class="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left text-xs transition-colors hover:bg-accent"
+            @click="commitSrc(si, p)"
+          >
+            <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="providerColor(p.id).solid" />
+            <span class="min-w-0 truncate" :class="p.id === s.id ? 'text-primary' : ''">{{ p.name }}</span>
+            <Check v-if="p.id === s.id" class="ml-auto h-3 w-3 shrink-0 text-primary" />
+          </button>
         </div>
       </template>
     </div>
