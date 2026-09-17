@@ -459,8 +459,7 @@ async function copyName(name: string) {
       <Card
         v-for="m in filtered"
         :key="m.name"
-        class="group cursor-pointer gap-0 py-0 transition-colors hover:bg-muted/30"
-        @click="openEditor(m)"
+        class="group gap-0 py-0 transition-colors hover:bg-muted/30"
       >
         <div class="flex h-full flex-col gap-3 p-4">
           <!-- name + status -->
@@ -542,7 +541,7 @@ async function copyName(name: string) {
                slot as a chip that opens a popover with the FULL chain as a
                LIST (one row per source, each individually probeable —
                per-source tests live one click from the list). The chips stop
-               their own clicks; empty space still opens the editor -->
+               their own clicks; the card body is inert -->
           <div class="min-w-0 flex-1 space-y-1.5">
             <template v-if="chainLines(m).length">
               <div
@@ -632,7 +631,7 @@ async function copyName(name: string) {
           </TableRow>
         </TableHeader>
         <TableBody>
-          <TableRow v-for="m in filtered" :key="m.name" class="group cursor-pointer" @click="openEditor(m)">
+          <TableRow v-for="m in filtered" :key="m.name" class="group">
             <TableCell>
               <div class="space-y-1">
                 <span class="font-mono text-sm font-medium">{{ m.name }}</span>
