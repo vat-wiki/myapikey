@@ -11,13 +11,14 @@ import { Copy, Check, Plug, Eye, EyeOff } from "lucide-vue-next";
 
 const { t } = useI18n();
 
-/** Which routing family each connect snippet belongs to (curl is generic → none). */
-const SNIPPET_FMT: Record<string, Fmt | null> = {
+/** Which routing family each connect snippet belongs to. */
+const SNIPPET_FMT: Record<string, Fmt> = {
   openai: "openai",
-  anthropic: "anthropic",
   responses: "responses",
-  curl: null,
+  anthropic: "anthropic",
+  curl: "openai",
   "curl-anthropic": "anthropic",
+  "curl-responses": "responses",
 };
 function snippetAccent(key: string) {
   const f = SNIPPET_FMT[key];
@@ -43,10 +44,12 @@ const baseUrl = computed(() => {
   }
   return window.location.origin;
 });
-// Each tool family points at its own surface: OpenAI tools at /openai/v1
-// (their SDK appends /chat/completions, /responses, /models); Anthropic tools
-// at /anthropic (their SDK appends /v1/messages, /v1/models).
-const baseUrlOpenai = computed(() => `${baseUrl.value}/openai/v1`);
+// Each protocol points at its own surface: OpenAI chat tools at /openai-chat/v1
+// (their SDK appends /chat/completions, /models), responses clients (codex &
+// co.) at /openai-responses/v1 (their SDK appends /responses, /models);
+// Anthropic tools at /anthropic (their SDK appends /v1/messages, /v1/models).
+const baseUrlOpenaiChat = computed(() => `${baseUrl.value}/openai-chat/v1`);
+const baseUrlOpenaiResponses = computed(() => `${baseUrl.value}/openai-responses/v1`);
 const baseUrlAnthropic = computed(() => `${baseUrl.value}/anthropic`);
 
 async function load() {
@@ -76,7 +79,12 @@ const snippets = computed(() => [
   {
     key: "openai",
     title: t("connect.openaiTitle"),
-    text: `export OPENAI_BASE_URL=${baseUrlOpenai.value}\nexport OPENAI_API_KEY=${apiKey.value ?? ""}`,
+    text: `export OPENAI_BASE_URL=${baseUrlOpenaiChat.value}\nexport OPENAI_API_KEY=${apiKey.value ?? ""}`,
+  },
+  {
+    key: "responses",
+    title: t("connect.responsesExportTitle"),
+    text: `export OPENAI_BASE_URL=${baseUrlOpenaiResponses.value}\nexport OPENAI_API_KEY=${apiKey.value ?? ""}`,
   },
   {
     key: "anthropic",
@@ -86,7 +94,7 @@ const snippets = computed(() => [
   {
     key: "curl",
     title: t("connect.curlTitle"),
-    text: `curl ${baseUrlOpenai.value}/chat/completions \\\n  -H "Authorization: Bearer ${apiKey.value ?? ""}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"${exampleModel("openai")}","messages":[{"role":"user","content":"hi"}]}'`,
+    text: `curl ${baseUrlOpenaiChat.value}/chat/completions \\\n  -H "Authorization: Bearer ${apiKey.value ?? ""}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"${exampleModel("openai")}","messages":[{"role":"user","content":"hi"}]}'`,
   },
   {
     key: "curl-anthropic",
@@ -94,9 +102,9 @@ const snippets = computed(() => [
     text: `curl ${baseUrlAnthropic.value}/v1/messages \\\n  -H "Authorization: Bearer ${apiKey.value ?? ""}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"${exampleModel("anthropic")}","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'`,
   },
   {
-    key: "responses",
+    key: "curl-responses",
     title: t("connect.responsesTitle"),
-    text: `curl ${baseUrlOpenai.value}/responses \\\n  -H "Authorization: Bearer ${apiKey.value ?? ""}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"${exampleModel("responses")}","input":"hi"}'`,
+    text: `curl ${baseUrlOpenaiResponses.value}/responses \\\n  -H "Authorization: Bearer ${apiKey.value ?? ""}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"${exampleModel("responses")}","input":"hi"}'`,
   },
 ]);
 
@@ -114,7 +122,7 @@ onMounted(load);
         <CardDescription>{{ t("connect.desc") }}</CardDescription>
       </CardHeader>
       <CardContent class="space-y-3">
-        <!-- Base URL: one address per tool family (OpenAI tools at /openai/v1; Claude/Anthropic at /anthropic) -->
+        <!-- Base URL: one address per protocol (OpenAI chat at /openai-chat/v1, responses at /openai-responses/v1; Claude/Anthropic at /anthropic) -->
         <div class="space-y-2">
           <div class="flex items-center justify-between gap-3 rounded-lg border p-3" :class="[FMT_ACCENT.openai.border, FMT_ACCENT.openai.soft]">
             <div class="min-w-0">
@@ -122,12 +130,26 @@ onMounted(load);
                 <span class="h-1.5 w-1.5 rounded-full" :class="FMT_ACCENT.openai.solid" />
                 {{ t("connect.baseUrlOpenai") }}
               </div>
-              <div class="mt-0.5 truncate font-mono text-sm">{{ baseUrlOpenai }}</div>
+              <div class="mt-0.5 truncate font-mono text-sm">{{ baseUrlOpenaiChat }}</div>
             </div>
-            <Button variant="outline" size="sm" @click="copy('url-openai', baseUrlOpenai)">
+            <Button variant="outline" size="sm" @click="copy('url-openai', baseUrlOpenaiChat)">
               <Check v-if="copied === 'url-openai'" class="h-4 w-4" />
               <Copy v-else class="h-4 w-4" />
               {{ copied === "url-openai" ? t("connect.copied") : t("connect.copy") }}
+            </Button>
+          </div>
+          <div class="flex items-center justify-between gap-3 rounded-lg border p-3" :class="[FMT_ACCENT.responses.border, FMT_ACCENT.responses.soft]">
+            <div class="min-w-0">
+              <div class="flex items-center gap-1.5 text-xs font-medium" :class="FMT_ACCENT.responses.text">
+                <span class="h-1.5 w-1.5 rounded-full" :class="FMT_ACCENT.responses.solid" />
+                {{ t("connect.baseUrlResponses") }}
+              </div>
+              <div class="mt-0.5 truncate font-mono text-sm">{{ baseUrlOpenaiResponses }}</div>
+            </div>
+            <Button variant="outline" size="sm" @click="copy('url-responses', baseUrlOpenaiResponses)">
+              <Check v-if="copied === 'url-responses'" class="h-4 w-4" />
+              <Copy v-else class="h-4 w-4" />
+              {{ copied === "url-responses" ? t("connect.copied") : t("connect.copy") }}
             </Button>
           </div>
           <div class="flex items-center justify-between gap-3 rounded-lg border p-3" :class="[FMT_ACCENT.anthropic.border, FMT_ACCENT.anthropic.soft]">

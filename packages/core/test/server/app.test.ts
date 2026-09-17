@@ -39,7 +39,7 @@ describe("server/app", () => {
     // GET /models is a public discovery read (see below) — the isolation
     // contract lives on the CALL endpoints.
     it("rejects the account Basic creds on a call endpoint", async () => {
-      const res = await createApp(store).request("/openai/v1/chat/completions", {
+      const res = await createApp(store).request("/openai-chat/v1/chat/completions", {
         method: "POST",
         headers: { authorization: basic },
         body: JSON.stringify({ model: "m", messages: [] }),
@@ -48,7 +48,7 @@ describe("server/app", () => {
     });
 
     it("passes the api-key gate with Bearer (reaches routing: 404 model, not 401)", async () => {
-      const res = await createApp(store).request("/openai/v1/chat/completions", {
+      const res = await createApp(store).request("/openai-chat/v1/chat/completions", {
         method: "POST",
         headers: { authorization: bearer },
         body: JSON.stringify({ model: "no-such-model", messages: [] }),
@@ -56,8 +56,14 @@ describe("server/app", () => {
       expect(res.status).toBe(404);
     });
 
-    it("GET /openai/v1/models is public (no auth header)", async () => {
-      const res = await createApp(store).request("/openai/v1/models");
+    it("GET /openai-chat/v1/models is public (no auth header)", async () => {
+      const res = await createApp(store).request("/openai-chat/v1/models");
+      expect(res.status).toBe(200);
+      expect((await json<{ object: string }>(res)).object).toBe("list");
+    });
+
+    it("GET /openai-responses/v1/models is public too", async () => {
+      const res = await createApp(store).request("/openai-responses/v1/models");
       expect(res.status).toBe(200);
       expect((await json<{ object: string }>(res)).object).toBe("list");
     });
@@ -102,7 +108,7 @@ describe("server/app", () => {
 
     it("still gates /v1 — the bypass covers the admin login only", async () => {
       await withDevEnv(async () => {
-        const res = await createApp(store).request("/openai/v1/chat/completions", {
+        const res = await createApp(store).request("/openai-chat/v1/chat/completions", {
           method: "POST",
           body: JSON.stringify({ model: "m", messages: [] }),
         });
@@ -112,23 +118,32 @@ describe("server/app", () => {
   });
 
   describe("API-prefix miss → JSON 404 (never the SPA's HTML)", () => {
-    it("answers a doubled path like /openai/v1/v1/models with JSON", async () => {
+    it("answers a doubled path like /openai-chat/v1/v1/models with JSON", async () => {
       // With the api key: passes the sub-app's auth, then nothing matches →
       // falls through to the parent's JSON 404 (previously the SPA's HTML —
       // which is exactly what broke pi's model refresh with "Unexpected token '<'").
-      const res = await createApp(store).request("/openai/v1/v1/models", { headers: { authorization: bearer } });
+      const res = await createApp(store).request("/openai-chat/v1/v1/models", { headers: { authorization: bearer } });
       expect(res.status).toBe(404);
       expect(res.headers.get("content-type")).toContain("application/json");
       const j = await json<{ error: { message: string } }>(res);
-      expect(j.error.message).toContain("/openai/v1/v1/models");
+      expect(j.error.message).toContain("/openai-chat/v1/v1/models");
     });
 
     it("tells the legacy /v1 surface where to go", async () => {
       const res = await createApp(store).request("/v1/models");
       expect(res.status).toBe(404);
       const j = await json<{ error: { message: string } }>(res);
-      expect(j.error.message).toContain("/openai/v1");
+      expect(j.error.message).toContain("/openai-chat/v1");
+      expect(j.error.message).toContain("/openai-responses/v1");
       expect(j.error.message).toContain("/anthropic/v1");
+    });
+
+    it("tells the legacy /openai surface where to go", async () => {
+      const res = await createApp(store).request("/openai/v1/chat/completions", { method: "POST" });
+      expect(res.status).toBe(404);
+      const j = await json<{ error: { message: string } }>(res);
+      expect(j.error.message).toContain("/openai-chat/v1");
+      expect(j.error.message).toContain("/openai-responses/v1");
     });
 
     it("unmatched /admin paths answer JSON too (with valid Basic)", async () => {

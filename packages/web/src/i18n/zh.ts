@@ -38,7 +38,8 @@ export default {
   connect: {
     title: "使用方式",
     desc: "把任意兼容 OpenAI 或 Anthropic 的工具指向这里,把下面的 API Key 填进它的 api key 字段即可。",
-    baseUrlOpenai: "Base URL(OpenAI 兼容)",
+    baseUrlOpenai: "Base URL(OpenAI chat 兼容)",
+    baseUrlResponses: "Base URL(OpenAI Responses)",
     baseUrlAnthropic: "Base URL(Claude / Anthropic)",
     apiKey: "API Key",
     copy: "复制",
@@ -51,6 +52,7 @@ export default {
     curlTitle: "OpenAI Chat(原始 HTTP)",
     curlAnthropicTitle: "Anthropic(原始 HTTP)",
     responsesTitle: "OpenAI Responses(原始 HTTP)",
+    responsesExportTitle: "OpenAI Responses 客户端(codex / Responses SDK)",
     note: "上面是本机在局域网里的 IP;若 agent 跑在别的网络(VPN、容器等),请换成那台机器能访问到的地址。",
   },
   settings: {

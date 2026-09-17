@@ -194,7 +194,7 @@ function projectModel(name: string, e: ModelEntry, byId: Map<string, Provider>) 
   };
 }
 
-export function adminApi(store: Store, auth: MiddlewareHandler, openai: Hono, anthropic: Hono): Hono {
+export function adminApi(store: Store, auth: MiddlewareHandler, chat: Hono, responses: Hono, anthropic: Hono): Hono {
   const app = new Hono();
   app.use("*", auth);
 
@@ -927,10 +927,10 @@ app.delete("/models/:name/debug/fails", (c) => {
     if (!format) {
       return c.json({ result: { ok: false, status: 0, format: "openai", error: "model not enabled on any routing slot" } });
     }
-    // Route the loopback to the matching surface: anthropic → the anthropic
-    // sub-app (/messages); openai/responses → the openai sub-app (the openai
-    // family lives there, including /responses).
-    const sub = format === "anthropic" ? anthropic : openai;
+    // Route the loopback to the matching surface sub-app: each protocol has
+    // its own surface now (anthropic → /messages, responses → /responses,
+    // openai → /chat/completions).
+    const sub = format === "anthropic" ? anthropic : format === "responses" ? responses : chat;
     const path = format === "anthropic" ? "/messages" : format === "responses" ? "/responses" : "/chat/completions";
     // /responses is the OpenAI Responses API — it takes `input`, not `messages`.
     const body =
@@ -989,7 +989,7 @@ app.delete("/models/:name/debug/fails", (c) => {
     if (!provider || !providerSpeaks(provider, format)) {
       return c.json({ result: { ok: false, status: 0, format, error: "source does not speak this format" } });
     }
-    const sub = format === "anthropic" ? anthropic : openai;
+    const sub = format === "anthropic" ? anthropic : format === "responses" ? responses : chat;
     const path = format === "anthropic" ? "/messages" : format === "responses" ? "/responses" : "/chat/completions";
     // /responses is the OpenAI Responses API — it takes `input`, not `messages`.
     const body =

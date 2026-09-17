@@ -109,19 +109,19 @@ describe("proxy", () => {
 
   describe("dispatch routing", () => {
     it("400 invalid_request_error when body has no model", async () => {
-      const res = await post("/openai/v1/chat/completions", { messages: [] });
+      const res = await post("/openai-chat/v1/chat/completions", { messages: [] });
       expect(res.status).toBe(400);
       expect((await json<{ error: { type: string } }>(res)).error.type).toBe("invalid_request_error");
     });
 
     it("400 on non-JSON body", async () => {
-      const res = await post("/openai/v1/chat/completions", "not json{");
+      const res = await post("/openai-chat/v1/chat/completions", "not json{");
       expect(res.status).toBe(400);
       expect((await json<{ error: { type: string } }>(res)).error.type).toBe("invalid_request_error");
     });
 
     it("404 model_not_found for an unknown model", async () => {
-      const res = await post("/openai/v1/chat/completions", { model: "nope", messages: [] });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "nope", messages: [] });
       expect(res.status).toBe(404);
       expect((await json<{ error: { code: string } }>(res)).error.code).toBe("model_not_found");
     });
@@ -130,7 +130,7 @@ describe("proxy", () => {
       mock = mockFetch([
         { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "hi" } }] } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [{ role: "user", content: "hi" }] });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [{ role: "user", content: "hi" }] });
       expect(res.status).toBe(200);
       expect((await json<ChatBody>(res)).choices[0].message.content).toBe("hi");
       // No provider leak to a normal client.
@@ -143,13 +143,13 @@ describe("proxy", () => {
 
     it("maps the openai chat URL onto the OpenAI base", async () => {
       mock = mockFetch([{ match: "/a/v1/chat/completions", response: { body: { ok: true } } }]);
-      await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] });
       expect(mock.calls[0].url).toBe("https://up.test/a/v1/chat/completions");
     });
 
     it("maps the responses URL onto the OpenAI base", async () => {
       mock = mockFetch([{ match: "/a/v1/responses", response: { body: { ok: true } } }]);
-      await post("/openai/v1/responses", { model: "m", input: "x" });
+      await post("/openai-responses/v1/responses", { model: "m", input: "x" });
       expect(mock.calls[0].url).toBe("https://up.test/a/v1/responses");
     });
 
@@ -175,7 +175,7 @@ describe("proxy", () => {
         { match: "/a/v1/chat/completions", response: { status: 503, body: { error: { message: "down" } } } },
         { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "from-B" } }] } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] });
       expect(res.status).toBe(200);
       expect((await json<ChatBody>(res)).choices[0].message.content).toBe("from-B");
       expect(mock.calls.filter((c) => c.url.includes("/a/")).length).toBe(1);
@@ -187,7 +187,7 @@ describe("proxy", () => {
         { match: "/a/v1/chat/completions", response: { status: 429, body: { error: { message: "slow down" } } } },
         { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "B" } }] } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] });
       expect(res.status).toBe(200);
       expect(mock.calls.filter((c) => c.url.includes("/a/")).length).toBe(1);
       expect(mock.calls.filter((c) => c.url.includes("/b/")).length).toBe(1);
@@ -200,7 +200,7 @@ describe("proxy", () => {
           { match: "/a/v1/chat/completions", response: { status, body: { error: { message: "User has been banned" } } } },
           { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "B" } }] } } },
         ]);
-        const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+        const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] });
         expect(res.status).toBe(200);
         expect(mock.calls.filter((c) => c.url.includes("/b/")).length).toBe(1);
       }
@@ -211,7 +211,7 @@ describe("proxy", () => {
         { match: "/a/v1/chat/completions", response: () => { throw new Error("net"); } },
         { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "B" } }] } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] });
       expect(res.status).toBe(200);
       expect((await json<ChatBody>(res)).choices[0].message.content).toBe("B");
       expect(mock.calls.filter((c) => c.url.includes("/b/")).length).toBe(1);
@@ -223,7 +223,7 @@ describe("proxy", () => {
         { match: "/a/v1/chat/completions", response: { status: 400, body: { error: { message: "bad" } } } },
         { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "B" } }] } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] });
       expect(res.status).toBe(400);
       expect((await json<{ error: { message: string } }>(res)).error.message).toBe("bad");
       expect(mock.calls.filter((c) => c.url.includes("/b/")).length).toBe(0);
@@ -242,7 +242,7 @@ describe("proxy", () => {
         },
         { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "B" } }] } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] });
       expect(res.status).toBe(200);
       expect(mock.calls.filter((c) => c.url.includes("/a/")).length).toBe(1);
       expect(mock.calls.filter((c) => c.url.includes("/b/")).length).toBe(1);
@@ -258,7 +258,7 @@ describe("proxy", () => {
           { match: "/a/v1/chat/completions", response: { status, body: { error: { message } } } },
           { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "B" } }] } } },
         ]);
-        const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+        const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] });
         expect(res.status).toBe(200);
         expect(mock.calls.filter((c) => c.url.includes("/b/")).length).toBe(1);
       }
@@ -269,7 +269,7 @@ describe("proxy", () => {
         { match: "/a/v1/chat/completions", response: { status: 500, body: { error: { message: "boom" } } } },
         { match: "/b/v1/chat/completions", response: { status: 500, body: { error: { message: "boom" } } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] });
       expect(res.status).toBe(502);
       const msg = (await json<{ error: { message: string } }>(res)).error.message;
       expect(msg).toContain("all providers");
@@ -293,7 +293,7 @@ describe("proxy", () => {
       mock = mockFetch([
         { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "from-B" } }] } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] });
       expect(res.status).toBe(200);
       expect((await json<ChatBody>(res)).choices[0].message.content).toBe("from-B");
       // A was skipped entirely — the upstream was never hit.
@@ -310,7 +310,7 @@ describe("proxy", () => {
       mock = mockFetch([
         { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "from-A" } }] } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] });
       expect(res.status).toBe(200);
       expect(mock.calls.filter((c) => c.url.includes("/a/")).length).toBe(1);
     });
@@ -330,7 +330,7 @@ describe("proxy", () => {
         mock = mockFetch([
           { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "from-A" } }] } } },
         ]);
-        const resPromise = post("/openai/v1/chat/completions", { model: "m", messages: [] });
+        const resPromise = post("/openai-chat/v1/chat/completions", { model: "m", messages: [] });
         await vi.advanceTimersByTimeAsync(60_001); // windows slide, queue releases
         const res = await resPromise;
         expect(res.status).toBe(200);
@@ -353,7 +353,7 @@ describe("proxy", () => {
           { match: "/b/v1/chat/completions", response: { status: 500, body: { error: { message: "boom" } } } },
           { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "from-A" } }] } } },
         ]);
-        const resPromise = post("/openai/v1/chat/completions", { model: "m", messages: [] });
+        const resPromise = post("/openai-chat/v1/chat/completions", { model: "m", messages: [] });
         // B fails (retryable) immediately; A is capped -> the request queues.
         await vi.advanceTimersByTimeAsync(60_001);
         const res = await resPromise;
@@ -377,7 +377,7 @@ describe("proxy", () => {
           { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "ok" } }] } } },
         ]);
         const ctrl = new AbortController();
-        const req = new Request("http://gw.test/openai/v1/chat/completions", {
+        const req = new Request("http://gw.test/openai-chat/v1/chat/completions", {
           method: "POST",
           headers: { authorization: "Bearer " + store.get().apiKey, "content-type": "application/json" },
           body: JSON.stringify({ model: "m", messages: [] }),
@@ -406,7 +406,7 @@ describe("proxy", () => {
       mock = mockFetch([
         { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "ok" } }] } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] }, { "x-myapikey-probe-slot": "0" });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] }, { "x-myapikey-probe-slot": "0" });
       expect(res.status).toBe(200);
       expect(mock.calls.filter((c) => c.url.includes("/a/")).length).toBe(1);
       // A pinned probe takes no pacing side-effects: the window is unchanged.
@@ -432,8 +432,8 @@ describe("proxy", () => {
         },
       ]);
       const [r1, r2] = await Promise.all([
-        post("/openai/v1/chat/completions", { model: "m", messages: [] }),
-        post("/openai/v1/chat/completions", { model: "m", messages: [] }),
+        post("/openai-chat/v1/chat/completions", { model: "m", messages: [] }),
+        post("/openai-chat/v1/chat/completions", { model: "m", messages: [] }),
       ]);
       expect(r1.status).toBe(200);
       expect(r2.status).toBe(200);
@@ -458,8 +458,8 @@ describe("proxy", () => {
         },
       ]);
       await Promise.all([
-        post("/openai/v1/chat/completions", { model: "m", messages: [] }),
-        post("/openai/v1/chat/completions", { model: "m", messages: [] }),
+        post("/openai-chat/v1/chat/completions", { model: "m", messages: [] }),
+        post("/openai-chat/v1/chat/completions", { model: "m", messages: [] }),
       ]);
       expect(times).toHaveLength(2);
       expect(times[1] - times[0]).toBeLessThan(90);
@@ -474,7 +474,7 @@ describe("proxy", () => {
       // 66s out, past the 60s horizon.
       for (let i = 0; i < 11; i++) store.paceClaim("m", 10);
       mock = mockFetch([]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] });
       expect(res.status).toBe(429);
       expect(res.headers.get("retry-after")).toBe("6");
       expect((await json<{ error: { type: string; code: string } }>(res)).error.type).toBe("rate_limit_error");
@@ -511,7 +511,7 @@ describe("proxy", () => {
         { match: "/a/v1/chat/completions", response: { status: 503, body: { error: { message: "down" } } } },
         { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "ok" } }] } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] });
       expect(res.status).toBe(200);
       const aCall = mock.calls.find((c) => c.url.includes("/a/"));
       const bCall = mock.calls.find((c) => c.url.includes("/b/"));
@@ -535,7 +535,7 @@ describe("proxy", () => {
       mock = mockFetch([
         { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "ok" } }] } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] });
       expect(res.status).toBe(200);
       expect(JSON.parse(mock.calls[0].body).reasoning_effort).toBe("high");
       await res.text(); // drain so the success row's onSettle fires + logs
@@ -550,7 +550,7 @@ describe("proxy", () => {
       mock = mockFetch([
         { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "ok" } }] } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [], reasoning_effort: "low" });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [], reasoning_effort: "low" });
       await res.text();
       expect(JSON.parse(mock.calls[0].body).reasoning_effort).toBe("high");
       expect(store.getLogs().find((e) => e.model === "m")?.thinking).toEqual({ value: "high", from: "default" });
@@ -563,7 +563,7 @@ describe("proxy", () => {
       mock = mockFetch([
         { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "ok" } }] } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [], enable_thinking: true });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [], enable_thinking: true });
       await res.text();
       const up = JSON.parse(mock.calls[0].body);
       expect(up.reasoning_effort).toBe("high");
@@ -578,7 +578,7 @@ describe("proxy", () => {
       mock = mockFetch([
         { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "ok" } }] } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [], enable_thinking: true });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [], enable_thinking: true });
       await res.text();
       const up = JSON.parse(mock.calls[0].body);
       expect(up.enable_thinking).toBe(true);
@@ -632,7 +632,7 @@ describe("proxy", () => {
       mock = mockFetch([
         { match: "/a/v1/responses", response: { status: 200, body: { output: [] } } },
       ]);
-      const res = await post("/openai/v1/responses", { model: "m", input: "x" });
+      const res = await post("/openai-responses/v1/responses", { model: "m", input: "x" });
       await res.text();
       expect(JSON.parse(mock.calls[0].body).reasoning).toEqual({ effort: "medium" });
       expect(store.getLogs().find((e) => e.model === "m")?.thinking).toEqual({ value: "medium", from: "default" });
@@ -646,7 +646,7 @@ describe("proxy", () => {
         { match: "/a/v1/chat/completions", response: { status: 503, body: { error: { message: "down" } } } },
         { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "ok" } }] } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [], reasoning_effort: "low" });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [], reasoning_effort: "low" });
       await res.text();
       // Slot A was attempted WITH the forced default; B (which answered) ran the
       // request's own setting, restored after A's override.
@@ -687,7 +687,7 @@ describe("proxy", () => {
       mock = mockFetch([
         { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "ok" } }] } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] });
       expect(res.status).toBe(200);
       const up = JSON.parse(mock.calls[0].body);
       expect(up.temperature).toBe(0.2);
@@ -704,7 +704,7 @@ describe("proxy", () => {
       mock = mockFetch([
         { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "ok" } }] } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [], temperature: 1, top_p: 0.5 });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [], temperature: 1, top_p: 0.5 });
       await res.text();
       const up = JSON.parse(mock.calls[0].body);
       expect(up.temperature).toBe(0.2);
@@ -719,7 +719,7 @@ describe("proxy", () => {
       mock = mockFetch([
         { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "ok" } }] } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [], temperature: 0.7 });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [], temperature: 0.7 });
       await res.text();
       expect(JSON.parse(mock.calls[0].body).temperature).toBe(0.7);
       expect(store.getLogs().find((e) => e.model === "m")?.sampling).toBeUndefined();
@@ -733,7 +733,7 @@ describe("proxy", () => {
         { match: "/a/v1/chat/completions", response: { status: 503, body: { error: { message: "down" } } } },
         { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "ok" } }] } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [], temperature: 1 });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [], temperature: 1 });
       await res.text();
       // Slot A was attempted WITH the forced default; B (which answered) ran the
       // request's own value, restored after A's override.
@@ -786,7 +786,7 @@ describe("proxy", () => {
           ]),
         },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] });
       // Drain the body: recordCircuitSuccess only fires from observedBody's
       // onSettle, which runs once the streamed response is fully consumed.
       await res.text();
@@ -812,7 +812,7 @@ describe("proxy", () => {
         { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "A" } }] } } },
         { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "B" } }] } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] });
       expect(res.status).toBe(200);
       expect((await json<ChatBody>(res)).choices[0].message.content).toBe("B");
       // A was skipped entirely; B answered once.
@@ -825,7 +825,7 @@ describe("proxy", () => {
         { match: "/a/v1/chat/completions", response: { status: 429, body: { error: { message: "slow" } }, headers: { "retry-after": "5" } } },
         { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "B" } }] } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] });
       expect(res.status).toBe(200); // failed over to B
       expect(store.isCooling("prv_A")).toBe(true);
       const cd = store.getLogs().find((e) => e.providerId === "prv_A" && e.kind === "cooldown");
@@ -838,7 +838,7 @@ describe("proxy", () => {
         { match: "/a/v1/chat/completions", response: { status: 429, body: { error: { message: "slow" } } } },
         { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "B" } }] } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] });
       expect(res.status).toBe(200);
       expect(store.isCooling("prv_A")).toBe(true);
       const cd = store.getLogs().find((e) => e.providerId === "prv_A" && e.kind === "cooldown");
@@ -857,7 +857,7 @@ describe("proxy", () => {
         { match: "/a/v1/chat/completions", response: { status: 429, body: { error: { code: "1308", message: `[1308][已达到 5 小时的使用上限。您的限额将在 ${ts} 重置。][2026081118012623401256bc9b4019]` } } } },
         { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "B" } }] } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] });
       expect(res.status).toBe(200); // failed over to B
       expect(store.isCooling("prv_A")).toBe(true);
       const cd = store.getLogs().find((e) => e.providerId === "prv_A" && e.kind === "cooldown");
@@ -877,7 +877,7 @@ describe("proxy", () => {
         { match: "/a/v1/chat/completions", response: { status: 429, body: { error: { message: `限额将在 ${ts} 重置` } } } },
         { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "B" } }] } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] });
       expect(res.status).toBe(200);
       const cd = store.getLogs().find((e) => e.providerId === "prv_A" && e.kind === "cooldown");
       expect(cd?.cooldownMs).toBe(30_000); // escalating first rung, not a parsed hint
@@ -942,7 +942,7 @@ describe("proxy", () => {
     it("logs a healthy openai stream ([DONE]) as 200", async () => {
       const sse = sseBody(['data: {"choices":[{"delta":{"content":"hi"}}]}', "", "data: [DONE]", ""]);
       mock = mockFetch([{ match: "/a/v1/chat/completions", response: { status: 200, bodyStream: sse, headers: sseHeaders } }]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [], stream: true });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [], stream: true });
       await res.text();
       const call = store.getLogs().find((e) => e.model === "m" && !e.kind);
       expect(call?.status).toBe(200);
@@ -951,7 +951,7 @@ describe("proxy", () => {
     it("truncated openai /chat/completions stream: logs 502 + trips circuit, injects a data:{error} frame", async () => {
       const sse = sseBody(['data: {"choices":[{"delta":{"content":"hi"}}]}', ""]); // no [DONE]
       mock = mockFetch([{ match: "/a/v1/chat/completions", response: { status: 200, bodyStream: sse, headers: sseHeaders } }]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [], stream: true });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [], stream: true });
       const text = await res.text();
       expect(text).toContain('"error"'); // de-facto data:{error} shape; no event: line on this wire
       expect(text).toContain("server_error");
@@ -968,7 +968,7 @@ describe("proxy", () => {
         // no response.completed — truncated
       ]);
       mock = mockFetch([{ match: "/a/v1/responses", response: { status: 200, bodyStream: sse, headers: sseHeaders } }]);
-      const res = await post("/openai/v1/responses", { model: "m", input: "x", stream: true });
+      const res = await post("/openai-responses/v1/responses", { model: "m", input: "x", stream: true });
       const text = await res.text();
       expect(text).toContain("event: error");
       expect(text).toContain('"type":"error"');
@@ -983,7 +983,7 @@ describe("proxy", () => {
         "event: response.completed", 'data: {"type":"response.completed"}', "",
       ]);
       mock = mockFetch([{ match: "/a/v1/responses", response: { status: 200, bodyStream: sse, headers: sseHeaders } }]);
-      await (await post("/openai/v1/responses", { model: "m", input: "x", stream: true })).text();
+      await (await post("/openai-responses/v1/responses", { model: "m", input: "x", stream: true })).text();
       const call = store.getLogs().find((e) => e.model === "m" && !e.kind);
       expect(call?.status).toBe(200);
     });
@@ -994,7 +994,7 @@ describe("proxy", () => {
         "event: response.failed", 'data: {"type":"response.failed","response":{"status":"failed","error":{"message":"boom"}}}', "",
       ]);
       mock = mockFetch([{ match: "/a/v1/responses", response: { status: 200, bodyStream: sse, headers: sseHeaders } }]);
-      const text = await (await post("/openai/v1/responses", { model: "m", input: "x", stream: true })).text();
+      const text = await (await post("/openai-responses/v1/responses", { model: "m", input: "x", stream: true })).text();
       expect(text).not.toContain("event: error"); // upstream's own failure event passed through; no synthetic inject
       const call = store.getLogs().find((e) => e.model === "m" && !e.kind);
       expect(call?.status).toBe(200); // clean terminal → not truncated → don't cool
@@ -1078,7 +1078,7 @@ describe("proxy", () => {
       ]);
       mock = mockFetch([{ match: "/a/v1/chat/completions", response: { status: 200, bodyStream: sse, headers: sseH } }]);
       await (
-        await post("/openai/v1/chat/completions", { model: "m", messages: [{ role: "user", content: "hi there" }], stream: true })
+        await post("/openai-chat/v1/chat/completions", { model: "m", messages: [{ role: "user", content: "hi there" }], stream: true })
       ).text();
       const u = find()?.usage;
       expect(u?.estimated).toBe(true);
@@ -1096,7 +1096,7 @@ describe("proxy", () => {
         "",
       ]);
       mock = mockFetch([{ match: "/a/v1/chat/completions", response: { status: 200, bodyStream: sse, headers: sseH } }]);
-      await (await post("/openai/v1/chat/completions", { model: "m", messages: [], stream: true })).text();
+      await (await post("/openai-chat/v1/chat/completions", { model: "m", messages: [], stream: true })).text();
       const u = find()?.usage;
       expect(u?.estimated).toBeUndefined();
       expect(u).toEqual({ input: 5, output: 3 });
@@ -1112,7 +1112,7 @@ describe("proxy", () => {
         "",
       ]);
       mock = mockFetch([{ match: "/a/v1/chat/completions", response: { status: 200, bodyStream: sse, headers: sseH } }]);
-      await (await post("/openai/v1/chat/completions", { model: "m", messages: [], stream: true })).text();
+      await (await post("/openai-chat/v1/chat/completions", { model: "m", messages: [], stream: true })).text();
       // prompt_tokens INCLUDES the cached subset on this wire → input is the uncached remainder.
       expect(find()?.usage).toEqual({ input: 20, output: 3, cacheRead: 30 });
     });
@@ -1124,7 +1124,7 @@ describe("proxy", () => {
           response: { status: 200, body: { choices: [{ message: { content: "hi" } }], usage: { prompt_tokens: 11, completion_tokens: 9 } } },
         },
       ]);
-      await (await post("/openai/v1/chat/completions", { model: "m", messages: [] })).text();
+      await (await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] })).text();
       expect(find()?.usage).toEqual({ input: 11, output: 9 });
     });
 
@@ -1141,7 +1141,7 @@ describe("proxy", () => {
           },
         },
       ]);
-      await (await post("/openai/v1/chat/completions", { model: "m", messages: [] })).text();
+      await (await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] })).text();
       expect(find()?.usage).toEqual({ input: 40, output: 9, cacheRead: 60 });
     });
 
@@ -1158,7 +1158,7 @@ describe("proxy", () => {
           },
         },
       ]);
-      await (await post("/openai/v1/chat/completions", { model: "m", messages: [] })).text();
+      await (await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] })).text();
       expect(find()?.usage).toEqual({ input: 40, output: 4, cacheRead: 60 });
     });
 
@@ -1186,7 +1186,7 @@ describe("proxy", () => {
         "",
       ]);
       mock = mockFetch([{ match: "/a/v1/responses", response: { status: 200, bodyStream: sse, headers: sseH } }]);
-      await (await post("/openai/v1/responses", { model: "m", input: "x", stream: true })).text();
+      await (await post("/openai-responses/v1/responses", { model: "m", input: "x", stream: true })).text();
       expect(find()?.usage).toEqual({ input: 8, output: 4 });
     });
 
@@ -1197,7 +1197,7 @@ describe("proxy", () => {
         "",
       ]);
       mock = mockFetch([{ match: "/a/v1/responses", response: { status: 200, bodyStream: sse, headers: sseH } }]);
-      await (await post("/openai/v1/responses", { model: "m", input: "x", stream: true })).text();
+      await (await post("/openai-responses/v1/responses", { model: "m", input: "x", stream: true })).text();
       expect(find()?.usage).toEqual({ input: 30, output: 4, cacheRead: 50 });
     });
 
@@ -1222,7 +1222,7 @@ describe("proxy", () => {
       mock = mockFetch([
         { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "hi" } }] } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [{ role: "user", content: "hi" }], max_tokens: 5 });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [{ role: "user", content: "hi" }], max_tokens: 5 });
       expect(res.status).toBe(200);
       await json<ChatBody>(res); // consume → the body's settle callback runs → the capture lands
       const caps = store.getCaptures("m");
@@ -1248,7 +1248,7 @@ describe("proxy", () => {
         { match: "/a/v1/chat/completions", response: { status: 500, body: { error: { message: "down" } } } },
         { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "ok" } }] } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] });
       expect(res.status).toBe(200);
       await json<ChatBody>(res);
       const caps = store.getCaptures("m"); // newest first
@@ -1277,7 +1277,7 @@ describe("proxy", () => {
           },
         },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [], stream: true });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [], stream: true });
       expect(res.status).toBe(200);
       await res.text();
       const c = store.getCaptures("m")[0];
@@ -1292,7 +1292,7 @@ describe("proxy", () => {
       mock = mockFetch([
         { match: "/a/v1/chat/completions", response: () => { throw new Error("dns broke"); } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] });
       // No other slot in the chain → the client sees the usual 502, while the
       // capture still records what this attempt actually did (status 0).
       expect(res.status).toBe(502);
@@ -1306,7 +1306,7 @@ describe("proxy", () => {
       mock = mockFetch([
         { match: "/a/v1/chat/completions", response: { status: 200, body: "x".repeat(CAPTURE_BODY_MAX + 1000) } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] });
       await res.text();
       const c = store.getCaptures("m")[0];
       expect(c.truncated).toBe(true);
@@ -1317,7 +1317,7 @@ describe("proxy", () => {
       mock = mockFetch([
         { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "hi" } }] } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] });
       expect(res.status).toBe(200);
       await json<ChatBody>(res);
       expect(store.getCaptures("m")).toEqual([]);
@@ -1329,7 +1329,7 @@ describe("proxy", () => {
       mock = mockFetch([
         { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "hi" } }] } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] }, { "x-myapikey-probe": "1" });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] }, { "x-myapikey-probe": "1" });
       expect(res.status).toBe(200);
       await json<ChatBody>(res);
       expect(store.getCaptures("m")).toEqual([]);
@@ -1342,7 +1342,7 @@ describe("proxy", () => {
         { match: "/a/v1/chat/completions", response: { status: 500, body: { error: { message: "boom" } } } },
         { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "ok" } }] } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [{ role: "user", content: "later" }] });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [{ role: "user", content: "later" }] });
       expect(res.status).toBe(200);
       await json<ChatBody>(res);
       expect(store.getCaptures("m")).toEqual([]); // switch off → no switch buffer
@@ -1360,7 +1360,7 @@ describe("proxy", () => {
       mock = mockFetch([
         { match: "/a/v1/chat/completions", response: { status: 429, body: { error: { message: "slow down" } } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] });
       // 429 is retryable and A is the only slot → the client gets the usual
       // collapsed 502; the capture row records the real upstream status.
       expect(res.status).toBe(502);
@@ -1371,9 +1371,9 @@ describe("proxy", () => {
     });
   });
 
-  describe("GET /openai/v1/models", () => {
+  describe("GET /openai-chat/v1/models", () => {
     it("lists only openai-enabled models, owned by each model's first provider", async () => {
-      const res = await createApp(store).request("/openai/v1/models", {
+      const res = await createApp(store).request("/openai-chat/v1/models", {
         headers: { authorization: "Bearer " + store.get().apiKey },
       });
       expect(res.status).toBe(200);
@@ -1385,7 +1385,28 @@ describe("proxy", () => {
     });
 
     it("is public — no api key required", async () => {
-      const res = await createApp(store).request("/openai/v1/models");
+      const res = await createApp(store).request("/openai-chat/v1/models");
+      expect(res.status).toBe(200);
+    });
+  });
+
+  describe("GET /openai-responses/v1/models", () => {
+    // The responses surface narrows to models routable ON it: onlyA has openai
+    // slots but no responses chain, so it's absent here even though it shows on
+    // /openai-chat/v1/models.
+    it("lists only models with a responses chain on a supportsResponses source", async () => {
+      const res = await createApp(store).request("/openai-responses/v1/models", {
+        headers: { authorization: "Bearer " + store.get().apiKey },
+      });
+      expect(res.status).toBe(200);
+      const j = await json<{ object: string; data: { id: string; owned_by: string }[] }>(res);
+      expect(j.object).toBe("list");
+      expect(j.data.map((d: { id: string }) => d.id)).toEqual(["m"]);
+      expect(j.data[0].owned_by).toBe("A");
+    });
+
+    it("is public — no api key required", async () => {
+      const res = await createApp(store).request("/openai-responses/v1/models");
       expect(res.status).toBe(200);
     });
   });
@@ -1420,7 +1441,7 @@ describe("proxy", () => {
       mock = mockFetch([
         { match: "/a/v1/chat/completions", response: { body: { choices: [{ message: { content: "hi" } }] } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] }, { "x-myapikey-probe": "1" });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] }, { "x-myapikey-probe": "1" });
       expect(res.headers.get("x-myapikey-provider")).toBe("A");
     });
 
@@ -1428,7 +1449,7 @@ describe("proxy", () => {
       mock = mockFetch([
         { match: "/a/v1/chat/completions", response: { body: { choices: [{ message: { content: "hi" } }] } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] });
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] });
       expect(res.headers.get("x-myapikey-provider")).toBeNull();
     });
   });
@@ -1440,7 +1461,7 @@ describe("proxy", () => {
         { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "A" } }] } } },
         { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "B" } }] } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] }, {
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] }, {
         "x-myapikey-probe": "1",
         "x-myapikey-probe-slot": "1",
       });
@@ -1455,7 +1476,7 @@ describe("proxy", () => {
         { match: "/a/v1/chat/completions", response: { status: 200, body: {} } },
         { match: "/b/v1/chat/completions", response: { status: 429, body: { error: { message: "slow" } } } },
       ]);
-      const res = await post("/openai/v1/chat/completions", { model: "m", messages: [] }, {
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] }, {
         "x-myapikey-probe": "1",
         "x-myapikey-probe-slot": "1",
       });
@@ -1474,7 +1495,7 @@ describe("proxy", () => {
       ]);
       // onlyA routes solely to A (one slot, index 0); pinning index 1 is out of
       // range → empty list → 404 model_not_found with no fetch.
-      const res = await post("/openai/v1/chat/completions", { model: "onlyA", messages: [] }, {
+      const res = await post("/openai-chat/v1/chat/completions", { model: "onlyA", messages: [] }, {
         "x-myapikey-probe": "1",
         "x-myapikey-probe-slot": "1",
       });

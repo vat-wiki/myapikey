@@ -38,7 +38,8 @@ export default {
   connect: {
     title: "Connection",
     desc: "Point any OpenAI- or Anthropic-compatible tool here and paste the API Key below into its api key field.",
-    baseUrlOpenai: "Base URL (OpenAI-compatible)",
+    baseUrlOpenai: "Base URL (OpenAI chat-compatible)",
+    baseUrlResponses: "Base URL (OpenAI Responses)",
     baseUrlAnthropic: "Base URL (Claude / Anthropic)",
     apiKey: "API Key",
     copy: "Copy",
@@ -51,6 +52,7 @@ export default {
     curlTitle: "OpenAI Chat (raw HTTP)",
     curlAnthropicTitle: "Anthropic (raw HTTP)",
     responsesTitle: "OpenAI Responses (raw HTTP)",
+    responsesExportTitle: "OpenAI Responses clients (codex / Responses SDK)",
     note: "The address above is this host's LAN IP; if the agent runs elsewhere (VPN, container, …), use an address reachable from that machine.",
   },
   settings: {

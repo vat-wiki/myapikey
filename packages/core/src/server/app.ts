@@ -34,12 +34,14 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono {
   const apiKeyAuth = apiKeyMiddleware(() => store.get().apiKey, logger);
 
   // Both sub-apps require auth, applied inside each sub-app (before routes).
-  // Two agent surfaces, each with its own /models: /openai/v1 (openai family)
-  // and /anthropic/v1 (anthropic family). Both gate on the same API key.
-  const { openai, anthropic } = proxyApi(store, apiKeyAuth);
-  const admin = adminApi(store, accountAuth, openai, anthropic);
+  // Three agent surfaces — one per protocol, each with its own /models:
+  // /openai-chat/v1 (openai chat/completions), /openai-responses/v1 (openai
+  // responses), /anthropic/v1 (anthropic messages). All gate on the same API key.
+  const { chat, responses, anthropic } = proxyApi(store, apiKeyAuth);
+  const admin = adminApi(store, accountAuth, chat, responses, anthropic);
 
-  app.route("/openai/v1", openai);
+  app.route("/openai-chat/v1", chat);
+  app.route("/openai-responses/v1", responses);
   app.route("/anthropic/v1", anthropic);
   app.route("/admin", admin);
 
@@ -49,13 +51,18 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono {
   // as "Unexpected token '<'" (this bit pi's model refresh once).
   const apiMiss = (c: Context) =>
     c.json({ error: { message: `no such endpoint: ${c.req.method} ${c.req.path}`, type: "invalid_request_error" } }, 404);
-  app.all("/openai/*", apiMiss);
+  app.all("/openai-chat/*", apiMiss);
+  app.all("/openai-responses/*", apiMiss);
   app.all("/anthropic/*", apiMiss);
   app.all("/admin/*", apiMiss);
-  // Legacy pre-0.12 surface: gone since the split — point the caller at the two
+  // Legacy pre-0.47 openai surface: the two openai families now have their own
+  // prefixes — point the caller there instead of a bare 404.
+  app.all("/openai/*", (c) =>
+    c.json({ error: { message: "the /openai/v1 surface was split — use /openai-chat/v1 or /openai-responses/v1", type: "invalid_request_error" } }, 404));
+  // Legacy pre-0.12 surface: gone since the split — point the caller at the
   // current surfaces instead of a bare 404.
   app.all("/v1/*", (c) =>
-    c.json({ error: { message: "the /v1 surface was split in v0.12.0 — use /openai/v1 or /anthropic/v1", type: "invalid_request_error" } }, 404));
+    c.json({ error: { message: "the /v1 surface was split in v0.12.0 — use /openai-chat/v1, /openai-responses/v1 or /anthropic/v1", type: "invalid_request_error" } }, 404));
 
   // Web UI: serve built SPA when available.
   if (opts.webDir && existsSync(opts.webDir)) {
@@ -83,7 +90,7 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono {
   } else {
     app.get("*", (c) =>
       c.text(
-        "MyAPIKey is running. Web UI not built — run `npm run build:web`. API at /openai/v1 + /anthropic/v1 (proxy) and /admin (config).",
+        "MyAPIKey is running. Web UI not built — run `npm run build:web`. API at /openai-chat/v1 + /openai-responses/v1 + /anthropic/v1 (proxy) and /admin (config).",
         404,
       ),
     );

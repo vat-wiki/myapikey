@@ -23,7 +23,7 @@ program
   .option("-u, --url <url>", "gateway base URL")
   .option("--user <user>", "account username")
   .option("--pass <pass>", "account password")
-  .option("--api-key <key>", "api key for /openai/v1 + /anthropic/v1 (agent calls)")
+  .option("--api-key <key>", "api key for /openai-chat/v1 + /openai-responses/v1 + /anthropic/v1 (agent calls)")
   .hook("preAction", () => undefined);
 
 const ctx = (): ReturnType<typeof makeCtx> => makeCtx(program.opts<Globals>());
@@ -51,9 +51,9 @@ program
       console.log(`\n  MyAPIKey listening on ${url}`);
       if (webDir) console.log(`  web UI:  ${url}`);
       else console.log(`  web UI:  not built (run: npm run build:web)`);
-      console.log(`  proxy:   ${url}/openai/v1/chat/completions   (OpenAI)`);
-      console.log(`           ${url}/openai/v1/responses           (OpenAI Responses)`);
-      console.log(`           ${url}/anthropic/v1/messages         (Anthropic)`);
+      console.log(`  proxy:   ${url}/openai-chat/v1/chat/completions   (OpenAI chat)`);
+      console.log(`           ${url}/openai-responses/v1/responses     (OpenAI Responses)`);
+      console.log(`           ${url}/anthropic/v1/messages             (Anthropic)`);
       console.log(`  data:    ${dataDir}  (override with --data-dir or MYAPIKEY_DATA_DIR)`);
       console.log(`  log:     ${store.getPaths().serverLogFile}  (errors + failover/cooldown events; level via MYAPIKEY_LOG_LEVEL)\n`);
       store.getLogger().info(`gateway started on port ${info.port}, data=${dataDir}`);
@@ -95,7 +95,7 @@ program
     console.log(`  login    : ${profile.username} / ${profile.password}   ← only for the web UI\n`);
     if (apiKey) {
       console.log("Example (OpenAI SDK):");
-      console.log(`  OPENAI_BASE_URL=${profile.url}/openai/v1 OPENAI_API_KEY=${apiKey}`);
+      console.log(`  OPENAI_BASE_URL=${profile.url}/openai-chat/v1 OPENAI_API_KEY=${apiKey}`);
       console.log("\nExample (Claude Code / Anthropic):");
       console.log(`  ANTHROPIC_BASE_URL=${profile.url}/anthropic ANTHROPIC_API_KEY=${apiKey}`);
     }
@@ -378,7 +378,7 @@ program
     const prompt = promptParts.join(" ").trim();
     const input = prompt || (await readStdin());
     if (!input) return console.log("Provide a prompt: myapikey call <model> hello");
-    const r = (await api(ctx(), "POST", "/openai/v1/chat/completions", {
+    const r = (await api(ctx(), "POST", "/openai-chat/v1/chat/completions", {
       model: modelName,
       messages: [{ role: "user", content: input }],
     })) as any;

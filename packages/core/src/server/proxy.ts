@@ -1,6 +1,6 @@
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { trimBase } from "../shared/config";
-import type { DebugCapture, Format, Provider, RouteKey, Usage } from "../shared/types";
+import type { DebugCapture, Format, FormatEntry, Provider, RouteKey, Usage } from "../shared/types";
 import { CAPTURE_BODY_MAX, type Store } from "./store";
 import { UsageCollector } from "./tokens";
 
@@ -494,44 +494,58 @@ function observedBody(
 /** Model list of the models enabled on ONE routing family's slot. Each agent
  *  surface gets its own `/models` so a client listing models never picks an id
  *  that 404s on that surface's call endpoint — and each answers in its own
- *  ecosystem's list shape: openai `{object:"list", data:[{id, owned_by}]}` vs
- *  anthropic `{data:[{id, display_name}], first_id, last_id, has_more}`. We
- *  can't know real created_at / capabilities, so the anthropic shape carries
- *  only the honest minimal fields rather than fabricating them. */
-function modelsList(c: Context, store: Store, fmt: "openai" | "anthropic") {
+ *  ecosystem's list shape: the two openai-family surfaces `{object:"list",
+ *  data:[{id, owned_by}]}` vs anthropic `{data:[{id, display_name}],
+ *  first_id, last_id, has_more}`. We can't know real created_at / capabilities,
+ *  so the anthropic shape carries only the honest minimal fields rather than
+ *  fabricating them. Each surface lists exactly what dispatch would route on
+ *  it: the entry's chain for that RouteKey must be enabled (and, for
+ *  responses, keep at least one slot on a supportsResponses source). */
+function modelsList(c: Context, store: Store, key: RouteKey) {
   const d = store.get();
   const byId = new Map(d.providers.map((p) => [p.id, p]));
-  const enabled = Object.entries(d.models).filter(([, e]) => e[fmt].enabled);
-  if (fmt === "anthropic") {
+  const enabled = Object.entries(d.models).filter(([, e]) => e[key]?.enabled);
+  if (key === "anthropic") {
     const data = enabled.map(([id]) => ({ id, display_name: id, created_at: "1970-01-01T00:00:00Z", type: "model" }));
     return c.json({ data, first_id: data[0]?.id ?? null, last_id: data.at(-1)?.id ?? null, has_more: false });
   }
-  const data = enabled.map(([id, e]) => ({
-    id,
-    object: "model",
-    created: 0,
-    owned_by: byId.get(e.openai.providers[0]?.id ?? "")?.name || "MyAPIKey",
-  }));
+  const routable = (e: FormatEntry) =>
+    key === "responses" ? e.providers.some((s) => byId.get(s.id)?.supportsResponses) : true;
+  // owned_by follows the first slot dispatch would actually use on this surface.
+  const firstSlot = (e: FormatEntry) =>
+    key === "responses" ? e.providers.find((s) => byId.get(s.id)?.supportsResponses) : e.providers[0];
+  const data = enabled
+    .filter(([, e]) => e[key] && routable(e[key]))
+    .map(([id, e]) => ({
+      id,
+      object: "model",
+      created: 0,
+      owned_by: byId.get(firstSlot(e[key])?.id ?? "")?.name || "MyAPIKey",
+    }));
   return c.json({ object: "list", data });
 }
 
-/** The two agent surfaces as separate sub-apps, so each carries its own
- *  `/models` (openai list vs anthropic list) under its own prefix. `dispatch`
- *  is shared — it's keyed by RouteKey, surface-agnostic. */
+/** The three agent surfaces as separate sub-apps (one per protocol family:
+ *  openai chat/completions, openai responses, anthropic messages), so each
+ *  carries its own `/models` under its own prefix. `dispatch` is shared —
+ *  it's keyed by RouteKey, surface-agnostic. */
 export function proxyApi(
   store: Store,
   auth: MiddlewareHandler,
-): { openai: Hono; anthropic: Hono } {
-  const openai = new Hono();
+): { chat: Hono; responses: Hono; anthropic: Hono } {
+  const chat = new Hono();
+  const responses = new Hono();
   const anthropic = new Hono();
   // GET /models is a PUBLIC discovery read — no api key required. It returns only
   // the enabled model names (like /health), so an agent or a quick curl can see
   // what each surface offers before wiring up auth. Registered BEFORE the auth
   // middleware so it isn't gated: Hono only runs middleware on routes registered
   // after it.
-  openai.get("/models", (c) => modelsList(c, store, "openai"));
+  chat.get("/models", (c) => modelsList(c, store, "openai"));
+  responses.get("/models", (c) => modelsList(c, store, "responses"));
   anthropic.get("/models", (c) => modelsList(c, store, "anthropic"));
-  openai.use("*", auth);
+  chat.use("*", auth);
+  responses.use("*", auth);
   anthropic.use("*", auth);
 
   /** Shared dispatch with failover. `key` selects the routing slot (and thus the
@@ -581,7 +595,7 @@ export function proxyApi(
         return c.json(
           {
             error: {
-              message: `model '${model}' is not enabled for /responses — enable it on a source marked "supports responses"`,
+              message: `model '${model}' is not enabled for /openai-responses/v1/responses — enable it on a source marked "supports responses"`,
               type: "invalid_request_error",
               code: "model_not_found",
             },
@@ -865,14 +879,14 @@ export function proxyApi(
     }
   };
 
-  // OpenAI surface: chat/completions + responses (/models is registered above,
-  // before the auth middleware, so it stays public).
-  openai.post("/chat/completions", (c) => dispatch(c, "openai"));
+  // One call endpoint per surface (/models is registered above, before the
+  // auth middleware, so it stays public).
+  chat.post("/chat/completions", (c) => dispatch(c, "openai"));
   // OpenAI Responses API — its own routing slot (sources must be supportsResponses).
-  openai.post("/responses", (c) => dispatch(c, "responses"));
+  responses.post("/responses", (c) => dispatch(c, "responses"));
 
-  // Anthropic surface: messages (/models likewise registered above, public).
+  // Anthropic surface: messages.
   anthropic.post("/messages", (c) => dispatch(c, "anthropic"));
 
-  return { openai, anthropic };
+  return { chat, responses, anthropic };
 }

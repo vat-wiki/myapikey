@@ -9,7 +9,7 @@ export class ApiError extends Error {
 export interface Ctx {
   url: string;
   auth: string; // Basic header value ("" if no account creds) — for /admin
-  apiKey?: string; // Bearer token for /openai/v1 + /anthropic/v1
+  apiKey?: string; // Bearer token for /openai-chat/v1 + /openai-responses/v1 + /anthropic/v1
 }
 
 interface Opts {
@@ -34,11 +34,11 @@ export async function api<T = unknown>(
   path: string,
   body?: unknown,
 ): Promise<T> {
-  // The two agent surfaces (/openai/v1, /anthropic/v1) take the API key
-  // (Bearer); everything else (/admin) takes account Basic.
-  const isProxy = path.startsWith("/openai/") || path.startsWith("/anthropic/");
+  // The agent surfaces (/openai-chat/v1, /openai-responses/v1, /anthropic/v1)
+  // take the API key (Bearer); everything else (/admin) takes account Basic.
+  const isProxy = path.startsWith("/openai-chat/") || path.startsWith("/openai-responses/") || path.startsWith("/anthropic/");
   if (isProxy && !ctx.apiKey) {
-    throw new Error("No API key for /openai/v1 or /anthropic/v1. Run `myapikey serve`, set MYAPIKEY_API_KEY, or pass --api-key.");
+    throw new Error("No API key for /openai-chat/v1, /openai-responses/v1 or /anthropic/v1. Run `myapikey serve`, set MYAPIKEY_API_KEY, or pass --api-key.");
   }
   if (!isProxy && !ctx.auth) {
     throw new Error("No account credentials for /admin. Run `myapikey serve`, set MYAPIKEY_USER/MYAPIKEY_PASS, or pass --user/--pass.");
