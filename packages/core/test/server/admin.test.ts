@@ -437,10 +437,10 @@ describe("server/admin", () => {
       expect(noModel.status).toBe(400);
     });
 
-    it("POST /admin/providers/:id/test honors ?format= filter and supportsResponses", async () => {
+    it("POST /admin/providers/:id/test honors ?format= filter and the responses format", async () => {
       const a = makeProvider({
-        formats: ["openai", "anthropic"], supportsResponses: true,
-        baseUrlOpenai: "https://a.up.test/v1", baseUrlAnthropic: "https://a.up.test",
+        formats: ["openai", "anthropic", "responses"],
+        baseUrlOpenai: "https://a.up.test/v1", baseUrlAnthropic: "https://a.up.test", baseUrlResponses: "https://a.up.test/v1",
       });
       await seedStore(store, { providers: [a] });
       const m = mockFetch([{ match: "/responses", response: { status: 200, body: { ok: true } } }]);

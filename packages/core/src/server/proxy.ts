@@ -1,6 +1,6 @@
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { trimBase } from "../shared/config";
-import type { DebugCapture, Format, FormatEntry, Provider, RouteKey, Usage } from "../shared/types";
+import type { DebugCapture, Format, Provider, RouteKey, Usage } from "../shared/types";
 import { CAPTURE_BODY_MAX, type Store } from "./store";
 import { UsageCollector } from "./tokens";
 
@@ -108,6 +108,14 @@ interface CandidateSlot {
   sampling?: Record<string, unknown>;
 }
 
+/** Which Provider base URL serves each routing format (all non-empty for a
+ *  format the source actually offers — admin validation enforces it). */
+const FORMAT_BASE: Record<RouteKey, "baseUrlOpenai" | "baseUrlAnthropic" | "baseUrlResponses"> = {
+  openai: "baseUrlOpenai",
+  anthropic: "baseUrlAnthropic",
+  responses: "baseUrlResponses",
+};
+
 /** Resolve the ordered, compatible provider slots for a model on a routing slot. */
 function candidates(store: Store, model: string, key: RouteKey): CandidateSlot[] {
   const d = store.get();
@@ -115,9 +123,9 @@ function candidates(store: Store, model: string, key: RouteKey): CandidateSlot[]
   const fe = entry?.[key];
   if (!fe?.enabled) return [];
   const byId = new Map(d.providers.map((p) => [p.id, p]));
-  // Defense-in-depth: openai/anthropic require that wire format; responses
-  // requires supportsResponses. (Admin keeps chains pure, but a provider's
-  // formats/flag can be edited afterwards.)
+  // Defense-in-depth: a slot's source must still carry that format AND a base
+  // URL for it. (Admin keeps chains pure, but a provider's formats/URLs can be
+  // edited afterwards — a source that dropped responses must stop serving it.)
   return fe.providers
     .map((s): CandidateSlot | null => {
       const p = byId.get(s.id);
@@ -125,7 +133,7 @@ function candidates(store: Store, model: string, key: RouteKey): CandidateSlot[]
     })
     .filter((slot): slot is CandidateSlot => {
       if (!slot) return false;
-      return key === "responses" ? !!slot.provider.supportsResponses : slot.provider.formats.includes(key);
+      return slot.provider.formats.includes(key) && !!slot.provider[FORMAT_BASE[key]];
     });
 }
 
@@ -311,16 +319,17 @@ export function upstreamHeaders(provider: Provider, format: Format, clientVersio
   return h;
 }
 
-/** Resolve the upstream URL + wire format for a routing slot. The OpenAI base
- *  includes the version segment (we append the bare resource); the Anthropic
- *  base excludes /v1 (we append v1/messages). /responses reuses the OpenAI base.
- *  Exported for the admin source-test (direct upstream ping, no routing). */
+/** Resolve the upstream URL + wire format for a routing slot. Each format has
+ *  its own base URL: the OpenAI and Responses bases include the version segment
+ *  (we append the bare resource); the Anthropic base excludes /v1 (we append
+ *  v1/messages). Exported for the admin source-test (direct upstream ping). */
 export function upstreamTarget(p: Provider, key: RouteKey): { url: string; wire: Format } {
   if (key === "anthropic") {
     return { url: `${trimBase(p.baseUrlAnthropic)}/v1/messages`, wire: "anthropic" };
   }
+  const base = key === "responses" ? p.baseUrlResponses : p.baseUrlOpenai;
   const path = key === "responses" ? "responses" : "chat/completions";
-  return { url: `${trimBase(p.baseUrlOpenai)}/${path}`, wire: "openai" };
+  return { url: `${trimBase(base)}/${path}`, wire: "openai" };
 }
 
 /** HTTP header values are ByteStrings (Latin-1, code points ≤ 255) — a value
@@ -499,8 +508,7 @@ function observedBody(
  *  first_id, last_id, has_more}`. We can't know real created_at / capabilities,
  *  so the anthropic shape carries only the honest minimal fields rather than
  *  fabricating them. Each surface lists exactly what dispatch would route on
- *  it: the entry's chain for that RouteKey must be enabled (and, for
- *  responses, keep at least one slot on a supportsResponses source). */
+ *  it: the entry's chain for that RouteKey must be enabled. */
 function modelsList(c: Context, store: Store, key: RouteKey) {
   const d = store.get();
   const byId = new Map(d.providers.map((p) => [p.id, p]));
@@ -509,19 +517,12 @@ function modelsList(c: Context, store: Store, key: RouteKey) {
     const data = enabled.map(([id]) => ({ id, display_name: id, created_at: "1970-01-01T00:00:00Z", type: "model" }));
     return c.json({ data, first_id: data[0]?.id ?? null, last_id: data.at(-1)?.id ?? null, has_more: false });
   }
-  const routable = (e: FormatEntry) =>
-    key === "responses" ? e.providers.some((s) => byId.get(s.id)?.supportsResponses) : true;
-  // owned_by follows the first slot dispatch would actually use on this surface.
-  const firstSlot = (e: FormatEntry) =>
-    key === "responses" ? e.providers.find((s) => byId.get(s.id)?.supportsResponses) : e.providers[0];
-  const data = enabled
-    .filter(([, e]) => e[key] && routable(e[key]))
-    .map(([id, e]) => ({
-      id,
-      object: "model",
-      created: 0,
-      owned_by: byId.get(firstSlot(e[key])?.id ?? "")?.name || "MyAPIKey",
-    }));
+  const data = enabled.map(([id, e]) => ({
+    id,
+    object: "model",
+    created: 0,
+    owned_by: byId.get(e[key].providers[0]?.id ?? "")?.name || "MyAPIKey",
+  }));
   return c.json({ object: "list", data });
 }
 
@@ -583,7 +584,7 @@ export function proxyApi(
     // (429/500/…), not a collapsed 502, so the badge shows what really happened.
     const pinIndexRaw = c.req.header("x-myapikey-probe-slot");
     const pinIndex = pinIndexRaw !== "" && Number.isInteger(Number(pinIndexRaw)) ? Number(pinIndexRaw) : null;
-    // candidates() already restricts the responses chain to supportsResponses sources.
+    // candidates() already restricts each chain to sources still offering that format.
     let list = candidates(store, model, key);
     if (pinIndex != null) {
       // An out-of-range index → empty list → 404, so a bad probe is reported as
@@ -882,7 +883,7 @@ export function proxyApi(
   // One call endpoint per surface (/models is registered above, before the
   // auth middleware, so it stays public).
   chat.post("/chat/completions", (c) => dispatch(c, "openai"));
-  // OpenAI Responses API — its own routing slot (sources must be supportsResponses).
+  // OpenAI Responses API — its own routing slot (sources must offer responses).
   responses.post("/responses", (c) => dispatch(c, "responses"));
 
   // Anthropic surface: messages.

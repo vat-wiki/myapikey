@@ -18,16 +18,16 @@ const A = makeProvider({
   name: "A",
   baseUrlOpenai: "https://up.test/a/v1",
   baseUrlAnthropic: "https://up.test/a",
-  formats: ["openai", "anthropic"],
-  supportsResponses: true,
+  baseUrlResponses: "https://up.test/a/v1",
+  formats: ["openai", "anthropic", "responses"],
 });
 const B = makeProvider({
   id: "prv_B",
   name: "B",
   baseUrlOpenai: "https://up.test/b/v1",
   baseUrlAnthropic: "https://up.test/b",
-  formats: ["openai", "anthropic"],
-  supportsResponses: true,
+  baseUrlResponses: "https://up.test/b/v1",
+  formats: ["openai", "anthropic", "responses"],
 });
 
 describe("proxy", () => {

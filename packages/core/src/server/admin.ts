@@ -27,7 +27,7 @@ function mask(key: string): string {
 }
 
 /** Order-insensitive signature of a formats list, for change detection. */
-function formatsKey(f: Format[]): string {
+function formatsKey(f: RouteKey[]): string {
   return [...f].sort().join(",");
 }
 
@@ -38,10 +38,10 @@ function coerceRpm(v: unknown): number | undefined {
   return typeof n === "number" && Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined;
 }
 
-/** Whether a provider is a valid source for a routing slot: openai/anthropic
- *  require that wire format; responses requires supportsResponses. */
+/** Whether a provider is a valid source for a routing slot: it must still offer
+ *  that format (formats and base URLs live and move together). */
 function providerSpeaks(p: Provider, key: RouteKey): boolean {
-  return key === "responses" ? !!p.supportsResponses : p.formats.includes(key);
+  return p.formats.includes(key);
 }
 
 /** The body fields a chain slot's sampling default may set — the wire-agnostic
@@ -96,8 +96,8 @@ function toPublic(p: Provider) {
     name: p.name,
     baseUrlOpenai: p.baseUrlOpenai,
     baseUrlAnthropic: p.baseUrlAnthropic,
+    baseUrlResponses: p.baseUrlResponses,
     formats: p.formats,
-    supportsResponses: p.supportsResponses ?? false,
     apiKey: mask(p.apiKey),
     rpm: p.rpm ?? 0,
     discoveredModels: p.discoveredModels ?? [],
@@ -129,6 +129,10 @@ export async function discoverModels(p: Provider): Promise<string[]> {
   const attempts: { base: string; suffix: string; headers: Record<string, string> }[] = [];
   if (p.formats.includes("openai"))
     attempts.push({ base: p.baseUrlOpenai, suffix: "models", headers: { authorization: `Bearer ${p.apiKey}` } });
+  // Responses usually shares the chat list, so it's tried after openai — only
+  // reached when the chat base is unset (responses-only source) or empty-handed.
+  if (p.formats.includes("responses") && p.baseUrlResponses)
+    attempts.push({ base: p.baseUrlResponses, suffix: "models", headers: { authorization: `Bearer ${p.apiKey}` } });
   if (p.formats.includes("anthropic"))
     attempts.push({ base: p.baseUrlAnthropic, suffix: "v1/models", headers: anthropicAuthHeaders(p.apiKey, "2023-06-01") });
   if (!attempts.length)
@@ -246,19 +250,18 @@ export function adminApi(store: Store, auth: MiddlewareHandler, chat: Hono, resp
   app.get("/providers", (c) => c.json({ providers: store.get().providers.map(toPublic) }));
 
   app.post("/providers", async (c) => {
-    const body = await readJson<{ name?: string; baseUrlOpenai?: string; baseUrlAnthropic?: string; apiKey?: string; formats?: Format[]; supportsResponses?: boolean; rpm?: number }>(c.req.raw);
+    const body = await readJson<{ name?: string; baseUrlOpenai?: string; baseUrlAnthropic?: string; baseUrlResponses?: string; apiKey?: string; formats?: RouteKey[]; rpm?: number }>(c.req.raw);
     const formats = body?.formats ?? [];
-    const needOpenai = formats.includes("openai");
-    const needAnthropic = formats.includes("anthropic");
     if (!body?.name || !body?.apiKey || !formats.length) {
       return c.json({ error: { message: "name, apiKey, formats are required" } }, 400);
     }
-    if ((needOpenai && !body.baseUrlOpenai) || (needAnthropic && !body.baseUrlAnthropic)) {
+    if ((formats.includes("openai") && !body.baseUrlOpenai) || (formats.includes("anthropic") && !body.baseUrlAnthropic) || (formats.includes("responses") && !body.baseUrlResponses)) {
       return c.json({ error: { message: "a base URL is required for each selected format" } }, 400);
     }
     const id = newProviderId();
     const baseUrlOpenai = trimBase(body.baseUrlOpenai ?? "");
     const baseUrlAnthropic = trimBase(body.baseUrlAnthropic ?? "");
+    const baseUrlResponses = trimBase(body.baseUrlResponses ?? "");
     const rpm = coerceRpm(body!.rpm);
     await store.update((d) => {
       d.providers.push({
@@ -266,9 +269,9 @@ export function adminApi(store: Store, auth: MiddlewareHandler, chat: Hono, resp
         name: body.name!,
         baseUrlOpenai,
         baseUrlAnthropic,
+        baseUrlResponses,
         apiKey: body.apiKey!,
         formats,
-        supportsResponses: body.supportsResponses === true,
         ...(rpm ? { rpm } : {}),
         createdAt: Date.now(),
       });
@@ -281,18 +284,17 @@ export function adminApi(store: Store, auth: MiddlewareHandler, chat: Hono, resp
 
   app.put("/providers/:id", async (c) => {
     const id = c.req.param("id");
-    const body = await readJson<{ name?: string; baseUrlOpenai?: string; baseUrlAnthropic?: string; apiKey?: string; formats?: Format[]; supportsResponses?: boolean; rpm?: number }>(c.req.raw);
+    const body = await readJson<{ name?: string; baseUrlOpenai?: string; baseUrlAnthropic?: string; baseUrlResponses?: string; apiKey?: string; formats?: RouteKey[]; rpm?: number }>(c.req.raw);
     const formats = body?.formats ?? [];
-    const needOpenai = formats.includes("openai");
-    const needAnthropic = formats.includes("anthropic");
     if (!body?.name || !formats.length) {
       return c.json({ error: { message: "name, formats are required" } }, 400);
     }
-    if ((needOpenai && !body.baseUrlOpenai) || (needAnthropic && !body.baseUrlAnthropic)) {
+    if ((formats.includes("openai") && !body.baseUrlOpenai) || (formats.includes("anthropic") && !body.baseUrlAnthropic) || (formats.includes("responses") && !body.baseUrlResponses)) {
       return c.json({ error: { message: "a base URL is required for each selected format" } }, 400);
     }
     const baseUrlOpenai = trimBase(body.baseUrlOpenai ?? "");
     const baseUrlAnthropic = trimBase(body.baseUrlAnthropic ?? "");
+    const baseUrlResponses = trimBase(body.baseUrlResponses ?? "");
     let rediscover = false;
     await store.update((d) => {
       const p = d.providers.find((x) => x.id === id);
@@ -303,14 +305,15 @@ export function adminApi(store: Store, auth: MiddlewareHandler, chat: Hono, resp
       rediscover =
         p.baseUrlOpenai !== baseUrlOpenai ||
         p.baseUrlAnthropic !== baseUrlAnthropic ||
+        p.baseUrlResponses !== baseUrlResponses ||
         (!!body.apiKey && p.apiKey !== body.apiKey) ||
         formatsKey(p.formats) !== formatsKey(formats);
       p.name = body.name!;
       p.baseUrlOpenai = baseUrlOpenai;
       p.baseUrlAnthropic = baseUrlAnthropic;
+      p.baseUrlResponses = baseUrlResponses;
       p.apiKey = newKey;
       p.formats = formats;
-      if (body.supportsResponses !== undefined) p.supportsResponses = body.supportsResponses;
       // rpm: present in the body → set (0/invalid clears to unlimited); absent → keep.
       if (body!.rpm !== undefined) {
         const rpm = coerceRpm(body!.rpm);
@@ -385,7 +388,7 @@ export function adminApi(store: Store, auth: MiddlewareHandler, chat: Hono, resp
   // unrouted source can be checked too — and it takes no routing side-effects
   // (no logs, no circuit, no pacing). ?model= is the upstream name sent
   // verbatim; ?format= (repeatable) narrows the protocols, defaulting to every
-  // one the source supports (responses only when supportsResponses).
+  // one the source supports.
   app.post("/providers/:id/test", async (c) => {
     const p = store.get().providers.find((x) => x.id === c.req.param("id"));
     if (!p) return c.json({ error: { message: "provider not found" } }, 404);
@@ -394,12 +397,10 @@ export function adminApi(store: Store, auth: MiddlewareHandler, chat: Hono, resp
     const wanted = (c.req.queries("format") ?? []).filter(
       (f): f is RouteKey => f === "openai" || f === "anthropic" || f === "responses",
     );
-    const formats: RouteKey[] = wanted.length
-      ? wanted
-      : [...p.formats, ...(p.supportsResponses ? ["responses" as const] : [])];
+    const formats: RouteKey[] = wanted.length ? wanted : [...p.formats];
     const results = await Promise.all(
       formats.map(async (format) => {
-        if (format === "responses" ? !p.supportsResponses : !p.formats.includes(format as Format)) {
+        if (!p.formats.includes(format)) {
           return { format, ok: false, status: 0, ms: 0, error: "source does not speak this format" };
         }
         const start = Date.now();
@@ -513,8 +514,8 @@ export function adminApi(store: Store, auth: MiddlewareHandler, chat: Hono, resp
   // chains, save once" flow the web editor is built around. Each format key
   // present in the body REPLACES that FormatEntry wholesale; keys absent from
   // the body are left untouched (a fresh entry seeds them disabled + empty).
-  // Every slot's provider must exist and speak that slot's format (responses
-  // additionally requires supportsResponses), mirroring the granular endpoints.
+  // Every slot's provider must exist and speak that slot's format, mirroring
+  // the granular endpoints.
   // The response carries the projected model (GET /models shape) so clients can
   // update in place without a refetch.
   app.put("/models/:name", async (c) => {

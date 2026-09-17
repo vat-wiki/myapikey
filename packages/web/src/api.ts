@@ -67,8 +67,8 @@ export interface ProviderPublic {
   name: string;
   baseUrlOpenai: string;
   baseUrlAnthropic: string;
+  baseUrlResponses: string;
   formats: string[];
-  supportsResponses?: boolean;
   apiKey: string;
   /** Request-per-minute cap (0 = unlimited). Pacing: once hit, dispatch fails
    *  over to the next source instead of racing the upstream's own limit. */

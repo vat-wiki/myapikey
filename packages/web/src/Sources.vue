@@ -101,9 +101,9 @@ const testResults = ref<ProviderTestResult[] | null>(null);
  *  the fallback for names in neither list. */
 const testOptions = computed(() => (testTarget.value ? providerModelList(testTarget.value) : []));
 
-/** Every protocol this source can serve (responses only when flagged). */
+/** Every protocol this source can serve. */
 function testFormatList(p: ProviderPublic): string[] {
-  return [...p.formats, ...(p.supportsResponses ? ["responses"] : [])];
+  return [...p.formats];
 }
 
 function openTest(p: ProviderPublic) {
@@ -290,7 +290,6 @@ onMounted(load);
                 class="shrink-0"
                 :class="fmtBadgeClass(f)"
               >{{ fmtLabel(f) }}</Badge>
-              <Badge v-if="p.supportsResponses" variant="outline" class="shrink-0" :class="FMT_ACCENT.responses.badge">{{ fmtLabel("responses") }}</Badge>
               <Badge v-if="p.rpm" variant="outline" class="shrink-0" :title="t('sources.rpmBadgeHint')">{{ t("sources.rpmBadge", { n: p.rpm }) }}</Badge>
               <button
                 type="button"
@@ -309,6 +308,9 @@ onMounted(load);
             <div class="min-w-0 flex-1 space-y-1">
               <div v-if="p.formats.includes('openai')" class="truncate font-mono text-xs text-muted-foreground">
                 <span class="opacity-60">{{ fmtLabel("openai") }} ·</span> {{ p.baseUrlOpenai }}
+              </div>
+              <div v-if="p.formats.includes('responses')" class="truncate font-mono text-xs text-muted-foreground">
+                <span class="opacity-60">{{ fmtLabel("responses") }} ·</span> {{ p.baseUrlResponses }}
               </div>
               <div v-if="p.formats.includes('anthropic')" class="truncate font-mono text-xs text-muted-foreground">
                 <span class="opacity-60">{{ fmtLabel("anthropic") }} ·</span> {{ p.baseUrlAnthropic }}
@@ -366,13 +368,15 @@ onMounted(load);
               <TableCell>
                 <div class="flex flex-wrap gap-1">
                   <Badge v-for="f in p.formats" :key="f" variant="outline" :class="fmtBadgeClass(f)">{{ fmtLabel(f) }}</Badge>
-                  <Badge v-if="p.supportsResponses" variant="outline" :class="FMT_ACCENT.responses.badge">{{ fmtLabel("responses") }}</Badge>
                 </div>
               </TableCell>
               <TableCell>
                 <div class="max-w-[300px] space-y-0.5 font-mono text-xs text-muted-foreground">
                   <div v-if="p.formats.includes('openai')" class="truncate" :title="p.baseUrlOpenai">
                     <span class="opacity-60">{{ fmtLabel("openai") }} · </span>{{ p.baseUrlOpenai }}
+                  </div>
+                  <div v-if="p.formats.includes('responses')" class="truncate" :title="p.baseUrlResponses">
+                    <span class="opacity-60">{{ fmtLabel("responses") }} · </span>{{ p.baseUrlResponses }}
                   </div>
                   <div v-if="p.formats.includes('anthropic')" class="truncate" :title="p.baseUrlAnthropic">
                     <span class="opacity-60">{{ fmtLabel("anthropic") }} · </span>{{ p.baseUrlAnthropic }}

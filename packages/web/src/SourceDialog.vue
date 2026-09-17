@@ -23,34 +23,30 @@ const { t } = useI18n();
 const name = ref("");
 const baseUrlOpenai = ref("");
 const baseUrlAnthropic = ref("");
+const baseUrlResponses = ref("");
 const apiKey = ref("");
 const rpm = ref("");
 const fmtOpenai = ref(true);
 const fmtAnthropic = ref(false);
-const responses = ref(false);
+const fmtResponses = ref(false);
 const showBaseHelp = ref(false);
 const advancedOpen = ref(false);
 const err = ref("");
 const saving = ref(false);
 
-/** Toggle a format checkbox, but never let both be turned off. Turning openai
- *  off also unchecks responses — it has no base URL to stand on then, and a
- *  checked-but-disabled box would misrepresent what would be saved. */
-function toggleFmt(which: "openai" | "anthropic") {
-  if (which === "openai") {
-    if (fmtOpenai.value && !fmtAnthropic.value) return;
-    fmtOpenai.value = !fmtOpenai.value;
-    if (!fmtOpenai.value) responses.value = false;
-  } else {
-    if (fmtAnthropic.value && !fmtOpenai.value) return;
-    fmtAnthropic.value = !fmtAnthropic.value;
-  }
+/** Toggle a format checkbox; the three are independent peers now — only the
+ *  "at least one format" invariant is guarded. */
+function toggleFmt(which: "openai" | "anthropic" | "responses") {
+  const box = which === "openai" ? fmtOpenai : which === "anthropic" ? fmtAnthropic : fmtResponses;
+  if (box.value && !fmtOpenai.value && !fmtAnthropic.value && !fmtResponses.value) return;
+  box.value = !box.value;
 }
 
 const formats = (): string[] => {
   const out: string[] = [];
   if (fmtOpenai.value) out.push("openai");
   if (fmtAnthropic.value) out.push("anthropic");
+  if (fmtResponses.value) out.push("responses");
   return out;
 };
 
@@ -63,21 +59,23 @@ function init() {
     name.value = "";
     baseUrlOpenai.value = "";
     baseUrlAnthropic.value = "";
+    baseUrlResponses.value = "";
     apiKey.value = "";
     rpm.value = "";
     fmtOpenai.value = true;
     fmtAnthropic.value = false;
-    responses.value = false;
+    fmtResponses.value = false;
     return;
   }
   name.value = p.name;
   baseUrlOpenai.value = p.baseUrlOpenai;
   baseUrlAnthropic.value = p.baseUrlAnthropic;
+  baseUrlResponses.value = p.baseUrlResponses;
   apiKey.value = "";
   rpm.value = p.rpm ? String(p.rpm) : "";
   fmtOpenai.value = p.formats.includes("openai");
   fmtAnthropic.value = p.formats.includes("anthropic");
-  responses.value = !!p.supportsResponses;
+  fmtResponses.value = p.formats.includes("responses");
 }
 
 watch(open, (o) => {
@@ -88,7 +86,11 @@ function validate(): boolean {
   if (!formats().length) err.value = t("sources.errFormat");
   else if (!props.provider && (!name.value.trim() || !apiKey.value)) err.value = t("sources.errRequired");
   else if (props.provider && !name.value.trim()) err.value = t("sources.errNameRequired");
-  else if ((fmtOpenai.value && !baseUrlOpenai.value.trim()) || (fmtAnthropic.value && !baseUrlAnthropic.value.trim()))
+  else if (
+    (fmtOpenai.value && !baseUrlOpenai.value.trim()) ||
+    (fmtAnthropic.value && !baseUrlAnthropic.value.trim()) ||
+    (fmtResponses.value && !baseUrlResponses.value.trim())
+  )
     err.value = t("sources.errBaseUrl");
   else {
     err.value = "";
@@ -106,8 +108,8 @@ async function save() {
       name: name.value.trim(),
       baseUrlOpenai: baseUrlOpenai.value.trim(),
       baseUrlAnthropic: baseUrlAnthropic.value.trim(),
+      baseUrlResponses: baseUrlResponses.value.trim(),
       formats: formats(),
-      supportsResponses: fmtOpenai.value && responses.value,
       rpm: Number(rpm.value) || 0,
     };
     // Create validates the key as required, so it always lands in the body;
@@ -149,33 +151,20 @@ async function save() {
         <div class="space-y-1.5">
           <Label>{{ t("sources.formats") }}</Label>
           <div class="space-y-2.5 rounded-md border bg-background/50 p-3">
-            <!-- Three PARALLEL protocol rows — the agent surfaces are independent
-                 now; responses only leans on openai for its base URL + key. -->
+            <!-- Three PARALLEL, fully independent protocol rows: each has its own
+                 base URL; a responses-only or chat-only source is legal. -->
             <div class="flex items-center gap-2.5">
-              <Checkbox
-                :model-value="fmtOpenai"
-                :disabled="fmtOpenai && !fmtAnthropic"
-                aria-label="openai"
-                @update:model-value="toggleFmt('openai')"
-              />
+              <Checkbox :model-value="fmtOpenai" aria-label="openai" @update:model-value="toggleFmt('openai')" />
               <span class="text-sm font-medium leading-none">{{ FMT_LABEL.openai }}</span>
               <span class="text-xs text-muted-foreground">/chat/completions</span>
             </div>
-            <div class="space-y-1">
-              <div class="flex items-center gap-2.5">
-                <Checkbox v-model="responses" :disabled="!fmtOpenai" :aria-label="FMT_LABEL.responses" />
-                <span class="text-sm font-medium leading-none" :class="fmtOpenai ? '' : 'text-muted-foreground'">{{ FMT_LABEL.responses }}</span>
-                <span class="text-xs text-muted-foreground">/responses</span>
-              </div>
-              <p class="pl-7 text-xs leading-none text-muted-foreground">{{ t("sources.responsesShared") }}</p>
+            <div class="flex items-center gap-2.5">
+              <Checkbox :model-value="fmtResponses" aria-label="responses" @update:model-value="toggleFmt('responses')" />
+              <span class="text-sm font-medium leading-none">{{ FMT_LABEL.responses }}</span>
+              <span class="text-xs text-muted-foreground">/responses</span>
             </div>
             <div class="flex items-center gap-2.5">
-              <Checkbox
-                :model-value="fmtAnthropic"
-                :disabled="fmtAnthropic && !fmtOpenai"
-                aria-label="anthropic"
-                @update:model-value="toggleFmt('anthropic')"
-              />
+              <Checkbox :model-value="fmtAnthropic" aria-label="anthropic" @update:model-value="toggleFmt('anthropic')" />
               <span class="text-sm font-medium leading-none">{{ FMT_LABEL.anthropic }}</span>
               <span class="text-xs text-muted-foreground">/messages</span>
             </div>
@@ -186,6 +175,11 @@ async function save() {
           <Label for="s-url-openai">{{ t("sources.urlLabelOpenai") }}</Label>
           <Input id="s-url-openai" v-model="baseUrlOpenai" :placeholder="t('sources.urlPhOpenai')" autocomplete="off" aria-label="openai base url" />
           <p class="text-xs text-muted-foreground">{{ t("sources.urlHintOpenai") }}</p>
+        </div>
+        <div v-if="fmtResponses" class="space-y-1.5">
+          <Label for="s-url-responses">{{ t("sources.urlLabelResponses") }}</Label>
+          <Input id="s-url-responses" v-model="baseUrlResponses" :placeholder="t('sources.urlPhResponses')" autocomplete="off" aria-label="responses base url" />
+          <p class="text-xs text-muted-foreground">{{ t("sources.urlHintResponses") }}</p>
         </div>
         <div v-if="fmtAnthropic" class="space-y-1.5">
           <Label for="s-url-anthropic">{{ t("sources.urlLabelAnthropic") }}</Label>
@@ -207,6 +201,7 @@ async function save() {
         <div v-if="showBaseHelp" class="space-y-1.5 rounded-md border bg-muted/30 p-3 text-xs leading-relaxed text-muted-foreground">
           <p>{{ t("sources.baseHelpSplit") }}</p>
           <p><span class="font-medium text-foreground">{{ FMT_LABEL.openai }}</span> — {{ t("sources.baseHelpOpenai") }}</p>
+          <p><span class="font-medium text-foreground">{{ FMT_LABEL.responses }}</span> — {{ t("sources.baseHelpResponses") }}</p>
           <p><span class="font-medium text-foreground">{{ FMT_LABEL.anthropic }}</span> — {{ t("sources.baseHelpAnthropic") }}</p>
           <p><span class="font-medium text-foreground">{{ t("sources.responses") }}</span> — {{ t("sources.responsesNote") }}</p>
         </div>

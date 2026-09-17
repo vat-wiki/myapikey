@@ -11,14 +11,19 @@ export interface Provider {
   id: string; // prv_<rand>
   name: string; // human label, also used as CLI handle
   /** OpenAI-family base INCLUDING the version segment, e.g. https://api.openai.com/v1
-   *  or Ark's /api/v3. Used for /chat/completions, /responses, /models. */
+   *  or Ark's /api/v3. Used for /chat/completions (and /models discovery). */
   baseUrlOpenai: string;
   /** Anthropic base EXCLUDING /v1, e.g. https://api.anthropic.com or Ark's /api/coding.
    *  The gateway appends /v1/messages (and /v1/models for discovery). */
   baseUrlAnthropic: string;
+  /** OpenAI-family base for the Responses API, INCLUDING the version segment.
+   *  Independent of baseUrlOpenai — a backend may serve /responses at a
+   *  different address (or serve ONLY responses). The gateway appends
+   *  /responses (and /models for discovery). Empty = responses not served. */
+  baseUrlResponses: string;
   apiKey: string;
-  /** Which wire formats this backend responds to. */
-  formats: Format[];
+  /** Which routing formats this backend responds to (one per agent surface). */
+  formats: RouteKey[];
   /** Optional request-per-minute cap (RPM pacing). When set, dispatch skips this
    *  source once it has forwarded `rpm` calls in the trailing 60s window — the
    *  request fails over to the next source instead of racing the upstream's own
@@ -26,9 +31,6 @@ export interface Provider {
    *  The limit is on the key, so it's per-source and shared across every model
    *  routed through it. Tracked in-memory only (see Store.rpmUsed). */
   rpm?: number;
-  /** Whether this backend also implements the OpenAI Responses API (/responses).
-   *  NOT implied by `formats` — many openai-compatible backends lack it. Opt-in. */
-  supportsResponses?: boolean;
   /** Model ids this provider offered at last discovery (cached, may be stale). */
   discoveredModels?: string[];
   /** Manually supplemented upstream model ids — names a backend's /models list
@@ -44,9 +46,8 @@ export interface Provider {
 /** One routing slot: an independent enable flag + a priority-ordered chain of
  *  (provider, optional upstream model) pairs. Invariant (enforced by admin
  *  mutations, defended by proxy candidates()): every id in `providers` exists in
- *  `GateConfig.providers` and is compatible with the slot — openai/anthropic ids
- *  must carry that wire format; responses ids must additionally be
- *  supportsResponses sources (still OpenAI-format).
+ *  `GateConfig.providers` and is compatible with the slot — it must carry that
+ *  format in `formats` (with the matching base URL filled in).
  *
  *  A provider id may appear MORE THAN ONCE — each occurrence is an independent
  *  failover slot that can carry its own upstream model name. When forwarding to
@@ -92,10 +93,10 @@ export interface ChainSlot {
   sampling?: Record<string, unknown>;
 }
 
-/** A model's routing dimensions — one per forwarding endpoint. /chat/completions
- *  (openai) and /responses are separate OpenAI-family endpoints with different
- *  URLs, so they route independently: each has its own enable + chain. A
- *  supportsResponses source can sit in BOTH the openai and the responses chains. */
+/** A model's routing dimensions — one per forwarding endpoint. The three are
+ *  fully independent surfaces with independent per-source base URLs: a source
+ *  can serve any subset (responses-only and chat-only are both legal), and the
+ *  same source can sit in several chains at once. */
 export type RouteKey = "openai" | "anthropic" | "responses";
 
 /** Per-model routing entry, keyed by model name (e.g. "gpt-4o"). */

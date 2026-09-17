@@ -13,6 +13,7 @@ export function makeProvider(over: Partial<Provider> = {}): Provider {
     name: `provider-${n}`,
     baseUrlOpenai: "https://up.openai.test/v1",
     baseUrlAnthropic: "https://up.anthropic.test",
+    baseUrlResponses: "https://up.responses.test/v1",
     apiKey: "sk-up-test",
     formats: ["openai"],
     createdAt: 1000,

@@ -128,11 +128,11 @@ const enc = encodeURIComponent;
 function providerOf(pid: string): ProviderPublic | undefined {
   return props.providers.find((p) => p.id === pid);
 }
-/** Whether a provider can serve a routing family (responses needs the opt-in). */
+/** Whether a provider can serve a routing family (it lists the format). */
 function supports(pid: string, fmt: Fmt): boolean {
   const p = providerOf(pid);
   if (!p) return false;
-  return fmt === "responses" ? !!p.supportsResponses : p.formats.includes(fmt);
+  return p.formats.includes(fmt);
 }
 /** Upstream suggestions = discovery results + manual supplements (the union
  *  is what this source can actually run). */

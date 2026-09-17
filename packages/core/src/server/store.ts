@@ -305,7 +305,8 @@ export class Store {
     const m1 = migrateModels(raw);
     const m2 = migrateProviders(raw);
     const m3 = migrateFormatEntries(raw);
-    if (m1 || m2 || m3 || !raw.version || raw.version < CONFIG_VERSION) {
+    const m4 = migrateProviderFormats(raw);
+    if (m1 || m2 || m3 || m4 || !raw.version || raw.version < CONFIG_VERSION) {
       raw.version = CONFIG_VERSION;
       this.persist(raw);
     } else if (raw.version > CONFIG_VERSION) {
@@ -835,7 +836,7 @@ function hitRate(cacheRead: number, input: number, cacheCreation: number): numbe
 function migrateModels(raw: GateConfig): boolean {
   const models = raw.models as Record<string, unknown>;
   if (!models || typeof models !== "object") return false;
-  const byId = new Map(raw.providers.map((p) => [p.id, p]));
+  const byId = new Map(raw.providers.map((p) => [p.id, p as Provider & { supportsResponses?: boolean }]));
   let changed = false;
   for (const [name, entry] of Object.entries(models)) {
     if (!entry || typeof entry !== "object") continue;
@@ -924,6 +925,31 @@ function migrateFormatEntries(raw: GateConfig): boolean {
       delete fe.modelMap;
       changed = true;
     }
+  }
+  return changed;
+}
+
+/**
+ * Provider migration to three parallel formats (v5 → v6).
+ *  - v5 expressed Responses support as `supportsResponses: boolean` on top of
+ *    `formats: ("openai"|"anthropic")[]`, with /responses reusing the OpenAI
+ *    base URL.
+ *  - v6 makes responses a third peer format with its OWN base URL:
+ *    `formats` gains "responses" when the flag was set, `baseUrlResponses`
+ *    starts as a COPY of baseUrlOpenai (preserves existing routing exactly —
+ *    the user can point it elsewhere afterwards), and the flag is deleted.
+ *    A responses-only backend is now expressible (empty openai base).
+ * Idempotent: v6 providers (string `baseUrlResponses`) are skipped. Runs LAST
+ * so the older migrations can still read `supportsResponses`/`formats`.
+ */
+function migrateProviderFormats(raw: GateConfig): boolean {
+  let changed = false;
+  for (const p of raw.providers as (Provider & { supportsResponses?: boolean })[]) {
+    if (typeof p.baseUrlResponses === "string") continue; // already v6
+    p.baseUrlResponses = p.supportsResponses ? p.baseUrlOpenai : "";
+    if (p.supportsResponses && !p.formats.includes("responses")) p.formats.push("responses");
+    delete p.supportsResponses;
+    changed = true;
   }
   return changed;
 }

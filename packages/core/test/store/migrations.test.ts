@@ -180,18 +180,19 @@ describe("Store migration (constructor load())", () => {
       expect(onDisk.baseUrlAnthropic).toBe("https://api.x.com");
     });
 
-    it("leaves a v4 provider (already without baseUrl) untouched", () => {
+    it("leaves a current provider (no legacy baseUrl, has baseUrlResponses) untouched", () => {
       const before = {
         id: "p1",
         name: "modern",
         baseUrlOpenai: "https://api.x.com/v1",
         baseUrlAnthropic: "https://api.x.com",
+        baseUrlResponses: "https://api.x.com/v1",
         apiKey: "sk-x",
         formats: ["openai"],
         createdAt: 0,
       };
       ts = tmpStoreFromRaw({
-        version: 4,
+        version: 6,
         account: { username: "admin", password: "p" },
         apiKey: "sk-myapikey-x",
         providers: [before],
@@ -270,6 +271,46 @@ describe("Store migration (constructor load())", () => {
     });
   });
 
+  describe("provider v5 → v6 (three parallel formats)", () => {
+    it("turns supportsResponses into the responses format + a copied base URL", () => {
+      ts = tmpStoreFromRaw({
+        version: 5,
+        account: { username: "admin", password: "p" },
+        apiKey: "sk-myapikey-x",
+        providers: [PRV_O, PRV_R],
+        models: {},
+      });
+      const [o, r] = ts.store.get().providers as unknown as Record<string, unknown>[];
+      // The responses source gains the format and its own base (copied from the
+      // OpenAI base so existing routing keeps working), and the flag is gone.
+      expect(r).toEqual({
+        id: "prv_r",
+        name: "responses-src",
+        baseUrlOpenai: "https://r.example/v1",
+        baseUrlAnthropic: "https://r.example",
+        baseUrlResponses: "https://r.example/v1",
+        apiKey: "sk-r",
+        formats: ["openai", "responses"],
+        createdAt: 0,
+      });
+      // The chat-only source just gains an empty responses base.
+      expect(o).toEqual({
+        id: "prv_o",
+        name: "openai-src",
+        baseUrlOpenai: "https://o.example/v1",
+        baseUrlAnthropic: "https://o.example",
+        baseUrlResponses: "",
+        apiKey: "sk-o",
+        formats: ["openai"],
+        createdAt: 0,
+      });
+      expect(ts.store.get().version).toBe(CONFIG_VERSION);
+      const disk = readDisk(ts).providers as Record<string, unknown>[];
+      expect(disk[1].baseUrlResponses).toBe("https://r.example/v1");
+      expect("supportsResponses" in disk[1]).toBe(false);
+    });
+  });
+
   describe("apiKey migration", () => {
     it("generates and persists an sk-myapikey- key when missing", () => {
       ts = tmpStoreFromRaw({
@@ -311,7 +352,7 @@ describe("Store migration (constructor load())", () => {
   });
 
   describe("version bump", () => {
-    it("bumps version to CONFIG_VERSION (5) and persists after a migration", () => {
+    it("bumps version to CONFIG_VERSION and persists after a migration", () => {
       ts = tmpStoreFromRaw({
         version: 1,
         account: { username: "admin", password: "p" },
