@@ -12,29 +12,35 @@ export interface ChainLine {
 </script>
 
 <script setup lang="ts">
-import { ref } from "vue";
+import { ref, computed, nextTick } from "vue";
 import { useI18n } from "vue-i18n";
-import { Brain, Check, Loader2, SlidersHorizontal, TriangleAlert, Zap } from "lucide-vue-next";
+import { Brain, Check, ChevronRight, Loader2, Search, SlidersHorizontal, TriangleAlert, Zap } from "lucide-vue-next";
+import { Input } from "@/components/ui/input";
 import type { ModelView } from "@/api";
-import type { LastFail } from "@/api";
+import type { LastFail, ProviderPublic } from "@/api";
 import { FMT_ACCENT, FMT_META, providerColor } from "@/lib/format";
-import { samplingSummary } from "@/lib/models";
+import { providerModelList, samplingSummary } from "@/lib/models";
 
 /** One chain line rendered in FULL — every slot as ONE LIST ROW (number,
  *  source, upstream mapping, thinking, per-source probe), shown in a popover
  *  off the collapsed serving chip on both Models views. Probe state comes
  *  from the owner. `active` marks the slot that actually served most recently
  *  (ring); `fails` flags slots with a recent failed call — click the marker
- *  for the real error text. */
+ *  for the real error text. The row's upstream name is clickable: an INLINE
+ *  expansion (no second floating layer) lists the source's model union to
+ *  switch the slot's mapping on the spot; saving goes through the owner's
+ *  `setModel`. */
 const props = defineProps<{
   model: ModelView;
   line: ChainLine;
+  providers: ProviderPublic[];
   active?: number;
   fails?: LastFail[];
   slotState: (m: ModelView, line: ChainLine, i: number) => { state: "testing" | "ok" | "fail"; status?: number; provider?: string; error?: string } | null;
   slotTitle: (m: ModelView, line: ChainLine, i: number) => string;
   slotClass: (m: ModelView, line: ChainLine, i: number) => string;
   probeSlot: (m: ModelView, line: ChainLine, i: number) => void;
+  setModel: (m: ModelView, line: ChainLine, si: number, model?: string) => void;
 }>();
 
 const { t } = useI18n();
@@ -49,6 +55,45 @@ function failFor(si: number): LastFail | undefined {
 const errOpen = ref<number | null>(null);
 function toggleErr(si: number) {
   errOpen.value = errOpen.value === si ? null : si;
+}
+
+// --- upstream-model switch (inline, one open at a time) ---
+
+/** The name actually sent upstream: the slot's mapping, or the public name verbatim. */
+function effective(s: ModelProvider): string {
+  return s.model ?? props.model.name;
+}
+
+/** Which slot's picker is expanded + the filter text. The filter doubles as
+ *  free-text entry — Enter commits the typed name even when no candidate
+ *  matches (same escape hatch as the source-models dialog's add box). */
+const pickOpen = ref<number | null>(null);
+const pickQ = ref("");
+const pickInput = ref<InstanceType<typeof Input> | null>(null);
+
+const pickRows = computed(() => {
+  const si = pickOpen.value;
+  if (si === null) return [];
+  const list = providerModelList(props.providers.find((p) => p.id === props.line.slots[si].id));
+  const s = pickQ.value.trim().toLowerCase();
+  return s ? list.filter((n) => n.toLowerCase().includes(s)) : list;
+});
+
+async function togglePick(si: number) {
+  pickOpen.value = pickOpen.value === si ? null : si;
+  pickQ.value = "";
+  if (pickOpen.value !== null) {
+    await nextTick();
+    pickInput.value?.$el?.focus();
+  }
+}
+
+/** Commit a picked/typed name: picking the public name clears the mapping
+ *  (verbatim again), anything else becomes the slot's mapping. */
+function commitPick(si: number, name: string) {
+  pickOpen.value = null;
+  if (!name || (name === effective(props.line.slots[si]) && !props.line.slots[si].model)) return;
+  props.setModel(props.model, props.line, si, name === props.model.name ? undefined : name);
 }
 </script>
 
@@ -75,8 +120,19 @@ function toggleErr(si: number) {
           <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="providerColor(s.id).solid" />
           <div class="min-w-0 flex-1 leading-tight">
             <div class="truncate text-xs font-medium">{{ s.name }}</div>
-            <div v-if="s.model || s.thinking || samplingSummary(s.sampling)" class="flex min-w-0 items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
-              <span v-if="s.model" class="min-w-0 truncate" :title="s.model">› {{ s.model }}</span>
+            <div class="flex min-w-0 items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
+              <!-- effective upstream name: click to switch the slot's mapping in place -->
+              <button
+                type="button"
+                class="-mx-0.5 inline-flex min-w-0 items-center rounded px-0.5 transition-colors hover:bg-accent hover:text-accent-foreground"
+                :class="pickOpen === si ? 'bg-accent text-accent-foreground' : s.model ? 'text-foreground/80' : ''"
+                :title="t('models.chainModelTip')"
+                :aria-label="t('models.chainModelTip')"
+                @click.stop="togglePick(si)"
+              >
+                <ChevronRight class="h-2.5 w-2.5 shrink-0" />
+                <span class="min-w-0 truncate">{{ effective(s) }}</span>
+              </button>
               <span
                 v-if="s.thinking"
                 class="inline-flex shrink-0 items-center gap-0.5"
@@ -129,6 +185,45 @@ function toggleErr(si: number) {
           class="rounded-md bg-destructive/10 px-2 py-1.5 font-mono text-[11px] break-all whitespace-pre-wrap text-destructive"
         >
           <span class="opacity-70">HTTP {{ failFor(si)!.status }} · </span>{{ failFor(si)!.error || t("models.probeFail") }}
+        </div>
+        <!-- upstream-model switch: filter doubles as free-text entry (Enter
+             commits the typed name), the mapped slot can drop back to verbatim -->
+        <div v-if="pickOpen === si" class="space-y-1 rounded-md border bg-muted/30 p-1.5">
+          <div class="relative">
+            <Search class="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              ref="pickInput"
+              v-model="pickQ"
+              class="h-7 pl-7 font-mono text-xs"
+              :placeholder="t('models.chainPickPh')"
+              autocomplete="off"
+              spellcheck="false"
+              @keydown.enter.prevent="pickQ.trim() && commitPick(si, pickQ.trim())"
+              @keydown.esc.stop.prevent="togglePick(si)"
+            />
+          </div>
+          <div class="max-h-44 overflow-y-auto">
+            <button
+              v-if="s.model"
+              type="button"
+              class="flex w-full items-center gap-1 rounded px-1.5 py-1 text-left text-xs transition-colors hover:bg-accent"
+              @click="commitPick(si, model.name)"
+            >
+              <span class="truncate">{{ t("models.chainPickVerbatim") }}</span>
+              <span class="ml-auto min-w-0 truncate font-mono text-muted-foreground">{{ model.name }}</span>
+            </button>
+            <button
+              v-for="n in pickRows"
+              :key="n"
+              type="button"
+              class="flex w-full items-center gap-1 rounded px-1.5 py-1 text-left font-mono text-xs transition-colors hover:bg-accent"
+              @click="commitPick(si, n)"
+            >
+              <Check v-if="n === effective(s)" class="h-3 w-3 shrink-0 text-primary" />
+              <span class="min-w-0 truncate" :class="n === effective(s) ? 'text-primary' : ''">{{ n }}</span>
+            </button>
+            <p v-if="!pickRows.length && !s.model" class="px-1.5 py-2 text-center text-[11px] text-muted-foreground">{{ t("models.chainPickEmpty") }}</p>
+          </div>
         </div>
       </template>
     </div>

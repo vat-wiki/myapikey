@@ -237,6 +237,33 @@ async function toggleFmt(m: ModelView, f: Fmt) {
   }
 }
 
+/** Switch a slot's upstream mapping straight from the chain list. A merged
+ *  line stands for several formats with an IDENTICAL chain, so one PUT carries
+ *  every format in `line.fs`; thinking/sampling ride along untouched.
+ *  `model === undefined` drops the mapping (send the public name verbatim). */
+async function setSlotModel(m: ModelView, line: ChainLine, si: number, model?: string) {
+  const slots = line.slots.map((s, i) => ({
+    id: s.id,
+    ...(i === si && model ? { model } : s.model ? { model: s.model } : {}),
+    ...(s.thinking ? { thinking: s.thinking } : {}),
+    ...(s.sampling && Object.keys(s.sampling).length ? { sampling: s.sampling } : {}),
+  }));
+  const body: Record<string, unknown> = {};
+  for (const f of line.fs) body[f] = { enabled: m[f].enabled, slots };
+  try {
+    await req("PUT", `/admin/models/${enc(m.name)}`, body);
+    for (const f of line.fs) {
+      const slot = m[f].providers[si];
+      if (!slot) continue;
+      if (model) slot.model = model;
+      else delete slot.model;
+    }
+    toast(t("models.upstreamSetToast", { name: m.name, model: model ?? m.name }), "success");
+  } catch (e) {
+    toast((e as Error).message, "error");
+  }
+}
+
 /** A slot's effective upstream (its mapping, or the public name sent verbatim)
  *  is what discovery can confirm — a custom public name is expected to be
  *  absent from the source's list, so staleness is judged on this. Manual
@@ -572,10 +599,12 @@ async function copyName(name: string) {
                       :line="line"
                       :active="servedSlot(m, line).actual ? servedSlot(m, line).i : undefined"
                       :fails="lineFails(m, line)"
+                      :providers="providers"
                       :slot-state="slotProbeState"
                       :slot-title="slotProbeTitle"
                       :slot-class="slotChipClass"
                       :probe-slot="testSlot"
+                      :set-model="setSlotModel"
                     />
                   </PopoverContent>
                 </Popover>
@@ -692,10 +721,12 @@ async function copyName(name: string) {
                         :line="line"
                         :active="servedSlot(m, line).actual ? servedSlot(m, line).i : undefined"
                         :fails="lineFails(m, line)"
+                        :providers="providers"
                         :slot-state="slotProbeState"
                         :slot-title="slotProbeTitle"
                         :slot-class="slotChipClass"
                         :probe-slot="testSlot"
+                        :set-model="setSlotModel"
                       />
                     </PopoverContent>
                   </Popover>
