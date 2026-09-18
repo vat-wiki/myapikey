@@ -542,27 +542,31 @@ async function copyName(name: string) {
                LIST (one row per source, each individually probeable —
                per-source tests live one click from the list). The chips stop
                their own clicks; the card body is inert -->
-          <div class="min-w-0 flex-1 space-y-1.5">
+            <!-- Grid, not per-line flex: column 1 (protocol chips) sizes to the
+                 widest group across ALL lines, so the divider + source capsule
+                 start at the same x on every line — a card reads as a small
+                 table instead of ragged rows. Long source labels truncate in
+                 place (title carries the full text). -->
+            <div class="min-w-0 flex-1 space-y-1.5">
             <template v-if="chainLines(m).length">
-              <div
-                v-for="line in chainLines(m)"
-                :key="line.fs.join('|')"
-                class="flex flex-wrap items-center gap-x-1.5 gap-y-1"
-                :class="{ 'opacity-60': !line.enabled }"
-              >
-                <button
-                  v-for="f in line.fs"
-                  :key="f"
-                  type="button"
-                  :title="chipTitle(m, f)"
-                  :aria-label="chipTitle(m, f)"
-                  class="inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-medium transition-colors"
-                  :class="chipClass(m, f)"
-                  @click.stop="toggleFmt(m, f)"
-                >
-                  {{ t(FMT_META[f].label) }}
-                </button>
-                <span class="h-4 w-px shrink-0 bg-border" aria-hidden="true" />
+              <div class="grid grid-cols-[minmax(0,max-content)_minmax(0,1fr)] items-center gap-x-2 gap-y-1.5">
+              <template v-for="line in chainLines(m)" :key="line.fs.join('|')">
+                <div class="flex flex-wrap items-center gap-1" :class="{ 'opacity-60': !line.enabled }">
+                  <button
+                    v-for="f in line.fs"
+                    :key="f"
+                    type="button"
+                    :title="chipTitle(m, f)"
+                    :aria-label="chipTitle(m, f)"
+                    class="inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-medium transition-colors"
+                    :class="chipClass(m, f)"
+                    @click.stop="toggleFmt(m, f)"
+                  >
+                    {{ t(FMT_META[f].label) }}
+                  </button>
+                </div>
+                <div class="flex min-w-0 items-center gap-1.5" :class="{ 'opacity-60': !line.enabled }">
+                  <span class="h-4 w-px shrink-0 bg-border" aria-hidden="true" />
                 <Popover>
                   <PopoverTrigger as-child>
                     <button
@@ -607,7 +611,9 @@ async function copyName(name: string) {
                     />
                   </PopoverContent>
                 </Popover>
-                <span v-if="!line.enabled" class="text-xs text-muted-foreground">· {{ t("models.routeDisabled") }}</span>
+                <span v-if="!line.enabled" class="whitespace-nowrap text-xs text-muted-foreground">· {{ t("models.routeDisabled") }}</span>
+                </div>
+              </template>
               </div>
             </template>
             <div v-else class="rounded-md border border-dashed px-2.5 py-2 text-xs text-muted-foreground">
