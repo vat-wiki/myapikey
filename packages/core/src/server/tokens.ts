@@ -55,6 +55,66 @@ export function estimatePromptTokens(messages: unknown): number {
   return n;
 }
 
+/** Turn the gateway's wire-neutral usage back into the usage shape expected on
+ *  THIS outbound wire. `input` is the uncached prompt count, so OpenAI-family
+ *  prompt tokens add cacheRead back; Anthropic keeps cache read/creation as its
+ *  native sibling counters. Every emitted usage object carries the cache fields
+ *  explicitly so clients never have to distinguish "no cache" from "not told". */
+export function outboundUsage(usage: Usage, key: RouteKey): Record<string, unknown> {
+  if (key === "anthropic") {
+    return {
+      input_tokens: usage.input,
+      output_tokens: usage.output,
+      cache_read_input_tokens: usage.cacheRead ?? 0,
+      cache_creation_input_tokens: usage.cacheCreation ?? 0,
+    };
+  }
+  if (key === "responses") {
+    return {
+      input_tokens: usage.input + (usage.cacheRead ?? 0),
+      output_tokens: usage.output,
+      total_tokens: usage.input + (usage.cacheRead ?? 0) + usage.output,
+      input_tokens_details: { cached_tokens: usage.cacheRead ?? 0 },
+    };
+  }
+  const promptTokens = usage.input + (usage.cacheRead ?? 0);
+  return {
+    prompt_tokens: promptTokens,
+    completion_tokens: usage.output,
+    total_tokens: promptTokens + usage.output,
+    prompt_tokens_details: { cached_tokens: usage.cacheRead ?? 0 },
+  };
+}
+
+/** Attach `outboundUsage` to a parsed non-streaming body without discarding any
+ *  provider-specific fields already present. A `prompt_tokens_details: null`
+ *  (or absent details object) is normalized to `{cached_tokens:…}`; upstream
+ *  extensions such as audio/reasoning token details survive. */
+export function applyWireUsage(obj: Record<string, unknown>, key: RouteKey, usage: Usage): void {
+  const native = outboundUsage(usage, key);
+  if (key === "responses") {
+    const response = obj.response as Record<string, unknown> | null | undefined;
+    const parent = typeof response === "object" && response ? response : obj;
+    const old = parent.usage as Record<string, unknown> | null | undefined;
+    parent.usage = { ...(typeof old === "object" && old ? old : {}), ...native };
+    return;
+  }
+  const old = obj.usage as Record<string, unknown> | null | undefined;
+  if (key === "anthropic") {
+    obj.usage = { ...(typeof old === "object" && old ? old : {}), ...native };
+    return;
+  }
+  const details = old?.prompt_tokens_details as Record<string, unknown> | null | undefined;
+  obj.usage = {
+    ...(typeof old === "object" && old ? old : {}),
+    ...native,
+    prompt_tokens_details: {
+      ...(typeof details === "object" && details ? details : {}),
+      ...(typeof native.prompt_tokens_details === "object" ? native.prompt_tokens_details : {}),
+    },
+  };
+}
+
 /** Coerce a JSON value to a finite non-negative integer, or undefined. */
 function num(v: unknown): number | undefined {
   return typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.trunc(v) : undefined;
@@ -150,6 +210,12 @@ export class UsageCollector {
   /** openai-chat-stream only: concatenated `choices[].delta.content`, for the
    *  local completion-token estimate when the upstream omits usage. */
   private completionText = "";
+
+  /** The complete non-streaming body. Available after `feed()`; lets the proxy
+   *  augment the exact JSON it already buffered without keeping a second copy. */
+  bodyText(): string {
+    return this.buf;
+  }
 
   feed(text: string, opts: { stream: boolean; key: RouteKey }): void {
     if (!opts.stream) {

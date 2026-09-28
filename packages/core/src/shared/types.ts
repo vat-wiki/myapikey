@@ -172,7 +172,7 @@ export interface LogEntry {
    *  provider doesn't split its history; the display name is resolved from the
    *  live config at read time. Absent on legacy lines → fall back to `provider`. */
   providerId?: string;
-  format: Format;
+  format: RouteKey;
   status: number;
   /** End-to-end latency (ms): from the dispatch start to the returned response. */
   ms: number;
@@ -219,7 +219,7 @@ export interface DebugCapture {
   model: string;
   provider: string;
   providerId: string;
-  format: Format;
+  format: RouteKey;
   /** The upstream model name actually sent this attempt (post per-slot
    *  rewrite). Absent when the public name went through verbatim. */
   upstreamModel?: string;

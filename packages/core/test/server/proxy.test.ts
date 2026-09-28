@@ -149,8 +149,9 @@ describe("proxy", () => {
 
     it("maps the responses URL onto the OpenAI base", async () => {
       mock = mockFetch([{ match: "/a/v1/responses", response: { body: { ok: true } } }]);
-      await post("/openai-responses/v1/responses", { model: "m", input: "x" });
+      await (await post("/openai-responses/v1/responses", { model: "m", input: "x" })).text();
       expect(mock.calls[0].url).toBe("https://up.test/a/v1/responses");
+      expect(store.getLogs().find((e) => e.model === "m")?.format).toBe("responses");
     });
 
     it("maps the anthropic messages URL with the /v1 segment appended", async () => {
@@ -1049,6 +1050,28 @@ describe("proxy", () => {
     const sseH = { "content-type": "text/event-stream" };
     const find = () => store.getLogs().find((e) => e.model === "m" && !e.kind);
 
+    it("asks OpenAI chat streams to include upstream usage", async () => {
+      const sse = sseBody([
+        'data: {"choices":[{"delta":{"content":"hi"}}]}',
+        "",
+        'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":3}}',
+        "",
+        "data: [DONE]",
+        "",
+      ]);
+      mock = mockFetch([{ match: "/a/v1/chat/completions", response: { status: 200, bodyStream: sse, headers: sseH } }]);
+      await (
+        await post("/openai-chat/v1/chat/completions", {
+          model: "m",
+          messages: [],
+          stream: true,
+          stream_options: { include_usage: false },
+        })
+      ).text();
+      const forwarded = JSON.parse(mock.calls[0].body as string) as { stream_options?: { include_usage?: boolean } };
+      expect(forwarded.stream_options).toEqual({ include_usage: true });
+    });
+
     it("anthropic stream: merges message_start input/cache + message_delta output (exact)", async () => {
       const sse = sseBody([
         "event: message_start",
@@ -1117,6 +1140,31 @@ describe("proxy", () => {
       expect(find()?.usage).toEqual({ input: 20, output: 3, cacheRead: 30 });
     });
 
+    it("openai chat stream always exposes normalized usage before [DONE]", async () => {
+      const sse = sseBody([
+        'data: {"choices":[{"delta":{"content":"hi"}}]}',
+        "",
+        'data: {"choices":[],"usage":{"prompt_tokens":50,"completion_tokens":3,"prompt_tokens_details":null}}',
+        "",
+        "data: [DONE]",
+        "",
+      ]);
+      mock = mockFetch([{ match: "/a/v1/chat/completions", response: { status: 200, bodyStream: sse, headers: sseH } }]);
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [], stream: true });
+      const body = await res.text();
+      const usageFrames = body
+        .split("\n")
+        .filter((line) => line.startsWith("data: ") && line.includes('"usage"'))
+        .map((line) => JSON.parse(line.slice(6)) as { usage: { prompt_tokens_details?: { cached_tokens?: number } } });
+      expect(usageFrames.at(-1)?.usage).toEqual({
+        prompt_tokens: 50,
+        completion_tokens: 3,
+        total_tokens: 53,
+        prompt_tokens_details: { cached_tokens: 0 },
+      });
+      expect(body.indexOf("usage")).toBeLessThan(body.indexOf("[DONE]"));
+    });
+
     it("non-streaming openai body: records exact usage", async () => {
       mock = mockFetch([
         {
@@ -1162,6 +1210,31 @@ describe("proxy", () => {
       expect(find()?.usage).toEqual({ input: 40, output: 4, cacheRead: 60 });
     });
 
+    it("non-streaming openai null usage details are normalized to cached_tokens", async () => {
+      mock = mockFetch([
+        {
+          match: "/a/v1/chat/completions",
+          response: {
+            status: 200,
+            body: {
+              choices: [{ message: { content: "hi" } }],
+              usage: { prompt_tokens: 997, completion_tokens: 30, prompt_tokens_details: null },
+            },
+          },
+        },
+      ]);
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] });
+      expect(await json<ChatBody>(res)).toMatchObject({
+        choices: [{ message: { content: "hi" } }],
+        usage: {
+          prompt_tokens: 997,
+          completion_tokens: 30,
+          total_tokens: 1027,
+          prompt_tokens_details: { cached_tokens: 0 },
+        },
+      });
+    });
+
     it("non-streaming anthropic body: records exact usage incl. cache", async () => {
       mock = mockFetch([
         {
@@ -1176,6 +1249,41 @@ describe("proxy", () => {
       expect(find()?.usage).toEqual({ input: 6, output: 2, cacheRead: 1 });
     });
 
+    it("non-streaming bodies always expose usage even when upstream omits it", async () => {
+      mock = mockFetch([
+        { match: "/a/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "hi" } }] } } },
+        { match: "/a/v1/responses", response: { status: 200, body: { id: "resp" } } },
+        { match: "/a/v1/messages", response: { status: 200, body: { type: "message" } } },
+      ]);
+      const openai = await json<{ usage: Record<string, unknown> }>(
+        await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] }),
+      );
+      const responses = await json<{ usage: Record<string, unknown> }>(
+        await post("/openai-responses/v1/responses", { model: "m", input: "x" }),
+      );
+      const anthropic = await json<{ usage: Record<string, unknown> }>(
+        await post("/anthropic/v1/messages", { model: "m", messages: [] }),
+      );
+      expect(openai.usage).toEqual({
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+        prompt_tokens_details: { cached_tokens: 0 },
+      });
+      expect(responses.usage).toEqual({
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+        input_tokens_details: { cached_tokens: 0 },
+      });
+      expect(anthropic.usage).toEqual({
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+      });
+    });
+
     it("responses stream: records usage from response.completed (exact)", async () => {
       const sse = sseBody([
         "event: response.created",
@@ -1188,6 +1296,40 @@ describe("proxy", () => {
       mock = mockFetch([{ match: "/a/v1/responses", response: { status: 200, bodyStream: sse, headers: sseH } }]);
       await (await post("/openai-responses/v1/responses", { model: "m", input: "x", stream: true })).text();
       expect(find()?.usage).toEqual({ input: 8, output: 4 });
+    });
+
+    it("responses stream exposes a gateway usage event", async () => {
+      const sse = sseBody([
+        "event: response.completed",
+        'data: {"type":"response.completed","response":{"usage":{"input_tokens":8,"output_tokens":4}}}',
+        "",
+      ]);
+      mock = mockFetch([{ match: "/a/v1/responses", response: { status: 200, bodyStream: sse, headers: sseH } }]);
+      const res = await post("/openai-responses/v1/responses", { model: "m", input: "x", stream: true });
+      const body = await res.text();
+      expect(body).toContain('event: myapikey.usage');
+      expect(body).toContain('"input_tokens_details":{"cached_tokens":0}');
+      expect(body.indexOf("myapikey.usage")).toBeLessThan(body.indexOf("response.completed"));
+    });
+
+    it("anthropic stream exposes a gateway usage event", async () => {
+      const sse = sseBody([
+        "event: message_start",
+        'data: {"type":"message_start","message":{"usage":{"input_tokens":6,"cache_read_input_tokens":2}}}',
+        "",
+        "event: message_delta",
+        'data: {"type":"message_delta","usage":{"output_tokens":4}}',
+        "",
+        "event: message_stop",
+        'data: {"type":"message_stop"}',
+        "",
+      ]);
+      mock = mockFetch([{ match: "/a/v1/messages", response: { status: 200, bodyStream: sse, headers: sseH } }]);
+      const res = await post("/anthropic/v1/messages", { model: "m", messages: [], stream: true });
+      const body = await res.text();
+      expect(body).toContain('event: myapikey.usage');
+      expect(body).toContain('"cache_read_input_tokens":2');
+      expect(body.indexOf("myapikey.usage")).toBeLessThan(body.indexOf("message_stop"));
     });
 
     it("responses stream with input_tokens_details.cached_tokens: cache hit captured, input = input - cached", async () => {
@@ -1211,8 +1353,11 @@ describe("proxy", () => {
         "",
       ]);
       mock = mockFetch([{ match: "/a/v1/messages", response: { status: 200, bodyStream: sse, headers: sseH } }]);
-      await (await post("/anthropic/v1/messages", { model: "m", messages: [], stream: true })).text();
+      const res = await post("/anthropic/v1/messages", { model: "m", messages: [], stream: true });
+      const body = await res.text();
       expect(find()?.usage).toBeUndefined();
+      expect(body).toContain('event: myapikey.usage');
+      expect(body).toContain('"input_tokens":0');
     });
   });
 

@@ -2,7 +2,7 @@ import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { trimBase } from "../shared/config";
 import type { DebugCapture, Format, Provider, RouteKey, Usage } from "../shared/types";
 import { CAPTURE_BODY_MAX, type Store } from "./store";
-import { UsageCollector } from "./tokens";
+import { UsageCollector, applyWireUsage, outboundUsage } from "./tokens";
 
 /** HTTP statuses that should trigger failover to the next provider. 401/403
  *  included: a banned/invalid credential (e.g. "User has been banned") is dead
@@ -312,7 +312,7 @@ export function anthropicAuthHeaders(apiKey: string, version: string): Record<st
 }
 
 /** Exported for the admin source-test (direct upstream ping, no routing). */
-export function upstreamHeaders(provider: Provider, format: Format, clientVersion?: string): Record<string, string> {
+export function upstreamHeaders(provider: Provider, format: RouteKey, clientVersion?: string): Record<string, string> {
   const h: Record<string, string> = { "content-type": "application/json" };
   if (format === "openai") h.authorization = `Bearer ${provider.apiKey}`;
   else Object.assign(h, anthropicAuthHeaders(provider.apiKey, clientVersion || "2023-06-01"));
@@ -375,6 +375,27 @@ interface SettleInfo {
   usage?: Usage;
 }
 
+/** A final SSE frame carrying the gateway's normalized usage. OpenAI chat
+ *  clients get a standard final chunk; Responses and Anthropic get a tagged
+ *  gateway event so we never fabricate a protocol-specific terminal event. */
+function usageFrame(key: RouteKey, usage: Usage): string {
+  const data = { type: "myapikey.usage", usage: outboundUsage(usage, key) };
+  if (key === "openai") return `data: ${JSON.stringify({ choices: [], usage: data.usage })}\n\n`;
+  return `event: myapikey.usage\ndata: ${JSON.stringify(data)}\n\n`;
+}
+
+/** OpenAI chat streams only report usage when explicitly requested. Force it on
+ *  so the gateway's outbound usage is exact instead of a tokenizer estimate; the
+ *  other two wires already carry usage on their normal terminal events. */
+function requireUpstreamUsage(body: Record<string, unknown>, key: RouteKey, stream: boolean): void {
+  if (key !== "openai" || !stream) return;
+  const options = body.stream_options;
+  body.stream_options = {
+    ...(options && typeof options === "object" && !Array.isArray(options) ? options : {}),
+    include_usage: true,
+  };
+}
+
 /** Wrap an upstream body so every byte is forwarded to the client VERBATIM while
  *  we watch — out of band — for whether the stream completed cleanly. The 200
  *  status is already committed before the body flows, so on a bad end we can't
@@ -382,6 +403,8 @@ interface SettleInfo {
  *  so the client learns the stream died rather than seeing a silent EOF, and
  *  (b) settle {ok:false} so dispatch logs a 502 and trips the circuit (the NEXT
  *  call then fails over — this call can't be salvaged once streaming started).
+ *  A successful body gets one normalized usage frame before its terminal marker
+ *  (streaming) or one final JSON body with usage filled in (non-streaming).
  *
  *  Detection keys on the stream's terminal marker (anthropic message_stop /
  *  openai [DONE] / responses response.completed), buffered across chunk
@@ -444,6 +467,7 @@ function observedBody(
   let tail = ""; // rolling window so a marker split across chunks is still caught
   let terminal = false;
   let settled = false;
+  const heldTerminal: Uint8Array[] = [];
   const usage = new UsageCollector();
 
   const settle = (info: SettleInfo) => {
@@ -462,38 +486,61 @@ function observedBody(
         controller.close();
         return;
       }
-      try {
-        const { done, value } = await reader.read();
-        if (done) {
-          if (opts.stream && !terminal) {
-            const reason = "upstream stream truncated (no terminal marker)";
-            injectError(controller, reason);
-            settle({ ok: false, status: 502, error: reason });
-          } else {
-            settle({ ok: true, status: 200, usage: usage.finalize({ stream: opts.stream, key: opts.key, requestMessages: opts.requestMessages }) });
+      while (true) {
+        try {
+          const { done, value } = await reader.read();
+          if (done) {
+            const finalUsage = usage.finalize({ stream: opts.stream, key: opts.key, requestMessages: opts.requestMessages });
+            if (opts.stream && !terminal) {
+              const reason = "upstream stream truncated (no terminal marker)";
+              injectError(controller, reason);
+              settle({ ok: false, status: 502, error: reason });
+            } else {
+              settle({ ok: true, status: 200, usage: finalUsage });
+              if (opts.stream) {
+                controller.enqueue(enc.encode(usageFrame(opts.key, finalUsage ?? { input: 0, output: 0 })));
+                for (const value of heldTerminal) controller.enqueue(value);
+              } else {
+                let body = usage.bodyText();
+                try {
+                  const parsed = JSON.parse(body) as Record<string, unknown>;
+                  applyWireUsage(parsed, opts.key, finalUsage ?? { input: 0, output: 0 });
+                  body = JSON.stringify(parsed);
+                } catch {
+                  // Leave malformed upstream bodies untouched; usage is still logged.
+                }
+                controller.enqueue(enc.encode(body));
+              }
+            }
+            controller.close();
+            return;
           }
+          const txt = dec.decode(value, { stream: true });
+          usage.feed(txt, { stream: opts.stream, key: opts.key });
+          opts.onText?.(txt);
+          if (!terminal && markers.length) {
+            const win = tail + txt;
+            if (markers.some((m) => win.includes(m))) terminal = true;
+            tail = win.slice(-128);
+          }
+          if (terminal) {
+            heldTerminal.push(value);
+            continue;
+          }
+          if (opts.stream) {
+            controller.enqueue(value);
+          }
+          return;
+        } catch (e) {
+          const reason = `upstream stream error: ${e instanceof Error ? e.message : String(e)}`;
+          injectError(controller, reason);
+          settle({ ok: false, status: 502, error: reason });
           controller.close();
           return;
         }
-        const txt = dec.decode(value, { stream: true });
-        usage.feed(txt, { stream: opts.stream, key: opts.key });
-        opts.onText?.(txt);
-        if (!terminal && markers.length) {
-          const win = tail + txt;
-          if (markers.some((m) => win.includes(m))) terminal = true;
-          tail = win.slice(-128);
-        }
-        controller.enqueue(value);
-      } catch (e) {
-        const reason = `upstream stream error: ${e instanceof Error ? e.message : String(e)}`;
-        injectError(controller, reason);
-        settle({ ok: false, status: 502, error: reason });
-        controller.close();
       }
     },
     cancel() {
-      // Client abort (Esc / disconnect) — not a provider failure. Suppress the
-      // settle so we neither log nor cool down a source the client simply left.
       settled = true;
       reader?.cancel().catch(() => {});
     },
@@ -559,6 +606,7 @@ export function proxyApi(
     const model: string = body.model;
     const wire: Format = key === "anthropic" ? "anthropic" : "openai";
     const stream = body.stream === true;
+    requireUpstreamUsage(body, key, stream);
     // The request's own thinking switches, snapshotted BEFORE the failover
     // loop — each attempt mutates the shared body, and a passthrough slot
     // (no default) must restore these originals.
@@ -641,7 +689,7 @@ export function proxyApi(
         const retryAfter = Math.max(1, Math.ceil(RPM_SECONDS / paceRpm));
         const message = `rate limited: even-pacing queue for '${model}' is full (max wait ${Math.round(PACE_MAX_WAIT_S)}s; retry in ~${retryAfter}s)`;
         if (!isProbe) rt.warn(`proxy model=${model}: paced out (429)`);
-        store.pushLog({ ts: Date.now(), model, provider: "", format: wire, status: 429, ms: Date.now() - start, stream, error: "even-pacing queue full" });
+        store.pushLog({ ts: Date.now(), model, provider: "", format: key, status: 429, ms: Date.now() - start, stream, error: "even-pacing queue full" });
         const headers = { "content-type": "application/json", "retry-after": String(retryAfter) };
         if (wire === "anthropic") {
           return c.json({ type: "error", error: { type: "rate_limit_error", message } }, 429, headers);
@@ -737,7 +785,7 @@ export function proxyApi(
             model,
             provider: provider.name,
             providerId: provider.id,
-            format: wire,
+            format: key,
             status,
             ms: Date.now() - attemptStart,
             stream,
@@ -767,7 +815,7 @@ export function proxyApi(
           sayFailover(provider, "network error");
           const r = store.recordCircuitFailure(provider.id, lastStatus, lastErr);
           if (r.entered) {
-            store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, thinking: think, sampling, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: lastErr });
+            store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: key, status: lastStatus, ms: Date.now() - start, stream, thinking: think, sampling, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: lastErr });
             sayCooldown(provider, r);
           }
           continue;
@@ -805,14 +853,14 @@ export function proxyApi(
             onSettle: (info) => {
               if (info.ok) {
                 store.recordCircuitSuccess(provider.id);
-                store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: 200, ms: ttfb, stream, thinking: think, sampling, usage: info.usage });
+                store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: key, status: 200, ms: ttfb, stream, thinking: think, sampling, usage: info.usage });
                 capture(200, capAcc.text, capAcc.truncated);
               } else {
                 // A pinned per-source probe takes no circuit side-effects (a manual
                 // test must not trip the breaker) — mirrors the retryable branch.
                 if (pinIndex == null) store.recordCircuitFailure(provider.id, info.status, info.error || "stream failed");
                 if (!isProbe) rt.warn(`proxy stream failed: provider '${provider.name}' status=${info.status} (${info.error || "stream failed"})`);
-                store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: info.status, ms: ttfb, stream, thinking: think, sampling, error: info.error });
+                store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: key, status: info.status, ms: ttfb, stream, thinking: think, sampling, error: info.error });
                 capture(info.status, capAcc.text, capAcc.truncated, info.error);
               }
             },
@@ -842,13 +890,13 @@ export function proxyApi(
           const resetInMs = retryAfterMs ? undefined : parseResetFromBody(txt);
           const r = store.recordCircuitFailure(provider.id, lastStatus, lastErr, retryAfterMs ?? resetInMs, !!resetInMs);
           if (r.entered) {
-            store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, thinking: think, sampling, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: lastErr });
+            store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: key, status: lastStatus, ms: Date.now() - start, stream, thinking: think, sampling, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: lastErr });
             sayCooldown(provider, r);
           }
           continue;
         }
         // Non-retryable client error: return it to the caller as-is.
-        store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: wire, status: upstream.status, ms: Date.now() - start, stream, thinking: think, sampling, error: lastErr });
+        store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: key, status: upstream.status, ms: Date.now() - start, stream, thinking: think, sampling, error: lastErr });
         return new Response(txt, { status: upstream.status, headers: downHeaders(upstream, isProbe ? provider.name : undefined) });
       }
 
@@ -861,7 +909,7 @@ export function proxyApi(
         return new Response(null, { status: 499 });
       }
       if (!isProbe) rt.error(`proxy all providers failed model=${model} (last status ${lastStatus})`);
-      store.pushLog({ ts: Date.now(), model, upstreamModel: lastUpstreamModel, provider: last.provider.name, providerId: last.provider.id, format: wire, status: lastStatus, ms: Date.now() - start, stream, thinking: lastThink, sampling: lastSampling, error: lastErr || `all providers failed (last status ${lastStatus})` });
+      store.pushLog({ ts: Date.now(), model, upstreamModel: lastUpstreamModel, provider: last.provider.name, providerId: last.provider.id, format: key, status: lastStatus, ms: Date.now() - start, stream, thinking: lastThink, sampling: lastSampling, error: lastErr || `all providers failed (last status ${lastStatus})` });
       // A pinned (per-source) probe failed: surface the REAL upstream status the
       // one slot returned (429/500/…), not a collapsed 502, and tag it with
       // x-myapikey-provider so the source-row badge names the tested source.
