@@ -7,11 +7,10 @@ FROM node:22-alpine AS web
 # optional npm registry override, e.g. https://registry.npmmirror.com
 ARG NPM_CONFIG_REGISTRY
 WORKDIR /app
-COPY package.json package-lock.json tsconfig.base.json ./
-COPY packages/core/package.json packages/core/package.json
-COPY packages/web/package.json packages/web/package.json
+COPY package.json package-lock.json ./
 RUN npm ci
-COPY packages/web packages/web
+COPY src/web src/web
+COPY tsconfig.json tsconfig.json
 RUN npm run build:web
 
 # ---- stage 2: runtime ----
@@ -30,16 +29,16 @@ ENV NODE_ENV=production \
     PATH=/app/node_modules/.bin:$PATH \
     MYAPIKEY_DATA_DIR=/data
 
-# prod deps only: root deps (incl. tsx) + @myapikey/core's deps
+# prod deps only (includes tsx used to run the gateway)
 COPY package.json package-lock.json ./
-COPY packages/core/package.json packages/core/package.json
-RUN npm ci --omit=dev --include-workspace-root --workspace @myapikey/core
+RUN npm ci --omit=dev
 
-# core runs from source via tsx (no compile step), web dist from stage 1
-COPY packages/core/src packages/core/src
-COPY --from=web /app/packages/web/dist packages/web/dist
+# gateway runs from source via tsx (no compile step), web dist from stage 1
+COPY src/server src/server
+COPY src/shared src/shared
+COPY --from=web /app/dist dist
 
 VOLUME /data
 EXPOSE 7800
 
-CMD ["tsx", "packages/core/src/cli/index.ts", "serve"]
+CMD ["tsx", "src/server/index.ts"]

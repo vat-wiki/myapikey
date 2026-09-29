@@ -39,8 +39,8 @@ export function extractSecret(c: Context): { password: string; username?: string
 export function authMiddleware(getUser: () => string, getPass: () => string, logger?: Logger): MiddlewareHandler {
   return async (c, next) => {
     // Dev convenience: `npm run dev` sets NODE_ENV=development, and iterating on
-    // the UI/CLI against scratch data dirs shouldn't fight a fresh random
-    // password on every run. Production (`serve`) never sees this.
+    // the UI against scratch data dirs shouldn't fight a fresh random
+    // password on every run. Production never sees this.
     if (process.env.NODE_ENV === "development") return next();
     const cred = extractSecret(c);
     const ok =

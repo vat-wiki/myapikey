@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { getCreds, setCreds, clearCreds, req } from "../src/api";
-import { mockFetch, type FetchMock } from "../../core/test/helpers/mock";
+import { mockFetch, type FetchMock } from "../../../test/helpers/mock";
 
 describe("web/api", () => {
   let mock: FetchMock | undefined;

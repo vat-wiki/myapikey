@@ -4,6 +4,7 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "lib": ["ES2022"],
+    "types": ["node"],
     "strict": true,
     "noUncheckedIndexedAccess": false,
     "esModuleInterop": true,
@@ -13,5 +14,6 @@
     "verbatimModuleSyntax": false,
     "noEmit": true,
     "forceConsistentCasingInFileNames": true
-  }
+  },
+  "include": ["src/server/**/*.ts", "src/shared/**/*.ts", "test/**/*.ts", "vitest.config.ts"]
 }

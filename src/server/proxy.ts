@@ -584,17 +584,14 @@ export function proxyApi(
   const chat = new Hono();
   const responses = new Hono();
   const anthropic = new Hono();
-  // GET /models is a PUBLIC discovery read — no api key required. It returns only
-  // the enabled model names (like /health), so an agent or a quick curl can see
-  // what each surface offers before wiring up auth. Registered BEFORE the auth
-  // middleware so it isn't gated: Hono only runs middleware on routes registered
-  // after it.
-  chat.get("/models", (c) => modelsList(c, store, "openai"));
-  responses.get("/models", (c) => modelsList(c, store, "responses"));
-  anthropic.get("/models", (c) => modelsList(c, store, "anthropic"));
   chat.use("*", auth);
   responses.use("*", auth);
   anthropic.use("*", auth);
+  // Model lists sit behind the same gateway key: the enabled model names reveal
+  // routing and usage patterns, so they are not a public discovery surface.
+  chat.get("/models", (c) => modelsList(c, store, "openai"));
+  responses.get("/models", (c) => modelsList(c, store, "responses"));
+  anthropic.get("/models", (c) => modelsList(c, store, "anthropic"));
 
   /** Shared dispatch with failover. `key` selects the routing slot (and thus the
    *  candidate chain); `wire`/`path` derive from it for the upstream call. */

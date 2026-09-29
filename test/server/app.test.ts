@@ -56,16 +56,14 @@ describe("server/app", () => {
       expect(res.status).toBe(404);
     });
 
-    it("GET /openai-chat/v1/models is public (no auth header)", async () => {
+    it("GET /openai-chat/v1/models requires auth", async () => {
       const res = await createApp(store).request("/openai-chat/v1/models");
-      expect(res.status).toBe(200);
-      expect((await json<{ object: string }>(res)).object).toBe("list");
+      expect(res.status).toBe(401);
     });
 
-    it("GET /openai-responses/v1/models is public too", async () => {
+    it("GET /openai-responses/v1/models requires auth too", async () => {
       const res = await createApp(store).request("/openai-responses/v1/models");
-      expect(res.status).toBe(200);
-      expect((await json<{ object: string }>(res)).object).toBe("list");
+      expect(res.status).toBe(401);
     });
   });
 
@@ -86,7 +84,7 @@ describe("server/app", () => {
   });
 
   describe("admin auth dev bypass (NODE_ENV=development)", () => {
-    // `npm run dev` sets NODE_ENV=development so iterating on the UI/CLI
+    // `npm run dev` sets NODE_ENV=development so iterating on the UI
     // against scratch data dirs doesn't fight a fresh random password.
     const withDevEnv = async (fn: () => Promise<void>) => {
       const prev = process.env.NODE_ENV;

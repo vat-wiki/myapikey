@@ -1529,9 +1529,9 @@ describe("proxy", () => {
       for (const d of j.data) expect(d.owned_by).toBe("A");
     });
 
-    it("is public — no api key required", async () => {
+    it("requires an api key", async () => {
       const res = await createApp(store).request("/openai-chat/v1/models");
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(401);
     });
   });
 
@@ -1550,9 +1550,9 @@ describe("proxy", () => {
       expect(j.data[0].owned_by).toBe("A");
     });
 
-    it("is public — no api key required", async () => {
+    it("requires an api key", async () => {
       const res = await createApp(store).request("/openai-responses/v1/models");
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(401);
     });
   });
 
@@ -1575,9 +1575,9 @@ describe("proxy", () => {
       expect(j.has_more).toBe(false);
     });
 
-    it("is public — no api key required", async () => {
+    it("requires an api key", async () => {
       const res = await createApp(store).request("/anthropic/v1/models");
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(401);
     });
   });
 
