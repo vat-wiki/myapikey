@@ -184,7 +184,6 @@ export class Store {
   private readonly dataDir: string;
   private readonly dataPath: string;
   private readonly logsPath: string;
-  private readonly credentialsPath: string;
   private readonly serverLogPath: string;
   /** Process-level runtime log (server.log — errors + notable events). Owned
    *  by the Store like every other dataDir file; injectable for quiet tests. */
@@ -219,7 +218,6 @@ export class Store {
     this.dataDir = dataDir;
     this.dataPath = join(dataDir, "data.json");
     this.logsPath = join(dataDir, "logs.jsonl");
-    this.credentialsPath = join(dataDir, "credentials.txt");
     this.serverLogPath = join(dataDir, "server.log");
     this.logger = opts.logger ?? createLogger({ file: this.serverLogPath });
     this.data = this.load();
@@ -231,12 +229,11 @@ export class Store {
   }
 
   /** Resolved on-disk locations (for read-only display in Settings). */
-  getPaths(): { dataDir: string; dataFile: string; logsFile: string; credentialsFile: string; serverLogFile: string } {
+  getPaths(): { dataDir: string; dataFile: string; logsFile: string; serverLogFile: string } {
     return {
       dataDir: this.dataDir,
       dataFile: this.dataPath,
       logsFile: this.logsPath,
-      credentialsFile: this.credentialsPath,
       serverLogFile: this.serverLogPath,
     };
   }
@@ -245,36 +242,6 @@ export class Store {
    *  per-call history is pushLog/logs.jsonl, a separate surface. */
   getLogger(): Logger {
     return this.logger;
-  }
-
-  /**
-   * Write a human-readable credentials.txt (web login + /v1 api key), current
-   * as of this boot. So a brand-new user — or anyone who closed the startup
-   * terminal / runs serve as a daemon — can still recover the login: just
-   * `cat <dataDir>/credentials.txt`. Regenerated on every startup, so it stays
-   * correct after a password change + restart. Returns the file path.
-   */
-  writeCredentialsFile(): string {
-    const { account, apiKey } = this.data;
-    const body = [
-      "MyAPIKey credentials",
-      "====================",
-      "",
-      "Web UI login:",
-      `  username: ${account.username}`,
-      `  password: ${account.password}`,
-      "",
-      "API key (for agents calling /openai/v1 + /anthropic/v1):",
-      `  ${apiKey}`,
-      "",
-      "Regenerated on each startup. If you change the password in Settings, this",
-      'file updates on the next restart. Safe to delete once you\'ve saved the',
-      "credentials elsewhere.",
-      "",
-    ].join("\n");
-    mkdirSync(this.dataDir, { recursive: true });
-    writeFileSync(this.credentialsPath, body);
-    return this.credentialsPath;
   }
 
   private load(): GateConfig {

@@ -36,7 +36,11 @@ export function extractSecret(c: Context): { password: string; username?: string
 }
 
 /** Hono middleware: require the single account/password. */
-export function authMiddleware(getUser: () => string, getPass: () => string, logger?: Logger): MiddlewareHandler {
+export function authMiddleware(
+  getUser: () => string,
+  getPass: () => string | null,
+  logger?: Logger,
+): MiddlewareHandler {
   return async (c, next) => {
     // Dev convenience: `npm run dev` sets NODE_ENV=development, and iterating on
     // the UI against scratch data dirs shouldn't fight a fresh random
@@ -46,7 +50,7 @@ export function authMiddleware(getUser: () => string, getPass: () => string, log
     const ok =
       !!cred &&
       (cred.username === undefined || safeEqual(cred.username, getUser())) &&
-      safeEqual(cred.password, getPass());
+      !!getPass() && safeEqual(cred.password, getPass()!);
     if (!ok) {
       logger?.warn(`auth failed: admin ${c.req.method} ${c.req.path} (invalid or missing credentials)`);
       return c.json(

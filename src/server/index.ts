@@ -19,7 +19,6 @@ const { values } = parseArgs({
 const dataDir = resolve(values["data-dir"] ?? process.env.MYAPIKEY_DATA_DIR ?? DEFAULT_DATA_DIR);
 const firstRun = !existsSync(join(dataDir, "data.json"));
 const store = new Store(dataDir);
-const credentialsFile = store.writeCredentialsFile();
 const defaultWebDir = fileURLToPath(new URL("../../dist", import.meta.url));
 const webDir = existsSync(values["web-dir"] ?? defaultWebDir)
   ? resolve(values["web-dir"] ?? defaultWebDir)
@@ -39,11 +38,7 @@ serve({ fetch: app.fetch, port }, async (info) => {
   store.getLogger().info(`gateway started on port ${info.port}, data=${dataDir}`);
 
   if (firstRun) {
-    const { account, apiKey } = store.get();
-    console.log("  First run — here are your credentials (save them):");
-    console.log(`    username : ${account.username}   (web login)`);
-    console.log(`    password : ${account.password}   (web login)`);
-    console.log(`    api key  : ${apiKey}   (put this in the tool's "api key" field)`);
-    console.log(`  ↳ also written to ${credentialsFile}  (cat it anytime if you forget)\n`);
+    console.log("  First run — set your web password at the URL above, then copy the");
+    console.log("  API key from the Connect tab.\n");
   }
 });

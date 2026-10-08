@@ -8,11 +8,11 @@ export const DEFAULT_PORT = 7800;
 /** Default on-disk home for the gateway's data: data.json + logs.jsonl live here. */
 export const DEFAULT_DATA_DIR = join(homedir(), ".myapikey");
 
-/** A fresh config with a randomly generated single account/password + API key. */
+/** A fresh config with a random gateway API key; the web password is set at first login. */
 export function defaultConfig(): GateConfig {
   return {
     version: CONFIG_VERSION,
-    account: { username: "admin", password: randomBytes(18).toString("base64url") },
+    account: { username: "admin", password: null },
     apiKey: newApiKey(),
     providers: [],
     models: {},

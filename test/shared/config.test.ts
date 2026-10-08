@@ -48,20 +48,20 @@ describe("shared/config", () => {
     it("starts with an admin account and a distinct /v1 api key", () => {
       const c = defaultConfig();
       expect(c.account.username).toBe("admin");
-      expect(c.account.password.length).toBeGreaterThan(0);
+      expect(c.account.password).toBeNull();
       expect(c.apiKey).toMatch(/^sk-myapikey-/);
-      // The two secrets are independent (a core design decision).
-      expect(c.apiKey).not.toBe(c.account.password);
+      expect(c.apiKey).not.toBe(c.account.password ?? "");
     });
     it("starts empty — no providers, no models", () => {
       const c = defaultConfig();
       expect(c.providers).toEqual([]);
       expect(c.models).toEqual({});
     });
-    it("generates a fresh password + key each call", () => {
+    it("leaves the password unset and generates a fresh key each call", () => {
       const a = defaultConfig();
       const b = defaultConfig();
-      expect(a.account.password).not.toBe(b.account.password);
+      expect(a.account.password).toBeNull();
+      expect(b.account.password).toBeNull();
       expect(a.apiKey).not.toBe(b.apiKey);
     });
   });

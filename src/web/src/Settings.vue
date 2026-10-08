@@ -14,7 +14,7 @@ import ConfirmDialog from "@/ConfirmDialog.vue";
 const { t } = useI18n();
 
 // --- account (web login) ---
-const account = ref<{ username: string; password: string } | null>(null);
+const account = ref<{ username: string; password: string | null } | null>(null);
 const username = ref("");
 const newPassword = ref("");
 const confirmPassword = ref("");
@@ -46,7 +46,7 @@ const storageRows = computed(() => {
 async function load() {
   try {
     const [acct, key, st] = await Promise.all([
-      req<{ username: string; password: string }>("GET", "/admin/account"),
+      req<{ username: string; password: string | null }>("GET", "/admin/account"),
       req<{ apiKey: string }>("GET", "/admin/api-key"),
       req<{ dataDir: string; dataFile: string; logsFile: string }>("GET", "/admin/storage"),
     ]);

@@ -198,6 +198,36 @@ function projectModel(name: string, e: ModelEntry, byId: Map<string, Provider>) 
   };
 }
 
+export function accountSetupApi(store: Store): Hono {
+  const app = new Hono();
+
+  app.get("/", (c) => {
+    const { username, password } = store.get().account;
+    return c.json({ needsPassword: !password, ...(password ? {} : { username }) });
+  });
+
+  app.post("/", async (c) => {
+    const body = await readJson<{ username?: string; password?: string }>(c.req.raw);
+    const username = body?.username?.trim() || store.get().account.username;
+    const password = body?.password;
+    if (!password) return c.json({ error: { message: "password required" } }, 400);
+    if (password.length < 8) return c.json({ error: { message: "password must be at least 8 characters" } }, 400);
+
+    let initialized = false;
+    await store.update((d) => {
+      initialized = !!d.account.password;
+      if (!initialized) {
+        d.account.username = username;
+        d.account.password = password;
+      }
+    });
+    if (initialized) return c.json({ error: { message: "password already set" } }, 409);
+    return c.json({ ok: true });
+  });
+
+  return app;
+}
+
 export function adminApi(store: Store, auth: MiddlewareHandler, chat: Hono, responses: Hono, anthropic: Hono): Hono {
   const app = new Hono();
   app.use("*", auth);

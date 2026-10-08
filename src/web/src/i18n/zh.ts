@@ -29,8 +29,10 @@ export default {
   },
   login: {
     subtitle: "登录以管理你的网关",
+    setupSubtitle: "创建网页登录密码以继续",
     username: "用户名",
     password: "密码",
+    setUp: "设置密码",
     signIn: "登录",
     errInvalid: "用户名或密码错误",
     errNetwork: "无法连接到网关,请确认服务正在运行",

@@ -29,8 +29,10 @@ export default {
   },
   login: {
     subtitle: "Sign in to manage your gateway",
+    setupSubtitle: "Create your web login password to continue",
     username: "Username",
     password: "Password",
+    setUp: "Set password",
     signIn: "Sign in",
     errInvalid: "Invalid username or password",
     errNetwork: "Cannot reach the gateway — is it running?",

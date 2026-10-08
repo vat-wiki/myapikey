@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
 import { useI18n } from "vue-i18n";
-import { getCreds, setCreds, clearCreds, req } from "@/api";
+import { getCreds, setCreds, clearCreds, req, publicReq } from "@/api";
 import { setLocale } from "@/i18n";
 import Models from "@/Models.vue";
 import Sources from "@/Sources.vue";
@@ -23,6 +23,8 @@ const { t, locale } = useI18n();
 const authed = ref(false);
 const user = ref("");
 const pass = ref("");
+const confirmPass = ref("");
+const needsPassword = ref(false);
 const loginErr = ref("");
 const checking = ref(true);
 const submitting = ref(false);
@@ -69,9 +71,46 @@ function logout() {
   pass.value = "";
 }
 
+async function completeSetup() {
+  if (submitting.value) return;
+  loginErr.value = "";
+  if (pass.value.length < 8) {
+    loginErr.value = t("login.errPassShort");
+    return;
+  }
+  if (pass.value !== confirmPass.value) {
+    loginErr.value = t("settings.errPassMismatch");
+    return;
+  }
+  submitting.value = true;
+  try {
+    await publicReq("POST", "/admin/setup", { username: user.value, password: pass.value });
+    setCreds(user.value.trim(), pass.value);
+    needsPassword.value = false;
+    authed.value = true;
+    user.value = user.value.trim();
+  } catch (e) {
+    loginErr.value = /fetch|network/i.test((e as Error).message)
+      ? t("login.errNetwork")
+      : (e as Error).message;
+  } finally {
+    submitting.value = false;
+  }
+}
+
 onMounted(async () => {
   const stored = localStorage.getItem("myapikey.theme");
   applyTheme(stored ? stored === "dark" : true);
+  try {
+    const setup = await publicReq<{ needsPassword: boolean; username?: string }>("GET", "/admin/setup");
+    needsPassword.value = setup.needsPassword;
+    user.value = setup.username ?? "";
+  } catch {
+    loginErr.value = t("login.errNetwork");
+    checking.value = false;
+    return;
+  }
+
   if (getCreds()) {
     try {
       await req("GET", "/admin/providers");
@@ -95,13 +134,13 @@ onMounted(async () => {
       <CardHeader class="space-y-3 text-center">
         <Logo :size="44" class="mx-auto" />
         <CardTitle class="text-xl">MyAPIKey</CardTitle>
-        <CardDescription>{{ t("login.subtitle") }}</CardDescription>
+        <CardDescription>{{ needsPassword ? t("login.setupSubtitle") : t("login.subtitle") }}</CardDescription>
       </CardHeader>
       <CardContent>
-        <form class="space-y-3" @submit.prevent="tryLogin">
+        <form class="space-y-3" @submit.prevent="needsPassword ? completeSetup() : tryLogin()">
           <div class="space-y-1.5">
             <Label for="u">{{ t("login.username") }}</Label>
-            <Input id="u" v-model="user" autocomplete="username" autofocus />
+            <Input id="u" v-model="user" :disabled="needsPassword" autocomplete="username" autofocus />
           </div>
           <div class="space-y-1.5">
             <Label for="p">{{ t("login.password") }}</Label>
@@ -110,7 +149,7 @@ onMounted(async () => {
                 id="p"
                 v-model="pass"
                 :type="showPass ? 'text' : 'password'"
-                autocomplete="current-password"
+                :autocomplete="needsPassword ? 'new-password' : 'current-password'"
                 class="pr-9"
               />
               <Button
@@ -128,9 +167,13 @@ onMounted(async () => {
               </Button>
             </div>
           </div>
+          <div v-if="needsPassword" class="space-y-1.5">
+            <Label for="cp">{{ t("settings.confirmPassword") }}</Label>
+            <Input id="cp" v-model="confirmPass" type="password" autocomplete="new-password" />
+          </div>
           <Button type="submit" class="w-full" :disabled="submitting">
             <Loader2 v-if="submitting" class="h-4 w-4 animate-spin" />
-            {{ submitting ? t("common.loading") : t("login.signIn") }}
+            {{ submitting ? t("common.loading") : needsPassword ? t("login.setUp") : t("login.signIn") }}
           </Button>
           <p v-if="loginErr" class="text-sm text-destructive">{{ loginErr }}</p>
         </form>

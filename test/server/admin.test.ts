@@ -52,6 +52,36 @@ describe("server/admin", () => {
 
   // --- account ---
   describe("account", () => {
+    it("exposes one-time setup only while the password is unset", async () => {
+      await seedStore(store, { account: { username: "admin", password: null } });
+      const app = createApp(store);
+      const status = await json<{ needsPassword: boolean; username?: string }>(
+        app.request("/admin/setup"),
+      );
+      expect(status).toEqual({ needsPassword: true, username: "admin" });
+
+      const setup = await app.request("/admin/setup", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: "owner", password: "longpass123" }),
+      });
+      expect(setup.status).toBe(200);
+      expect(store.get().account).toEqual({ username: "owner", password: "longpass123" });
+
+      const authed = await app.request("/admin/account", {
+        headers: { authorization: basic("owner", "longpass123") },
+      });
+      expect(authed.status).toBe(200);
+      expect(await json<{ needsPassword: boolean; username?: string }>(app.request("/admin/setup")))
+        .toEqual({ needsPassword: false });
+      const repeat = await app.request("/admin/setup", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ password: "another123" }),
+      });
+      expect(repeat.status).toBe(409);
+    });
+
     it("GET /admin/account → {username, password} (admin sees plaintext)", async () => {
       const res = await createApp(store).request("/admin/account", { headers: H_GET });
       expect(res.status).toBe(200);
@@ -1329,11 +1359,11 @@ describe("server/admin", () => {
       expect(Array.isArray(body.byDay)).toBe(true);
     });
 
-    it("GET /admin/storage → {dataDir,dataFile,logsFile,credentialsFile} all strings", async () => {
+    it("GET /admin/storage → data/log paths (all strings)", async () => {
       const res = await createApp(store).request("/admin/storage", { headers: H_GET });
       expect(res.status).toBe(200);
       const body = await json<Record<string, string>>(res);
-      for (const k of ["dataDir", "dataFile", "logsFile", "credentialsFile"]) {
+      for (const k of ["dataDir", "dataFile", "logsFile", "serverLogFile"]) {
         expect(typeof body[k]).toBe("string");
       }
     });

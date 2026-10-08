@@ -24,7 +24,7 @@
 npx myapikey
 ```
 
-打开 `http://localhost:7800`,用首次启动打印的凭据登录(也会保存到 `~/.myapikey/credentials.txt`)。
+打开 `http://localhost:7800`,首次使用时设置网页用户名和密码,然后登录。
 
 1. 在 **Models** 中添加后端的真实 base URL 和 API key,选择格式(`openai` / `anthropic`),刷新模型并启用需要的模型。
 2. 让工具指向网关,使用生成的 `sk-myapikey-…`,**不要**填网页登录密码:
@@ -61,7 +61,6 @@ OpenAI 的 base URL 含版本段(`/v1`、`/api/v3`);Anthropic 的 base URL 不�
 |---|---|
 | `data.json` | 后端、路由、账号和网关 API key |
 | `logs.jsonl` | 调用历史(约 90 天 / 100 万行) |
-| `credentials.txt` | 网页凭据和网关 key,启动时重写 |
 
 Web UI 包含 Connect、Models、Logs、Stats 和 Settings。设置页可轮换网关 key、修改密码。工具为单用户设计且不内置 TLS;暴露到可信网络之外时请使用反向代理。
 

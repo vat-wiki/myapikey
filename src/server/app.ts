@@ -3,7 +3,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { authMiddleware, apiKeyMiddleware } from "./auth";
-import { adminApi } from "./admin";
+import { accountSetupApi, adminApi } from "./admin";
 import { proxyApi } from "./proxy";
 import type { Store } from "./store";
 
@@ -17,6 +17,8 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono {
 
   app.get("/health", (c) => c.json({ ok: true, version: "0.1.0" }));
 
+  app.route("/admin/setup", accountSetupApi(store));
+
   // Runtime log (console + server.log): auth failures, unhandled errors.
   const logger = store.getLogger();
   app.onError((err, c) => {
@@ -28,7 +30,7 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono {
   // API key gates /v1 (Bearer / x-api-key). Neither works on the other's surface.
   const accountAuth = authMiddleware(
     () => store.get().account.username,
-    () => store.get().account.password,
+    () => store.get().account.password ?? null,
     logger,
   );
   const apiKeyAuth = apiKeyMiddleware(() => store.get().apiKey, logger);

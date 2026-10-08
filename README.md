@@ -24,7 +24,7 @@ Requires Node.js 18+.
 npx myapikey
 ```
 
-Open `http://localhost:7800` and sign in with the credentials printed on first startup (also saved to `~/.myapikey/credentials.txt`).
+Open `http://localhost:7800`, set your web username and password on first use, then sign in.
 
 1. In **Models**, add each backend with its real base URL and API key, select its format (`openai` / `anthropic`), discover models, and enable the ones you need.
 2. Point tools at the gateway and use the generated `sk-myapikey-…` key, **not** your web login password:
@@ -61,7 +61,6 @@ Data defaults to `~/.myapikey`; override it with `--data-dir` or `MYAPIKEY_DATA_
 |---|---|
 | `data.json` | backends, routing, account, and gateway API key |
 | `logs.jsonl` | call history (~90 days / 1M lines) |
-| `credentials.txt` | web credentials and gateway key, rewritten at startup |
 
 The web UI includes Connect, Models, Logs, Stats, and Settings. Settings can rotate the gateway key or change the password. This tool is single-user and has no TLS; place it behind a reverse proxy before exposing it beyond a trusted network.
 

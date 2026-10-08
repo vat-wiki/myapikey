@@ -25,14 +25,16 @@ export function clearCreds(): void {
   localStorage.removeItem(KEY);
 }
 
-/** Authed JSON request to the gateway (admin API or proxy). */
-export async function req<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
-  const c = getCreds();
-  if (!c) throw new Error("Not authenticated");
+async function requestJson<T>(
+  method: string,
+  path: string,
+  body: unknown,
+  creds: Creds | null,
+): Promise<T> {
   const res = await fetch(path, {
     method,
     headers: {
-      authorization: "Basic " + btoa(`${c.user}:${c.pass}`),
+      ...(creds ? { authorization: "Basic " + btoa(`${creds.user}:${creds.pass}`) } : {}),
       ...(body ? { "content-type": "application/json" } : {}),
     },
     body: body ? JSON.stringify(body) : undefined,
@@ -45,11 +47,22 @@ export async function req<T = unknown>(method: string, path: string, body?: unkn
     /* keep as text */
   }
   if (!res.ok) {
-    const msg =
-      (json as { error?: { message?: string } } | null)?.error?.message ?? text ?? res.statusText;
+    const msg = (json as { error?: { message?: string } } | null)?.error?.message ?? text ?? res.statusText;
     throw new Error(String(msg));
   }
   return json as T;
+}
+
+/** Unauthenticated JSON request used only by first-run password setup. */
+export async function publicReq<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
+  return requestJson<T>(method, path, body, null);
+}
+
+/** Authed JSON request to the gateway (admin API or proxy). */
+export async function req<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
+  const c = getCreds();
+  if (!c) throw new Error("Not authenticated");
+  return requestJson<T>(method, path, body, c);
 }
 
 /** One protocol row of a source-level test (POST /admin/providers/:id/test):

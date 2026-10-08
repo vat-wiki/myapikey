@@ -122,7 +122,8 @@ export interface ModelEntry {
 
 export interface Account {
   username: string;
-  password: string;
+  /** `null` until the user creates the password from the first-login setup form. */
+  password: string | null;
 }
 
 export interface GateConfig {
