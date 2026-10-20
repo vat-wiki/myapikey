@@ -43,7 +43,7 @@ OpenAI 的 base URL 含版本段(`/v1`、`/api/v3`);Anthropic 的 base URL 不�
 
 ## What it does
 
-- **统一入口:** Claude Code、OpenAI 兼容 CLI、插件和脚本共用一个地址和网关 key。
+- **统一入口:** Claude Code、OpenAI 兼容 CLI、插件和脚本共用一个地址和网关 key。四条 agent 线路、各对应一种协议:`/openai-chat/v1`(chat/completions)、`/openai-responses/v1`(Responses API)、`/anthropic`(messages)、`/v1/systemone`(TypeSafe System One 结构化求值,如 EdgeOne Makers 的 `@makers/jev`)。
 - **纯透传:** OpenAI 请求发给 OpenAI 格式后端,Anthropic 请求发给 Anthropic 格式后端;请求体和流式响应不翻译,上游新参数无需等待网关适配。
 - **可靠性:** 按模型和格式配置有序后端。`429`、`5xx`、超时自动切换;连续失败触发 30 秒到 5 分钟冷却。流式开始后不再重试。
 - **限流控制:** 后端 RPM 或模型匀速节奏会让超限请求排队,而不是立即返回 `429`。
@@ -55,7 +55,7 @@ OpenAI 的 base URL 含版本段(`/v1`、`/api/v3`);Anthropic 的 base URL 不�
 
 ## Operations
 
-数据默认在 `~/.myapikey`;可用 `--data-dir` 或 `MYAPIKEY_DATA_DIR` 覆盖。
+数据默认在 `~/.myapikey`;可用 `--data-dir` 或 `MYAPIKEY_DATA_DIR` 覆盖。两道守护避免一次挂起的调用把 agent 永远吊住:`MYAPIKEY_TTFB_TIMEOUT_MS`(默认 120000)在中止始终不回响应头的上游,`MYAPIKEY_STREAM_IDLE_MS`(默认 120000)在关闭正文中途停止流动的流;设为 `0` 可关闭。客户端中途挂断会以 `499` 行记入调用历史。
 
 | 文件 | 内容 |
 |---|---|

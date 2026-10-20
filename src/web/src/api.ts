@@ -81,6 +81,7 @@ export interface ProviderPublic {
   baseUrlOpenai: string;
   baseUrlAnthropic: string;
   baseUrlResponses: string;
+  baseUrlSystemone: string;
   formats: string[];
   apiKey: string;
   /** Request-per-minute cap (0 = unlimited). Pacing: once hit, dispatch fails
@@ -140,6 +141,7 @@ export interface ModelView {
   openai: FormatView;
   anthropic: FormatView;
   responses: FormatView;
+  systemone: FormatView;
   /** Per-model even-pacing limit (requests/min, 0 = unlimited). Calls are
    *  spread one every 60/rpm seconds; excess queue at the gateway. */
   paceRpm: number;

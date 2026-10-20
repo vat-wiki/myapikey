@@ -494,6 +494,32 @@ describe("server/admin", () => {
       expect(r2.ok).toBe(false);
       expect(r2.error).toBeTruthy();
     });
+
+    it("POST /admin/providers/:id/test pings the systemone protocol with a state+questions body", async () => {
+      const a = makeProvider({
+        formats: ["systemone"],
+        baseUrlOpenai: "", baseUrlAnthropic: "", baseUrlResponses: "",
+        baseUrlSystemone: "https://a.up.test/v1",
+      });
+      await seedStore(store, { providers: [a] });
+      const m = mockFetch([{ match: "/systemone", response: { status: 200, body: { answers: {} } } }]);
+      try {
+        const res = await createApp(store).request(`/admin/providers/${a.id}/test?model=gpt-x&format=systemone`, { method: "POST", headers: H_GET });
+        const results = (await json<{ results: { format: string; ok: boolean }[] }>(res)).results;
+        expect(results).toHaveLength(1);
+        expect(results[0].format).toBe("systemone");
+        expect(results[0].ok).toBe(true);
+        // Hit the System One resource on the source's own base, with Bearer auth
+        // and the state+questions probe shape.
+        expect(m.calls[0].url).toBe("https://a.up.test/v1/systemone");
+        expect(m.calls[0].headers.authorization).toBe("Bearer sk-up-test");
+        const body = JSON.parse(m.calls[0].body) as { state?: unknown; questions?: unknown };
+        expect(body.state).toBe("ping");
+        expect(body.questions).toBeTruthy();
+      } finally {
+        m.restore();
+      }
+    });
   });
 
   // --- models ---
@@ -977,6 +1003,27 @@ describe("server/admin", () => {
     it("POST /admin/models/:name/test → 404 if model not found", async () => {
       const res = await createApp(store).request("/admin/models/nope/test", { method: "POST", headers: H_GET });
       expect(res.status).toBe(404);
+    });
+
+    it("POST /admin/models/:name/test loops through the /v1/systemone surface for a systemone model", async () => {
+      const a = makeProvider({ name: "alpha", formats: ["systemone"], baseUrlSystemone: "https://up.test/v1", apiKey: "sk-up" });
+      await seedStore(store, { providers: [a], apiKey: "sk-test", models: { jev: makeModel({ systemone: fe([a.id]) }) } });
+      const m = mockFetch([
+        { match: "/models", response: { status: 200, body: { data: [{ id: "jev" }] } } },
+        { match: "/systemone", response: { status: 200, body: { model: "jev-1.13.0", answers: {} } } },
+      ]);
+      try {
+        const res = await createApp(store).request("/admin/models/jev/test", { method: "POST", headers: H_GET });
+        expect(res.status).toBe(200);
+        const result = (await json<{ result: { ok: boolean; status: number; provider?: string; format: string } }>(res)).result;
+        expect(result.ok).toBe(true);
+        expect(result.status).toBe(200);
+        expect(result.provider).toBe("alpha");
+        expect(result.format).toBe("systemone");
+        expect(m.calls.some((c) => c.url === "https://up.test/v1/systemone")).toBe(true);
+      } finally {
+        m.restore();
+      }
     });
 
     it("DELETE /admin/models/:name removes it", async () => {

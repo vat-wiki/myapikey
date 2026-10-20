@@ -12,12 +12,16 @@ export interface RecordedCall {
  *  object (objects are JSON.stringified); defaults give a 200 JSON response.
  *  `bodyStream` (a raw ReadableStream) overrides `body` — use it to simulate a
  *  streaming upstream, including the 200-then-die-mid-stream failure mode
- *  (truncation / errored reader) that a plain string body can't express. */
+ *  (truncation / errored reader) that a plain string body can't express.
+ *  `hang: true` turns the call into one that NEVER answers — the upstream
+ *  accepted the request but sends nothing; like the real fetch, the returned
+ *  promise rejects when the request's abort signal fires. */
 export interface MockResponseSpec {
   status?: number;
   body?: unknown;
   bodyStream?: ReadableStream<Uint8Array>;
   headers?: Record<string, string>;
+  hang?: boolean;
 }
 
 /** A fetch route. `match` accepts a call by URL substring, RegExp, or predicate.
@@ -93,6 +97,19 @@ export function mockFetch(routes: Route[]): FetchMock {
       const i = counts.get(route) ?? 0;
       counts.set(route, i + 1);
       const spec = typeof route.response === "function" ? route.response(call, i) : route.response;
+      if (spec.hang) {
+        // Never answers; rejects on the caller's abort signal, mirroring how a
+        // real fetch behaves when its signal is aborted mid-request.
+        return new Promise<never>((_resolve, reject) => {
+          if (init?.signal) {
+            init.signal.addEventListener(
+              "abort",
+              () => reject(new Error("This operation was aborted")),
+              { once: true },
+            );
+          }
+        });
+      }
       return toResponse(spec);
     }
     return new Response(`no mock route matched: ${url}`, {

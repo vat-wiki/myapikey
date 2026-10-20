@@ -131,7 +131,7 @@ describe("Store migration (constructor load())", () => {
   });
 
   describe("already-current entries (idempotent)", () => {
-    it("leaves a model already in the {id,model?} pair shape unchanged", () => {
+    it("leaves a model already in the {id,model?} pair shape unchanged (plus the v7 systemone slot seed)", () => {
       const before = {
         openai: { enabled: true, providers: [{ id: "prv_o" }, { id: "prv_r" }] },
         anthropic: { enabled: false, providers: [] },
@@ -144,10 +144,15 @@ describe("Store migration (constructor load())", () => {
         providers: [PRV_O, PRV_A, PRV_R],
         models: { "gpt-4o": before },
       });
-      const m = ts.store.get().models["gpt-4o"] as unknown as typeof before;
-      expect(m).toEqual(before);
+      // The three original slots are untouched; migration only seeds the new
+      // systemone slot (disabled + empty).
+      const m = ts.store.get().models["gpt-4o"] as unknown as typeof before & { systemone: unknown };
+      expect(m).toEqual({ ...before, systemone: { enabled: false, providers: [] } });
       // Same shape after re-reading disk (only version field is bumped, not the entry).
-      expect((readDisk(ts).models as Record<string, unknown>)["gpt-4o"]).toEqual(before);
+      expect((readDisk(ts).models as Record<string, unknown>)["gpt-4o"]).toEqual({
+        ...before,
+        systemone: { enabled: false, providers: [] },
+      });
     });
   });
 
@@ -180,7 +185,7 @@ describe("Store migration (constructor load())", () => {
       expect(onDisk.baseUrlAnthropic).toBe("https://api.x.com");
     });
 
-    it("leaves a current provider (no legacy baseUrl, has baseUrlResponses) untouched", () => {
+    it("leaves a current provider (no legacy baseUrl, has baseUrlResponses) untouched (plus the v7 empty systemone base)", () => {
       const before = {
         id: "p1",
         name: "modern",
@@ -198,7 +203,7 @@ describe("Store migration (constructor load())", () => {
         providers: [before],
         models: {},
       });
-      expect(ts.store.get().providers[0]).toEqual(before);
+      expect(ts.store.get().providers[0]).toEqual({ ...before, baseUrlSystemone: "" });
     });
 
     it("treats a baseUrl without a trailing version as a no-op strip", () => {
@@ -252,7 +257,7 @@ describe("Store migration (constructor load())", () => {
       expect(disk.openai).toEqual({ enabled: true, providers: [{ id: "prv_o" }, { id: "prv_a", model: "up-a" }] });
     });
 
-    it("leaves already-pair chains untouched (idempotent)", () => {
+    it("leaves already-pair chains untouched (idempotent; plus the v7 systemone slot seed)", () => {
       const before = {
         openai: { enabled: true, providers: [{ id: "prv_o" }, { id: "prv_a", model: "up-a" }] },
         anthropic: { enabled: false, providers: [] },
@@ -265,8 +270,8 @@ describe("Store migration (constructor load())", () => {
         providers: [PRV_O, PRV_A],
         models: { "gpt-4o": before },
       });
-      const m = ts.store.get().models["gpt-4o"] as unknown as typeof before;
-      expect(m).toEqual(before);
+      const m = ts.store.get().models["gpt-4o"] as unknown as typeof before & { systemone: unknown };
+      expect(m).toEqual({ ...before, systemone: { enabled: false, providers: [] } });
       expect(readDisk(ts).version).toBe(CONFIG_VERSION);
     });
   });
@@ -289,6 +294,7 @@ describe("Store migration (constructor load())", () => {
         baseUrlOpenai: "https://r.example/v1",
         baseUrlAnthropic: "https://r.example",
         baseUrlResponses: "https://r.example/v1",
+        baseUrlSystemone: "",
         apiKey: "sk-r",
         formats: ["openai", "responses"],
         createdAt: 0,
@@ -300,6 +306,7 @@ describe("Store migration (constructor load())", () => {
         baseUrlOpenai: "https://o.example/v1",
         baseUrlAnthropic: "https://o.example",
         baseUrlResponses: "",
+        baseUrlSystemone: "",
         apiKey: "sk-o",
         formats: ["openai"],
         createdAt: 0,

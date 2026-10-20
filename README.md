@@ -43,7 +43,7 @@ OpenAI base URLs include the version segment (`/v1`, `/api/v3`); Anthropic base 
 
 ## What it does
 
-- **Unified access:** one endpoint and gateway key for Claude Code, OpenAI-compatible CLIs, plugins, and scripts.
+- **Unified access:** one endpoint and gateway key for Claude Code, OpenAI-compatible CLIs, plugins, and scripts. Four agent surfaces, one per protocol: `/openai-chat/v1` (chat/completions), `/openai-responses/v1` (Responses API), `/anthropic` (messages), and `/v1/systemone` (TypeSafe System One structured evaluation, e.g. EdgeOne Makers' `@makers/jev`).
 - **Pure passthrough:** OpenAI calls reach OpenAI-format backends; Anthropic calls reach Anthropic-format backends. Bodies and streams are not translated, so new upstream parameters work without gateway support.
 - **Reliability:** configure ordered backends per model and format. `429`, `5xx`, and timeouts fail over; repeated failures trigger a 30-second-to-5-minute cooldown. Streaming is not retried after it starts.
 - **Rate control:** backend RPM or model pacing queues excess requests instead of immediately returning `429`.
@@ -55,7 +55,7 @@ Requests enter through `/openai/v1/*` or `/anthropic/v1/*` and stay in that form
 
 ## Operations
 
-Data defaults to `~/.myapikey`; override it with `--data-dir` or `MYAPIKEY_DATA_DIR`.
+Data defaults to `~/.myapikey`; override it with `--data-dir` or `MYAPIKEY_DATA_DIR`. Two guards keep a hung call from hanging an agent forever: `MYAPIKEY_TTFB_TIMEOUT_MS` (default 120000) aborts an upstream that never sends response headers, and `MYAPIKEY_STREAM_IDLE_MS` (default 120000) closes a stream that stops flowing mid-body; set either to `0` to disable. Client hang-ups are logged as `499` rows in the call history.
 
 | File | Contents |
 |---|---|

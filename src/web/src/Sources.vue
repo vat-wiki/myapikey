@@ -315,6 +315,9 @@ onMounted(load);
               <div v-if="p.formats.includes('anthropic')" class="truncate font-mono text-xs text-muted-foreground">
                 <span class="opacity-60">{{ fmtLabel("anthropic") }} ·</span> {{ p.baseUrlAnthropic }}
               </div>
+              <div v-if="p.formats.includes('systemone')" class="truncate font-mono text-xs text-muted-foreground">
+                <span class="opacity-60">{{ fmtLabel("systemone") }} ·</span> {{ p.baseUrlSystemone }}
+              </div>
             </div>
 
             <!-- actions -->
@@ -380,6 +383,9 @@ onMounted(load);
                   </div>
                   <div v-if="p.formats.includes('anthropic')" class="truncate" :title="p.baseUrlAnthropic">
                     <span class="opacity-60">{{ fmtLabel("anthropic") }} · </span>{{ p.baseUrlAnthropic }}
+                  </div>
+                  <div v-if="p.formats.includes('systemone')" class="truncate" :title="p.baseUrlSystemone">
+                    <span class="opacity-60">{{ fmtLabel("systemone") }} · </span>{{ p.baseUrlSystemone }}
                   </div>
                 </div>
               </TableCell>

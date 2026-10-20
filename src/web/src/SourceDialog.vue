@@ -2,7 +2,7 @@
 import { ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { req, type ProviderPublic } from "@/api";
-import { FMT_LABEL } from "@/lib/format";
+import { FMT_LABEL, type Fmt } from "@/lib/format";
 import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -24,21 +24,23 @@ const name = ref("");
 const baseUrlOpenai = ref("");
 const baseUrlAnthropic = ref("");
 const baseUrlResponses = ref("");
+const baseUrlSystemone = ref("");
 const apiKey = ref("");
 const rpm = ref("");
 const fmtOpenai = ref(true);
 const fmtAnthropic = ref(false);
 const fmtResponses = ref(false);
+const fmtSystemone = ref(false);
 const showBaseHelp = ref(false);
 const advancedOpen = ref(false);
 const err = ref("");
 const saving = ref(false);
 
-/** Toggle a format checkbox; the three are independent peers now — only the
+/** Toggle a format checkbox; the four are independent peers — only the
  *  "at least one format" invariant is guarded. */
-function toggleFmt(which: "openai" | "anthropic" | "responses") {
-  const box = which === "openai" ? fmtOpenai : which === "anthropic" ? fmtAnthropic : fmtResponses;
-  if (box.value && !fmtOpenai.value && !fmtAnthropic.value && !fmtResponses.value) return;
+function toggleFmt(which: Fmt) {
+  const box = which === "openai" ? fmtOpenai : which === "anthropic" ? fmtAnthropic : which === "responses" ? fmtResponses : fmtSystemone;
+  if (box.value && !fmtOpenai.value && !fmtAnthropic.value && !fmtResponses.value && !fmtSystemone.value) return;
   box.value = !box.value;
 }
 
@@ -47,6 +49,7 @@ const formats = (): string[] => {
   if (fmtOpenai.value) out.push("openai");
   if (fmtAnthropic.value) out.push("anthropic");
   if (fmtResponses.value) out.push("responses");
+  if (fmtSystemone.value) out.push("systemone");
   return out;
 };
 
@@ -60,22 +63,26 @@ function init() {
     baseUrlOpenai.value = "";
     baseUrlAnthropic.value = "";
     baseUrlResponses.value = "";
+    baseUrlSystemone.value = "";
     apiKey.value = "";
     rpm.value = "";
     fmtOpenai.value = true;
     fmtAnthropic.value = false;
     fmtResponses.value = false;
+    fmtSystemone.value = false;
     return;
   }
   name.value = p.name;
   baseUrlOpenai.value = p.baseUrlOpenai;
   baseUrlAnthropic.value = p.baseUrlAnthropic;
   baseUrlResponses.value = p.baseUrlResponses;
+  baseUrlSystemone.value = p.baseUrlSystemone ?? "";
   apiKey.value = "";
   rpm.value = p.rpm ? String(p.rpm) : "";
   fmtOpenai.value = p.formats.includes("openai");
   fmtAnthropic.value = p.formats.includes("anthropic");
   fmtResponses.value = p.formats.includes("responses");
+  fmtSystemone.value = p.formats.includes("systemone");
 }
 
 watch(open, (o) => {
@@ -89,7 +96,8 @@ function validate(): boolean {
   else if (
     (fmtOpenai.value && !baseUrlOpenai.value.trim()) ||
     (fmtAnthropic.value && !baseUrlAnthropic.value.trim()) ||
-    (fmtResponses.value && !baseUrlResponses.value.trim())
+    (fmtResponses.value && !baseUrlResponses.value.trim()) ||
+    (fmtSystemone.value && !baseUrlSystemone.value.trim())
   )
     err.value = t("sources.errBaseUrl");
   else {
@@ -109,6 +117,7 @@ async function save() {
       baseUrlOpenai: baseUrlOpenai.value.trim(),
       baseUrlAnthropic: baseUrlAnthropic.value.trim(),
       baseUrlResponses: baseUrlResponses.value.trim(),
+      baseUrlSystemone: baseUrlSystemone.value.trim(),
       formats: formats(),
       rpm: Number(rpm.value) || 0,
     };
@@ -151,8 +160,9 @@ async function save() {
         <div class="space-y-1.5">
           <Label>{{ t("sources.formats") }}</Label>
           <div class="space-y-2.5 rounded-md border bg-background/50 p-3">
-            <!-- Three PARALLEL, fully independent protocol rows: each has its own
-                 base URL; a responses-only or chat-only source is legal. -->
+            <!-- Four PARALLEL, fully independent protocol rows: each has its own
+                 base URL; a responses-only, chat-only or systemone-only source
+                 is legal. -->
             <div class="flex items-center gap-2.5">
               <Checkbox :model-value="fmtOpenai" aria-label="openai" @update:model-value="toggleFmt('openai')" />
               <span class="text-sm font-medium leading-none">{{ FMT_LABEL.openai }}</span>
@@ -167,6 +177,11 @@ async function save() {
               <Checkbox :model-value="fmtAnthropic" aria-label="anthropic" @update:model-value="toggleFmt('anthropic')" />
               <span class="text-sm font-medium leading-none">{{ FMT_LABEL.anthropic }}</span>
               <span class="text-xs text-muted-foreground">/messages</span>
+            </div>
+            <div class="flex items-center gap-2.5">
+              <Checkbox :model-value="fmtSystemone" aria-label="systemone" @update:model-value="toggleFmt('systemone')" />
+              <span class="text-sm font-medium leading-none">{{ FMT_LABEL.systemone }}</span>
+              <span class="text-xs text-muted-foreground">/systemone</span>
             </div>
           </div>
         </div>
@@ -186,6 +201,11 @@ async function save() {
           <Input id="s-url-anthropic" v-model="baseUrlAnthropic" :placeholder="t('sources.urlPhAnthropic')" autocomplete="off" aria-label="anthropic base url" />
           <p class="text-xs text-muted-foreground">{{ t("sources.urlHintAnthropic") }}</p>
         </div>
+        <div v-if="fmtSystemone" class="space-y-1.5">
+          <Label for="s-url-systemone">{{ t("sources.urlLabelSystemone") }}</Label>
+          <Input id="s-url-systemone" v-model="baseUrlSystemone" :placeholder="t('sources.urlPhSystemone')" autocomplete="off" aria-label="systemone base url" />
+          <p class="text-xs text-muted-foreground">{{ t("sources.urlHintSystemone") }}</p>
+        </div>
 
         <!-- why two base URLs: collapsible, lives next to the fields it explains -->
         <button
@@ -203,6 +223,7 @@ async function save() {
           <p><span class="font-medium text-foreground">{{ FMT_LABEL.openai }}</span> — {{ t("sources.baseHelpOpenai") }}</p>
           <p><span class="font-medium text-foreground">{{ FMT_LABEL.responses }}</span> — {{ t("sources.baseHelpResponses") }}</p>
           <p><span class="font-medium text-foreground">{{ FMT_LABEL.anthropic }}</span> — {{ t("sources.baseHelpAnthropic") }}</p>
+          <p><span class="font-medium text-foreground">{{ FMT_LABEL.systemone }}</span> — {{ t("sources.baseHelpSystemone") }}</p>
           <p><span class="font-medium text-foreground">{{ t("sources.responses") }}</span> — {{ t("sources.responsesNote") }}</p>
         </div>
 

@@ -3,8 +3,10 @@
  * One config object, persisted as a single JSON file (data.json).
  */
 
-/** Wire format a backend speaks (and that we expose on the matching path). */
-export type Format = "openai" | "anthropic";
+/** Wire format a backend speaks (and that we expose on the matching path).
+ *  "systemone" is the TypeSafe System One native protocol (structured one-shot
+ *  evaluation — no chat, no streaming), forwarded as a verbatim JSON POST. */
+export type Format = "openai" | "anthropic" | "systemone";
 
 /** A backend / subscription platform / direct provider. */
 export interface Provider {
@@ -21,6 +23,10 @@ export interface Provider {
    *  different address (or serve ONLY responses). The gateway appends
    *  /responses (and /models for discovery). Empty = responses not served. */
   baseUrlResponses: string;
+  /** System One base INCLUDING the version segment, e.g.
+   *  https://ai-gateway.edgeone.link/v1. The gateway appends /systemone (and
+   *  /models for discovery, OpenAI-style). Empty = systemone not served. */
+  baseUrlSystemone: string;
   apiKey: string;
   /** Which routing formats this backend responds to (one per agent surface). */
   formats: RouteKey[];
@@ -93,22 +99,23 @@ export interface ChainSlot {
   sampling?: Record<string, unknown>;
 }
 
-/** A model's routing dimensions — one per forwarding endpoint. The three are
+/** A model's routing dimensions — one per forwarding endpoint. The four are
  *  fully independent surfaces with independent per-source base URLs: a source
- *  can serve any subset (responses-only and chat-only are both legal), and the
- *  same source can sit in several chains at once. */
-export type RouteKey = "openai" | "anthropic" | "responses";
+ *  can serve any subset (responses-only, chat-only and systemone-only are all
+ *  legal), and the same source can sit in several chains at once. */
+export type RouteKey = "openai" | "anthropic" | "responses" | "systemone";
 
 /** Per-model routing entry, keyed by model name (e.g. "gpt-4o"). */
 export interface ModelEntry {
   openai: FormatEntry;
   anthropic: FormatEntry;
   responses: FormatEntry;
+  systemone: FormatEntry;
   /** Even-pacing rate limit (requests/min, leaky-bucket style). When set, calls
    *  to this model are released one every 60/rpm seconds - excess requests QUEUE
    *  at the gateway (up to 60s wait) instead of overflowing. Completely
    *  independent of Provider.rpm (that one skips a busy source and fails over);
-   *  this one paces the model across all three route slots. Absent = unlimited. */
+   *  this one paces the model across all four route slots. Absent = unlimited. */
   paceRpm?: number;
   /** Debug capture (pure debugging aid, never on by default). When true, dispatch
    *  records every UPSTREAM ATTEMPT for this model — the exact forwarded request

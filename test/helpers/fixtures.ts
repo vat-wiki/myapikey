@@ -14,6 +14,7 @@ export function makeProvider(over: Partial<Provider> = {}): Provider {
     baseUrlOpenai: "https://up.openai.test/v1",
     baseUrlAnthropic: "https://up.anthropic.test",
     baseUrlResponses: "https://up.responses.test/v1",
+    baseUrlSystemone: "https://up.systemone.test/v1",
     apiKey: "sk-up-test",
     formats: ["openai"],
     createdAt: 1000,
@@ -34,12 +35,13 @@ export function fe(slots: (string | ChainSlot)[], over: { enabled?: boolean } = 
 /** A model entry; defaults to all slots disabled/empty. Non-slot fields
  *  (e.g. `paceRpm`) pass through as-is. */
 export function makeModel(slots: Partial<ModelEntry> = {}): ModelEntry {
-  const { openai, anthropic, responses, ...rest } = slots;
+  const { openai, anthropic, responses, systemone, ...rest } = slots;
   return {
     ...rest,
     openai: openai ?? fe([]),
     anthropic: anthropic ?? fe([]),
     responses: responses ?? fe([]),
+    systemone: systemone ?? fe([]),
   };
 }
 

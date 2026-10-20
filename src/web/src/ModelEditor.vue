@@ -17,8 +17,8 @@ import SamplingPanel from "@/SamplingPanel.vue";
 import ThinkingPanel from "@/ThinkingPanel.vue";
 import { Plus, Loader2, ServerCog, Brain, TriangleAlert, Info, ChevronDown, SlidersHorizontal, GripVertical, Trash2, Settings2 } from "lucide-vue-next";
 
-/** The three routing families, each with its own independently configured chain. */
-const FORMATS: Fmt[] = ["openai", "anthropic", "responses"];
+/** The four routing families, each with its own independently configured chain. */
+const FORMATS: Fmt[] = ["openai", "anthropic", "responses", "systemone"];
 
 /** Sampling fields offered in the per-slot panel — the wire-agnostic names, the
  *  same set the server whitelists. A filled field overrides the request's own
@@ -107,15 +107,15 @@ const emit = defineEmits<{ saved: [ModelView] }>();
 const { t } = useI18n();
 
 const name = ref("");
-const fmtSlots = ref<Record<Fmt, DraftSlot[]>>({ openai: [], anthropic: [], responses: [] });
+const fmtSlots = ref<Record<Fmt, DraftSlot[]>>({ openai: [], anthropic: [], responses: [], systemone: [] });
 /** No switch in the UI: a protocol is "used" iff it has slots. The flag stays
  *  internal so a route the card chip disabled (enabled:false with slots)
  *  survives an editor save — it only flips when the user edits that chain
  *  here (adds a slot → on, empties it → off). */
-const fmtEnabled = ref<Record<Fmt, boolean>>({ openai: false, anthropic: false, responses: false });
+const fmtEnabled = ref<Record<Fmt, boolean>>({ openai: false, anthropic: false, responses: false, systemone: false });
 /** Per-protocol section expand state — collapsed by default; the header
  *  summary (slot count) tells configured chains apart at a glance. */
-const expanded = ref<Record<Fmt, boolean>>({ openai: false, anthropic: false, responses: false });
+const expanded = ref<Record<Fmt, boolean>>({ openai: false, anthropic: false, responses: false, systemone: false });
 const pace = ref("");
 const saving = ref(false);
 const nameErr = ref("");
@@ -147,9 +147,9 @@ function init() {
   rowErr.value = {};
   pace.value = "";
   showHelp.value = false;
-  fmtSlots.value = { openai: [], anthropic: [], responses: [] };
-  fmtEnabled.value = { openai: false, anthropic: false, responses: false };
-  expanded.value = { openai: false, anthropic: false, responses: false };
+  fmtSlots.value = { openai: [], anthropic: [], responses: [], systemone: [] };
+  fmtEnabled.value = { openai: false, anthropic: false, responses: false, systemone: false };
+  expanded.value = { openai: false, anthropic: false, responses: false, systemone: false };
   const m = props.model;
   if (!m) {
     advancedOpen.value = false;
@@ -497,7 +497,10 @@ const visibleFormats = computed(() =>
                       <div class="w-44 shrink-0 [&_input]:h-7 [&_input]:text-xs">
                         <Combobox v-model="item.slot.model" :options="discoveredFor(item.slot.pid)" :placeholder="t('models.editor.upstreamPh')" />
                       </div>
-                      <Popover :open="panelOpen(f, item.slot.uid)" @update:open="(o) => setPanel(f, item.slot.uid, o)">
+                      <!-- systemone slots have no thinking/sampling defaults (the
+                           protocol carries state+questions only) — no panel button. -->
+                      <span v-if="f === 'systemone'" class="ml-auto shrink-0" />
+                      <Popover v-else :open="panelOpen(f, item.slot.uid)" @update:open="(o) => setPanel(f, item.slot.uid, o)">
                         <PopoverTrigger as-child>
                           <button
                             type="button"

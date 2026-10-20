@@ -5,7 +5,7 @@ import { providerModelList } from "../src/lib/models";
 import { analyzeRequest, assignConversationGroups, conversationGroupsOf } from "../src/lib/conv";
 
 // The Fmt union, as a runtime mirror for key-set assertions.
-const FMT_KEYS = ["openai", "anthropic", "responses"] as const;
+const FMT_KEYS = ["openai", "anthropic", "responses", "systemone"] as const;
 
 describe("web/lib", () => {
   describe("cn() — clsx + tailwind-merge", () => {
@@ -23,7 +23,7 @@ describe("web/lib", () => {
   });
 
   describe("FMT_ACCENT", () => {
-    it("has exactly the three format keys", () => {
+    it("has exactly the four format keys", () => {
       expect(Object.keys(FMT_ACCENT).sort()).toEqual([...FMT_KEYS].sort());
     });
 

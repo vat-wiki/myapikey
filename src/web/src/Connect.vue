@@ -16,9 +16,11 @@ const SNIPPET_FMT: Record<string, Fmt> = {
   openai: "openai",
   responses: "responses",
   anthropic: "anthropic",
+  systemone: "systemone",
   curl: "openai",
   "curl-anthropic": "anthropic",
   "curl-responses": "responses",
+  "curl-systemone": "systemone",
 };
 function snippetAccent(key: string) {
   const f = SNIPPET_FMT[key];
@@ -47,10 +49,12 @@ const baseUrl = computed(() => {
 // Each protocol points at its own surface: OpenAI chat tools at /openai-chat/v1
 // (their SDK appends /chat/completions, /models), responses clients (codex &
 // co.) at /openai-responses/v1 (their SDK appends /responses, /models);
-// Anthropic tools at /anthropic (their SDK appends /v1/messages, /v1/models).
+// Anthropic tools at /anthropic (their SDK appends /v1/messages, /v1/models);
+// System One callers POST the full /v1/systemone endpoint directly.
 const baseUrlOpenaiChat = computed(() => `${baseUrl.value}/openai-chat/v1`);
 const baseUrlOpenaiResponses = computed(() => `${baseUrl.value}/openai-responses/v1`);
 const baseUrlAnthropic = computed(() => `${baseUrl.value}/anthropic`);
+const urlSystemone = computed(() => `${baseUrl.value}/v1/systemone`);
 
 async function load() {
   apiKey.value = (await req<{ apiKey: string }>("GET", "/admin/api-key")).apiKey;
@@ -105,6 +109,11 @@ const snippets = computed(() => [
     key: "curl-responses",
     title: t("connect.responsesTitle"),
     text: `curl ${baseUrlOpenaiResponses.value}/responses \\\n  -H "Authorization: Bearer ${apiKey.value ?? ""}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"${exampleModel("responses")}","input":"hi"}'`,
+  },
+  {
+    key: "curl-systemone",
+    title: t("connect.curlSystemoneTitle"),
+    text: `curl ${urlSystemone.value} \\\n  -H "Authorization: Bearer ${apiKey.value ?? ""}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"${exampleModel("systemone")}","state":"Hi, the Stripe integration keeps failing. I am losing sales.","questions":{"department":{"type":"choice","instructions":"Which team should handle this","criteria":{"billing":"Payment issues","technical":"Bugs or integration problems","sales":"Pricing questions"}},"is_urgent":{"type":"noul","instructions":"The message conveys urgency"}}}'`,
   },
 ]);
 
@@ -164,6 +173,20 @@ onMounted(load);
               <Check v-if="copied === 'url-anthropic'" class="h-4 w-4" />
               <Copy v-else class="h-4 w-4" />
               {{ copied === "url-anthropic" ? t("connect.copied") : t("connect.copy") }}
+            </Button>
+          </div>
+          <div class="flex items-center justify-between gap-3 rounded-lg border p-3" :class="[FMT_ACCENT.systemone.border, FMT_ACCENT.systemone.soft]">
+            <div class="min-w-0">
+              <div class="flex items-center gap-1.5 text-xs font-medium" :class="FMT_ACCENT.systemone.text">
+                <span class="h-1.5 w-1.5 rounded-full" :class="FMT_ACCENT.systemone.solid" />
+                {{ t("connect.baseUrlSystemone") }}
+              </div>
+              <div class="mt-0.5 truncate font-mono text-sm">{{ urlSystemone }}</div>
+            </div>
+            <Button variant="outline" size="sm" @click="copy('url-systemone', urlSystemone)">
+              <Check v-if="copied === 'url-systemone'" class="h-4 w-4" />
+              <Copy v-else class="h-4 w-4" />
+              {{ copied === "url-systemone" ? t("connect.copied") : t("connect.copy") }}
             </Button>
           </div>
         </div>

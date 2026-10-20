@@ -45,7 +45,8 @@ function providerSpeaks(p: Provider, key: RouteKey): boolean {
 }
 
 /** The body fields a chain slot's sampling default may set — the wire-agnostic
- *  names, identical on all three routes (see applySlotSampling in proxy.ts). */
+ *  names, identical on the three chat-family routes (see applySlotSampling in
+ *  proxy.ts; the systemone route has no sampling switches). */
 const SAMPLING_KEYS = ["temperature", "top_p", "top_k", "presence_penalty", "frequency_penalty", "seed"] as const;
 
 /** Validate a slot's sampling default: whitelisted keys only, every value a
@@ -68,6 +69,17 @@ function sanitizeSampling(v: unknown): Record<string, number> | undefined | null
 
 const SAMPLING_ERR =
   "sampling: keys must be temperature/top_p/top_k/presence_penalty/frequency_penalty/seed with finite numeric values (seed an integer)";
+
+/** Minimal System One probe body: one cheap noul question against a tiny state —
+ *  the cheapest legal call on the /v1/systemone protocol (no streaming, no
+ *  max_tokens to trim). Used by the source test and the model-test loopbacks. */
+function systemonePing(model: string): Record<string, unknown> {
+  return {
+    model,
+    state: "ping",
+    questions: { ok: { type: "noul", instructions: "The state is a health-check ping" } },
+  };
+}
 
 /** Inverse of proxy's encodeTag: the probe's x-myapikey-provider header carries
  *  a %-encoded provider name (HTTP headers are Latin-1, so a name like "商汤"
@@ -97,6 +109,7 @@ function toPublic(p: Provider) {
     baseUrlOpenai: p.baseUrlOpenai,
     baseUrlAnthropic: p.baseUrlAnthropic,
     baseUrlResponses: p.baseUrlResponses,
+    baseUrlSystemone: p.baseUrlSystemone ?? "",
     formats: p.formats,
     apiKey: mask(p.apiKey),
     rpm: p.rpm ?? 0,
@@ -133,6 +146,10 @@ export async function discoverModels(p: Provider): Promise<string[]> {
   // reached when the chat base is unset (responses-only source) or empty-handed.
   if (p.formats.includes("responses") && p.baseUrlResponses)
     attempts.push({ base: p.baseUrlResponses, suffix: "models", headers: { authorization: `Bearer ${p.apiKey}` } });
+  // System One sources (EdgeOne Makers) expose the same OpenAI-style /models
+  // list on their own base — tried after the chat/responses bases.
+  if (p.formats.includes("systemone") && p.baseUrlSystemone)
+    attempts.push({ base: p.baseUrlSystemone, suffix: "models", headers: { authorization: `Bearer ${p.apiKey}` } });
   if (p.formats.includes("anthropic"))
     attempts.push({ base: p.baseUrlAnthropic, suffix: "v1/models", headers: anthropicAuthHeaders(p.apiKey, "2023-06-01") });
   if (!attempts.length)
@@ -193,6 +210,7 @@ function projectModel(name: string, e: ModelEntry, byId: Map<string, Provider>) 
     openai: proj(e.openai),
     anthropic: proj(e.anthropic),
     responses: proj(e.responses),
+    systemone: proj(e.systemone ?? { enabled: false, providers: [] }),
     paceRpm: e.paceRpm ?? 0,
     debugCapture: e.debugCapture === true,
   };
@@ -228,9 +246,29 @@ export function accountSetupApi(store: Store): Hono {
   return app;
 }
 
-export function adminApi(store: Store, auth: MiddlewareHandler, chat: Hono, responses: Hono, anthropic: Hono): Hono {
+export function adminApi(store: Store, auth: MiddlewareHandler, chat: Hono, responses: Hono, anthropic: Hono, systemone: Hono): Hono {
   const app = new Hono();
   app.use("*", auth);
+
+  // The proxy sub-app + path each routing format's loopback probe goes through
+  // (same surfaces real agent traffic uses — see proxyApi in proxy.ts).
+  const surfaceFor = (format: RouteKey): { sub: Hono; path: string } =>
+    format === "anthropic"
+      ? { sub: anthropic, path: "/messages" }
+      : format === "responses"
+        ? { sub: responses, path: "/responses" }
+        : format === "systemone"
+          ? { sub: systemone, path: "/" }
+          : { sub: chat, path: "/chat/completions" };
+  // Cheap per-format probe body (drives dispatch end-to-end without a real
+  // conversation): /responses takes `input`, /systemone takes state+questions,
+  // the message-taking wires get a 1-token user turn.
+  const pingBody = (format: RouteKey, name: string): Record<string, unknown> =>
+    format === "responses"
+      ? { model: name, input: "ping", stream: false }
+      : format === "systemone"
+        ? systemonePing(name)
+        : { model: name, messages: [{ role: "user", content: "ping" }], max_tokens: 1, stream: false };
 
   // --- account ---
   app.get("/account", (c) => {
@@ -280,18 +318,19 @@ export function adminApi(store: Store, auth: MiddlewareHandler, chat: Hono, resp
   app.get("/providers", (c) => c.json({ providers: store.get().providers.map(toPublic) }));
 
   app.post("/providers", async (c) => {
-    const body = await readJson<{ name?: string; baseUrlOpenai?: string; baseUrlAnthropic?: string; baseUrlResponses?: string; apiKey?: string; formats?: RouteKey[]; rpm?: number }>(c.req.raw);
+    const body = await readJson<{ name?: string; baseUrlOpenai?: string; baseUrlAnthropic?: string; baseUrlResponses?: string; baseUrlSystemone?: string; apiKey?: string; formats?: RouteKey[]; rpm?: number }>(c.req.raw);
     const formats = body?.formats ?? [];
     if (!body?.name || !body?.apiKey || !formats.length) {
       return c.json({ error: { message: "name, apiKey, formats are required" } }, 400);
     }
-    if ((formats.includes("openai") && !body.baseUrlOpenai) || (formats.includes("anthropic") && !body.baseUrlAnthropic) || (formats.includes("responses") && !body.baseUrlResponses)) {
+    if ((formats.includes("openai") && !body.baseUrlOpenai) || (formats.includes("anthropic") && !body.baseUrlAnthropic) || (formats.includes("responses") && !body.baseUrlResponses) || (formats.includes("systemone") && !body.baseUrlSystemone)) {
       return c.json({ error: { message: "a base URL is required for each selected format" } }, 400);
     }
     const id = newProviderId();
     const baseUrlOpenai = trimBase(body.baseUrlOpenai ?? "");
     const baseUrlAnthropic = trimBase(body.baseUrlAnthropic ?? "");
     const baseUrlResponses = trimBase(body.baseUrlResponses ?? "");
+    const baseUrlSystemone = trimBase(body.baseUrlSystemone ?? "");
     const rpm = coerceRpm(body!.rpm);
     await store.update((d) => {
       d.providers.push({
@@ -300,6 +339,7 @@ export function adminApi(store: Store, auth: MiddlewareHandler, chat: Hono, resp
         baseUrlOpenai,
         baseUrlAnthropic,
         baseUrlResponses,
+        baseUrlSystemone,
         apiKey: body.apiKey!,
         formats,
         ...(rpm ? { rpm } : {}),
@@ -314,17 +354,18 @@ export function adminApi(store: Store, auth: MiddlewareHandler, chat: Hono, resp
 
   app.put("/providers/:id", async (c) => {
     const id = c.req.param("id");
-    const body = await readJson<{ name?: string; baseUrlOpenai?: string; baseUrlAnthropic?: string; baseUrlResponses?: string; apiKey?: string; formats?: RouteKey[]; rpm?: number }>(c.req.raw);
+    const body = await readJson<{ name?: string; baseUrlOpenai?: string; baseUrlAnthropic?: string; baseUrlResponses?: string; baseUrlSystemone?: string; apiKey?: string; formats?: RouteKey[]; rpm?: number }>(c.req.raw);
     const formats = body?.formats ?? [];
     if (!body?.name || !formats.length) {
       return c.json({ error: { message: "name, formats are required" } }, 400);
     }
-    if ((formats.includes("openai") && !body.baseUrlOpenai) || (formats.includes("anthropic") && !body.baseUrlAnthropic) || (formats.includes("responses") && !body.baseUrlResponses)) {
+    if ((formats.includes("openai") && !body.baseUrlOpenai) || (formats.includes("anthropic") && !body.baseUrlAnthropic) || (formats.includes("responses") && !body.baseUrlResponses) || (formats.includes("systemone") && !body.baseUrlSystemone)) {
       return c.json({ error: { message: "a base URL is required for each selected format" } }, 400);
     }
     const baseUrlOpenai = trimBase(body.baseUrlOpenai ?? "");
     const baseUrlAnthropic = trimBase(body.baseUrlAnthropic ?? "");
     const baseUrlResponses = trimBase(body.baseUrlResponses ?? "");
+    const baseUrlSystemone = trimBase(body.baseUrlSystemone ?? "");
     let rediscover = false;
     await store.update((d) => {
       const p = d.providers.find((x) => x.id === id);
@@ -336,12 +377,14 @@ export function adminApi(store: Store, auth: MiddlewareHandler, chat: Hono, resp
         p.baseUrlOpenai !== baseUrlOpenai ||
         p.baseUrlAnthropic !== baseUrlAnthropic ||
         p.baseUrlResponses !== baseUrlResponses ||
+        p.baseUrlSystemone !== baseUrlSystemone ||
         (!!body.apiKey && p.apiKey !== body.apiKey) ||
         formatsKey(p.formats) !== formatsKey(formats);
       p.name = body.name!;
       p.baseUrlOpenai = baseUrlOpenai;
       p.baseUrlAnthropic = baseUrlAnthropic;
       p.baseUrlResponses = baseUrlResponses;
+      p.baseUrlSystemone = baseUrlSystemone;
       p.apiKey = newKey;
       p.formats = formats;
       // rpm: present in the body → set (0/invalid clears to unlimited); absent → keep.
@@ -367,6 +410,7 @@ export function adminApi(store: Store, auth: MiddlewareHandler, chat: Hono, resp
         purgeProvider(m.openai, id);
         purgeProvider(m.anthropic, id);
         purgeProvider(m.responses, id);
+        purgeProvider(m.systemone, id);
       }
     });
     if (!found) return c.json({ error: { message: "provider not found" } }, 404);
@@ -425,7 +469,7 @@ export function adminApi(store: Store, auth: MiddlewareHandler, chat: Hono, resp
     const model = (c.req.query("model") ?? "").trim();
     if (!model) return c.json({ error: { message: "?model= (upstream model name) is required" } }, 400);
     const wanted = (c.req.queries("format") ?? []).filter(
-      (f): f is RouteKey => f === "openai" || f === "anthropic" || f === "responses",
+      (f): f is RouteKey => f === "openai" || f === "anthropic" || f === "responses" || f === "systemone",
     );
     const formats: RouteKey[] = wanted.length ? wanted : [...p.formats];
     const results = await Promise.all(
@@ -436,14 +480,17 @@ export function adminApi(store: Store, auth: MiddlewareHandler, chat: Hono, resp
         const start = Date.now();
         try {
           // /responses takes `input`, not `messages` (same probe bodies as the
-          // model tests); max_tokens: 1 keeps the ping cheap.
+          // model tests); max_tokens: 1 keeps the ping cheap. /systemone takes
+          // state+questions (see systemonePing).
           const body =
             format === "responses"
               ? { model, input: "ping", stream: false }
-              : { model, messages: [{ role: "user", content: "ping" }], max_tokens: 1, stream: false };
+              : format === "systemone"
+                ? systemonePing(model)
+                : { model, messages: [{ role: "user", content: "ping" }], max_tokens: 1, stream: false };
           const res = await fetch(upstreamTarget(p, format).url, {
             method: "POST",
-            headers: upstreamHeaders(p, format === "responses" ? "openai" : format),
+            headers: upstreamHeaders(p, format),
             body: JSON.stringify(body),
           });
           const ms = Date.now() - start;
@@ -513,7 +560,7 @@ export function adminApi(store: Store, auth: MiddlewareHandler, chat: Hono, resp
   app.post("/models", async (c) => {
     const body = await readJson<{ name?: string; format?: RouteKey; providers?: string[] }>(c.req.raw);
     if (!body?.name) return c.json({ error: { message: "name is required" } }, 400);
-    if (!body.format) return c.json({ error: { message: "format is required (openai, anthropic, or responses)" } }, 400);
+    if (!body.format) return c.json({ error: { message: "format is required (openai, anthropic, responses, or systemone)" } }, 400);
     const name = body.name;
     const key = body.format;
     const cfg = store.get();
@@ -529,6 +576,7 @@ export function adminApi(store: Store, auth: MiddlewareHandler, chat: Hono, resp
         openai: { enabled: false, providers: [] },
         anthropic: { enabled: false, providers: [] },
         responses: { enabled: false, providers: [] },
+        systemone: { enabled: false, providers: [] },
       });
       const fe = entry[key];
       // Enable/seed dedupes by provider id: re-enabling must not pile up
@@ -558,6 +606,7 @@ export function adminApi(store: Store, auth: MiddlewareHandler, chat: Hono, resp
       openai?: { enabled?: boolean; slots?: unknown };
       anthropic?: { enabled?: boolean; slots?: unknown };
       responses?: { enabled?: boolean; slots?: unknown };
+      systemone?: { enabled?: boolean; slots?: unknown };
       paceRpm?: number;
     }>(c.req.raw);
     if (!body) return c.json({ error: { message: "body required" } }, 400);
@@ -567,7 +616,7 @@ export function adminApi(store: Store, auth: MiddlewareHandler, chat: Hono, resp
     // Parse + validate every provided format BEFORE writing: an invalid slot
     // anywhere must not leave a half-replaced config behind.
     const parsed: Partial<Record<RouteKey, FormatEntry>> = {};
-    for (const key of ["openai", "anthropic", "responses"] as RouteKey[]) {
+    for (const key of ["openai", "anthropic", "responses", "systemone"] as RouteKey[]) {
       const raw = body[key];
       if (!raw) continue;
       const chain: ChainSlot[] = [];
@@ -601,8 +650,9 @@ export function adminApi(store: Store, auth: MiddlewareHandler, chat: Hono, resp
         openai: { enabled: false, providers: [] },
         anthropic: { enabled: false, providers: [] },
         responses: { enabled: false, providers: [] },
+        systemone: { enabled: false, providers: [] },
       });
-      for (const key of ["openai", "anthropic", "responses"] as RouteKey[]) {
+      for (const key of ["openai", "anthropic", "responses", "systemone"] as RouteKey[]) {
         if (parsed[key]) entry[key] = parsed[key]!;
       }
       if (body.paceRpm !== undefined) {
@@ -671,7 +721,7 @@ export function adminApi(store: Store, auth: MiddlewareHandler, chat: Hono, resp
     const name = c.req.param("name");
     const format = c.req.query("format") as RouteKey | undefined;
     const index = Number(c.req.query("index"));
-    if (!format) return c.json({ error: { message: "?format=openai|anthropic|responses is required" } }, 400);
+    if (!format) return c.json({ error: { message: "?format=openai|anthropic|responses|systemone is required" } }, 400);
     if (!Number.isInteger(index) || index < 0)
       return c.json({ error: { message: "?index= (non-negative integer) is required" } }, 400);
     let errStatus = 0;
@@ -696,7 +746,7 @@ export function adminApi(store: Store, auth: MiddlewareHandler, chat: Hono, resp
     const name = c.req.param("name");
     const pid = c.req.param("providerId");
     const format = c.req.query("format") as RouteKey | undefined;
-    if (!format) return c.json({ error: { message: "?format=openai|anthropic|responses is required" } }, 400);
+    if (!format) return c.json({ error: { message: "?format=openai|anthropic|responses|systemone is required" } }, 400);
     await store.update((d) => {
       const entry = d.models[name];
       if (entry) purgeProvider(entry[format], pid);
@@ -742,7 +792,7 @@ export function adminApi(store: Store, auth: MiddlewareHandler, chat: Hono, resp
 
   // Set (or clear) the per-model even-pacing limit: `rpm` requests/min spread
   // evenly (one every 60/rpm seconds; excess calls queue at the gateway, capped
-  // at a 60s wait). 0/blank/invalid clears. Model-wide - shared by all three
+  // at a 60s wait). 0/blank/invalid clears. Model-wide - shared by all four
   // route slots - and independent of the per-source Provider.rpm spill-over.
   app.put("/models/:name/pace", async (c) => {
     const name = c.req.param("name");
@@ -953,21 +1003,16 @@ app.delete("/models/:name/debug/fails", (c) => {
     if (!format) {
       // No slot requested: pick the first one the model is enabled on.
       const entry = cfg.models[name];
-      for (const k of ["openai", "anthropic", "responses"] as RouteKey[]) if (entry[k]?.enabled) { format = k; break; }
+      for (const k of ["openai", "anthropic", "responses", "systemone"] as RouteKey[]) if (entry[k]?.enabled) { format = k; break; }
     }
     if (!format) {
       return c.json({ result: { ok: false, status: 0, format: "openai", error: "model not enabled on any routing slot" } });
     }
     // Route the loopback to the matching surface sub-app: each protocol has
     // its own surface now (anthropic → /messages, responses → /responses,
-    // openai → /chat/completions).
-    const sub = format === "anthropic" ? anthropic : format === "responses" ? responses : chat;
-    const path = format === "anthropic" ? "/messages" : format === "responses" ? "/responses" : "/chat/completions";
-    // /responses is the OpenAI Responses API — it takes `input`, not `messages`.
-    const body =
-      format === "responses"
-        ? { model: name, input: "ping", stream: false }
-        : { model: name, messages: [{ role: "user", content: "ping" }], max_tokens: 1, stream: false };
+    // systemone → /, openai → /chat/completions).
+    const { sub, path } = surfaceFor(format);
+    const body = pingBody(format, name);
     let res: Response;
     try {
       res = await sub.request(path, {
@@ -1007,7 +1052,7 @@ app.delete("/models/:name/debug/fails", (c) => {
     let format = c.req.query("format") as RouteKey | undefined;
     if (!format) {
       // No slot requested: pick the first one the model is enabled on.
-      for (const k of ["openai", "anthropic", "responses"] as RouteKey[]) if (entry[k]?.enabled) { format = k; break; }
+      for (const k of ["openai", "anthropic", "responses", "systemone"] as RouteKey[]) if (entry[k]?.enabled) { format = k; break; }
     }
     if (!format || !entry[format]?.enabled) {
       return c.json({ result: { ok: false, status: 0, format: format ?? "openai", error: "model not enabled on that routing slot" } });
@@ -1020,13 +1065,8 @@ app.delete("/models/:name/debug/fails", (c) => {
     if (!provider || !providerSpeaks(provider, format)) {
       return c.json({ result: { ok: false, status: 0, format, error: "source does not speak this format" } });
     }
-    const sub = format === "anthropic" ? anthropic : format === "responses" ? responses : chat;
-    const path = format === "anthropic" ? "/messages" : format === "responses" ? "/responses" : "/chat/completions";
-    // /responses is the OpenAI Responses API — it takes `input`, not `messages`.
-    const body =
-      format === "responses"
-        ? { model: name, input: "ping", stream: false }
-        : { model: name, messages: [{ role: "user", content: "ping" }], max_tokens: 1, stream: false };
+    const { sub, path } = surfaceFor(format);
+    const body = pingBody(format, name);
     let res: Response;
     try {
       res = await sub.request(path, {

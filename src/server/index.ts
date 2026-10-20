@@ -33,6 +33,7 @@ serve({ fetch: app.fetch, port }, async (info) => {
   console.log(`  proxy:   ${url}/openai-chat/v1/chat/completions   (OpenAI chat)`);
   console.log(`           ${url}/openai-responses/v1/responses     (OpenAI Responses)`);
   console.log(`           ${url}/anthropic/v1/messages             (Anthropic)`);
+  console.log(`           ${url}/v1/systemone                      (System One)`);
   console.log(`  data:    ${dataDir}  (override with --data-dir or MYAPIKEY_DATA_DIR)`);
   console.log(`  log:     ${store.getPaths().serverLogFile}  (errors + failover/cooldown events; level via MYAPIKEY_LOG_LEVEL)\n`);
   store.getLogger().info(`gateway started on port ${info.port}, data=${dataDir}`);

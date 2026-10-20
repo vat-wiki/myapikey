@@ -49,6 +49,32 @@ function isAccountLevelError(status: number, bodyText: string): boolean {
 const PACE_MAX_WAIT_S = 60;
 const RPM_SECONDS = 60;
 
+/** Abort an upstream call whose response HEADERS haven't arrived within this
+ *  window (a hung/dead source → fail over to the next one). Covers ONLY the
+ *  time-to-first-byte: the timer is cancelled the moment the headers land,
+ *  because the same abort signal drives the body stream too — a long, healthy
+ *  completion must never be killed by it. A 200 that then stalls mid-body is
+ *  STREAM_IDLE_MS's job. Override with MYAPIKEY_TTFB_TIMEOUT_MS (0 disables). */
+const TTFB_TIMEOUT_MS = Number(process.env.MYAPIKEY_TTFB_TIMEOUT_MS) || 120_000;
+
+/** Close a stream that stops flowing: if no bytes arrive from the upstream for
+ *  this long — before or after the headers — the body is errored (a synthetic
+ *  wire-appropriate error frame is injected), the call settles 504 and the
+ *  circuit records the failure. Without it a hung upstream leaves the agent
+ *  waiting forever and the gateway logs nothing at all (settle only fires on
+ *  EOF / reader error / client cancel). Override with MYAPIKEY_STREAM_IDLE_MS
+ *  (0 disables). */
+const STREAM_IDLE_MS = Number(process.env.MYAPIKEY_STREAM_IDLE_MS) || 300_000;
+
+/** A 200 whose body never produced a single byte is retried (fail over to the
+ *  next source) up to this many times BEFORE the response is committed to the
+ *  client — see the first-byte gate in dispatch. Only stalls with zero bytes
+ *  forwarded are retryable: once anything has been sent, a retry would replay
+ *  content the client already saw. Override with MYAPIKEY_STREAM_STALL_RETRIES
+ *  (0 disables the retries — first stall answers the client directly). */
+const STREAM_STALL_RETRIES_N = Number(process.env.MYAPIKEY_STREAM_STALL_RETRIES);
+const STREAM_STALL_RETRIES = Number.isFinite(STREAM_STALL_RETRIES_N) && STREAM_STALL_RETRIES_N >= 0 ? STREAM_STALL_RETRIES_N : 2;
+
 /** Headers copied from upstream back to the client. */
 const COPY_DOWN = ["content-type", "cache-control", "x-request-id", "openai-organization", "anthropic-ratelimit-requests-reset"];
 
@@ -110,10 +136,11 @@ interface CandidateSlot {
 
 /** Which Provider base URL serves each routing format (all non-empty for a
  *  format the source actually offers — admin validation enforces it). */
-const FORMAT_BASE: Record<RouteKey, "baseUrlOpenai" | "baseUrlAnthropic" | "baseUrlResponses"> = {
+const FORMAT_BASE: Record<RouteKey, "baseUrlOpenai" | "baseUrlAnthropic" | "baseUrlResponses" | "baseUrlSystemone"> = {
   openai: "baseUrlOpenai",
   anthropic: "baseUrlAnthropic",
   responses: "baseUrlResponses",
+  systemone: "baseUrlSystemone",
 };
 
 /** Resolve the ordered, compatible provider slots for a model on a routing slot. */
@@ -176,6 +203,7 @@ function notFound(c: Context, model: string) {
 function thinkingFields(key: RouteKey): string[] {
   if (key === "anthropic") return ["thinking"];
   if (key === "responses") return ["reasoning"];
+  if (key === "systemone") return []; // the System One protocol has no thinking switches
   return ["reasoning_effort", "reasoning", "thinking", "enable_thinking"];
 }
 
@@ -280,6 +308,8 @@ function applySlotSampling(
   def: Record<string, unknown> | undefined,
   orig: Record<string, unknown>,
 ): Record<string, unknown> | undefined {
+  // Sampling is a chat-family concept; the System One body has no such fields
+  // (a slot's configured defaults simply don't apply on this route).
   if (!def) {
     for (const f of SAMPLING_FIELDS) {
       if (orig[f] === undefined) delete body[f];
@@ -314,8 +344,8 @@ export function anthropicAuthHeaders(apiKey: string, version: string): Record<st
 /** Exported for the admin source-test (direct upstream ping, no routing). */
 export function upstreamHeaders(provider: Provider, format: RouteKey, clientVersion?: string): Record<string, string> {
   const h: Record<string, string> = { "content-type": "application/json" };
-  if (format === "openai") h.authorization = `Bearer ${provider.apiKey}`;
-  else Object.assign(h, anthropicAuthHeaders(provider.apiKey, clientVersion || "2023-06-01"));
+  if (format === "anthropic") Object.assign(h, anthropicAuthHeaders(provider.apiKey, clientVersion || "2023-06-01"));
+  else h.authorization = `Bearer ${provider.apiKey}`; // openai + systemone (Bearer-only)
   return h;
 }
 
@@ -326,6 +356,11 @@ export function upstreamHeaders(provider: Provider, format: RouteKey, clientVers
 export function upstreamTarget(p: Provider, key: RouteKey): { url: string; wire: Format } {
   if (key === "anthropic") {
     return { url: `${trimBase(p.baseUrlAnthropic)}/v1/messages`, wire: "anthropic" };
+  }
+  if (key === "systemone") {
+    // System One base includes the version segment (OpenAI convention); the
+    // bare resource is appended.
+    return { url: `${trimBase(p.baseUrlSystemone)}/systemone`, wire: "systemone" };
   }
   const base = key === "responses" ? p.baseUrlResponses : p.baseUrlOpenai;
   const path = key === "responses" ? "responses" : "chat/completions";
@@ -365,7 +400,12 @@ export function shortError(text: string): string {
 /** Outcome of observing an upstream body to completion. A 200 at the headers is
  *  not proof the call succeeded — some backends 200 then truncate the stream or
  *  emit nothing for request shapes they mishandle. `ok` means the stream truly
- *  ended cleanly (terminal marker seen for streaming; clean close otherwise). */
+ *  ended cleanly (terminal marker seen for streaming; a complete JSON body for
+ *  non-streaming — a clean close alone proves nothing there, see the done
+ *  branch below).
+ *  `status: 499` marks a CLIENT abort (the caller hung up mid-body) — dispatch
+ *  logs the row but takes no circuit side-effects, since the provider did
+ *  nothing wrong. */
 interface SettleInfo {
   ok: boolean;
   status: number;
@@ -410,7 +450,8 @@ function requireUpstreamUsage(body: Record<string, unknown>, key: RouteKey, stre
  *  openai [DONE] / responses response.completed), buffered across chunk
  *  boundaries — NOT on content, which would false-positive on legitimate
  *  tool-use responses that carry only input_json_delta. A client cancel settles
- *  nothing (the client walked away — not a provider failure, don't log/cool). */
+ *  499 (the client walked away — not a provider failure, so no log side-effects
+ *  beyond the 499 row and no circuit impact). */
 /** Substrings whose presence proves a streaming response reached a REAL
  *  terminal event — so an absent marker at stream-end means truncation. Keyed by
  *  routing slot: anthropic ends on message_stop; /chat/completions on [DONE];
@@ -457,10 +498,23 @@ function observedBody(
      *  tee point (the proxy keeps forwarding bytes verbatim regardless).
      *  Optional: absent = zero capture overhead. */
     onText?: (txt: string) => void;
+    /** The AbortController driving the upstream fetch. Aborted on a client
+     *  cancel and on the idle timeout, so a body nobody reads (or a hung
+     *  upstream) stops burning the source's quota. */
+    upstreamAbort?: AbortController;
+    /** Stream-idle window (ms): no bytes from the upstream for this long and
+     *  the body is errored + settled 504. 0 disables. */
+    idleMs?: number;
+    /** Reader for the upstream body. Supplied when dispatch already locked
+     *  the body for its first-byte gate — a stream allows only one reader. */
+    reader?: ReadableStreamDefaultReader<Uint8Array>;
+    /** Pre-read first body chunk (from dispatch's first-byte gate). Fed through
+     *  the same decode/usage/marker path so usage and capture stay complete. */
+    firstChunk?: Uint8Array;
     onSettle: (info: SettleInfo) => void;
   },
 ): ReadableStream<Uint8Array> {
-  const reader = upstream.body?.getReader();
+  const reader = opts.reader ?? upstream.body?.getReader();
   const enc = new TextEncoder();
   const dec = new TextDecoder();
   const markers = terminalMarkers(opts.key, opts.stream);
@@ -479,6 +533,39 @@ function observedBody(
     controller.enqueue(enc.encode(errorFrame(opts.key, reason)));
   };
 
+  /** One upstream read, raced against the stream-idle timer. `stalled` marks
+   *  the case where OUR timer won (vs. a genuine reader error) so the catch
+   *  can settle 504 instead of 502. */
+  let stalled = false;
+  type UpstreamChunk = Awaited<ReturnType<NonNullable<typeof reader>["read"]>>;
+  const readUpstream = (r: NonNullable<typeof reader>): Promise<UpstreamChunk> => {
+    const read = r.read();
+    // The idle race below may abandon this promise — when the timer fires we
+    // abort the upstream, which rejects this read later with nobody left
+    // awaiting it. Attach a no-op handler NOW so that orphaned rejection can
+    // never surface as an unhandledRejection.
+    read.catch(() => {});
+    if (!opts.idleMs) return read;
+    return new Promise<UpstreamChunk>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        stalled = true;
+        opts.upstreamAbort?.abort(); // unblock the hung upstream read
+        reject(new Error(`no bytes for ${Math.round((opts.idleMs ?? 0) / 1000)}s`));
+      }, opts.idleMs);
+      timer.unref?.(); // never hold the process open for an idle guard
+      void read.then(
+        (v) => {
+          clearTimeout(timer);
+          resolve(v);
+        },
+        (e) => {
+          clearTimeout(timer);
+          reject(e);
+        },
+      );
+    });
+  };
+
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
       if (!reader) {
@@ -488,29 +575,48 @@ function observedBody(
       }
       while (true) {
         try {
-          const { done, value } = await reader.read();
+          const held = opts.firstChunk;
+          opts.firstChunk = undefined;
+          const { done, value } = held ? { done: false as const, value: held } : await readUpstream(reader);
           if (done) {
+            if (settled) {
+              // Settled out-of-band (client cancel raced us) — the reader's
+              // pending read just resolved done as a side-effect of our own
+              // cancel(); nothing left to forward.
+              try {
+                controller.close();
+              } catch {
+                // stream already cancelled by the client
+              }
+              return;
+            }
             const finalUsage = usage.finalize({ stream: opts.stream, key: opts.key, requestMessages: opts.requestMessages });
             if (opts.stream && !terminal) {
               const reason = "upstream stream truncated (no terminal marker)";
-              injectError(controller, reason);
               settle({ ok: false, status: 502, error: reason });
-            } else {
+              injectError(controller, reason);
+            } else if (opts.stream) {
               settle({ ok: true, status: 200, usage: finalUsage });
-              if (opts.stream) {
-                controller.enqueue(enc.encode(usageFrame(opts.key, finalUsage ?? { input: 0, output: 0 })));
-                for (const value of heldTerminal) controller.enqueue(value);
-              } else {
-                let body = usage.bodyText();
-                try {
-                  const parsed = JSON.parse(body) as Record<string, unknown>;
-                  applyWireUsage(parsed, opts.key, finalUsage ?? { input: 0, output: 0 });
-                  body = JSON.stringify(parsed);
-                } catch {
-                  // Leave malformed upstream bodies untouched; usage is still logged.
-                }
-                controller.enqueue(enc.encode(body));
+              controller.enqueue(enc.encode(usageFrame(opts.key, finalUsage ?? { input: 0, output: 0 })));
+              for (const value of heldTerminal) controller.enqueue(value);
+            } else {
+              // Non-streaming: a clean EOF proves nothing — a body cut off
+              // mid-write ends as a normal read-done. The only tell is that
+              // the JSON never completes. So parse: a valid body settles 200
+              // (with usage filled in); a malformed one settles 502 so the
+              // row and the circuit tell the truth — the broken body STILL
+              // goes to the client verbatim (the 200 headers were committed
+              // long ago; it would have received these bytes either way).
+              let body = usage.bodyText();
+              try {
+                const parsed = JSON.parse(body) as Record<string, unknown>;
+                applyWireUsage(parsed, opts.key, finalUsage ?? { input: 0, output: 0 });
+                body = JSON.stringify(parsed);
+                settle({ ok: true, status: 200, usage: finalUsage });
+              } catch {
+                settle({ ok: false, status: 502, error: "upstream body truncated (incomplete JSON)" });
               }
+              controller.enqueue(enc.encode(body));
             }
             controller.close();
             return;
@@ -532,16 +638,32 @@ function observedBody(
           }
           return;
         } catch (e) {
-          const reason = `upstream stream error: ${e instanceof Error ? e.message : String(e)}`;
-          injectError(controller, reason);
-          settle({ ok: false, status: 502, error: reason });
-          controller.close();
+          opts.upstreamAbort?.abort();
+          const msg = e instanceof Error ? e.message : String(e);
+          const reason = stalled ? `upstream stream stalled (${msg})` : `upstream stream error: ${msg}`;
+          settle({ ok: false, status: stalled ? 504 : 502, error: reason });
+          try {
+            injectError(controller, reason);
+            controller.close();
+          } catch {
+            // The client already cancelled — nothing to inject into (the row
+            // above is already written; that's the part that matters).
+          }
           return;
         }
       }
     },
     cancel() {
-      settled = true;
+      // The client hung up mid-body. Not a provider failure — but settle as
+      // 499 so dispatch logs the row (without it the call vanishes from the
+      // history entirely: no terminal marker ever arrives, no error is ever
+      // thrown, and until now a cancel settled NOTHING). The abort also stops
+      // the upstream body, so we stop burning the source's quota for a reader
+      // that's gone.
+      if (!settled) {
+        opts.upstreamAbort?.abort();
+        settle({ ok: false, status: 499, error: "client aborted mid-stream" });
+      }
       reader?.cancel().catch(() => {});
     },
   });
@@ -580,18 +702,21 @@ function modelsList(c: Context, store: Store, key: RouteKey) {
 export function proxyApi(
   store: Store,
   auth: MiddlewareHandler,
-): { chat: Hono; responses: Hono; anthropic: Hono } {
+): { chat: Hono; responses: Hono; anthropic: Hono; systemone: Hono } {
   const chat = new Hono();
   const responses = new Hono();
   const anthropic = new Hono();
+  const systemone = new Hono();
   chat.use("*", auth);
   responses.use("*", auth);
   anthropic.use("*", auth);
+  systemone.use("*", auth);
   // Model lists sit behind the same gateway key: the enabled model names reveal
   // routing and usage patterns, so they are not a public discovery surface.
   chat.get("/models", (c) => modelsList(c, store, "openai"));
   responses.get("/models", (c) => modelsList(c, store, "responses"));
   anthropic.get("/models", (c) => modelsList(c, store, "anthropic"));
+  systemone.get("/models", (c) => modelsList(c, store, "systemone"));
 
   /** Shared dispatch with failover. `key` selects the routing slot (and thus the
    *  candidate chain); `wire`/`path` derive from it for the upstream call. */
@@ -601,8 +726,11 @@ export function proxyApi(
       return c.json({ error: { message: "request body must be JSON with a 'model' field", type: "invalid_request_error" } }, 400);
     }
     const model: string = body.model;
-    const wire: Format = key === "anthropic" ? "anthropic" : "openai";
-    const stream = body.stream === true;
+    const wire: Format = key === "anthropic" ? "anthropic" : key === "systemone" ? "systemone" : "openai";
+    // System One is a one-shot structured evaluation with NO streaming — the
+    // body is observed as a single JSON document regardless of any `stream`
+    // flag a client sent (the upstream has no stream mode to request).
+    const stream = key === "systemone" ? false : body.stream === true;
     requireUpstreamUsage(body, key, stream);
     // The request's own thinking switches, snapshotted BEFORE the failover
     // loop — each attempt mutates the shared body, and a passthrough slot
@@ -655,6 +783,12 @@ export function proxyApi(
     const start = Date.now();
     let lastStatus = 502;
     let lastErr = "";
+    // First-byte-gate stalls retried so far (see the gate below). Bounded so a
+    // persistently silent source can't loop the rounds forever.
+    let stallRetries = 0;
+    // Whether the most recent failure was a first-byte-gate stall (drives the
+    // rounds-loop retry below; non-stall failures keep their old semantics).
+    let lastWasStall = false;
     // Thinking level of the most recent attempt (for the all-failed row after
     // the rounds loop; per-attempt rows capture the loop's own `think` const).
     let lastThink: { value: string; from: "client" | "default" } | undefined;
@@ -697,7 +831,11 @@ export function proxyApi(
         await new Promise((r) => setTimeout(r, wait));
         // The client may have hung up while queued - release nothing upstream
         // (the slot is already spent, but no need to burn provider quota too).
-        if (c.req.raw.signal?.aborted) return new Response(null, { status: 499 });
+        // Log the 499 row: without it the call would leave no trace at all.
+        if (c.req.raw.signal?.aborted) {
+          store.pushLog({ ts: Date.now(), model, provider: "", format: key, status: 499, ms: Date.now() - start, stream, error: "client aborted while waiting in the even-pacing queue" });
+          return new Response(null, { status: 499 });
+        }
       }
     }
 
@@ -718,7 +856,7 @@ export function proxyApi(
     const overRpm = (slot: CandidateSlot) => !!slot.provider.rpm && store.rpmUsed(slot.provider.id) >= slot.provider.rpm;
     /** Sleep until the soonest rpm slot frees among `capped`. Returns false
      *  when the client hung up while queued — the caller drops the request
-     *  (nothing was sent upstream, so no log row either). */
+     *  (nothing was sent upstream) after logging a 499 row. */
     const waitForSlot = async (capped: CandidateSlot[]): Promise<boolean> => {
       const wait = Math.max(1, Math.min(...capped.map((s) => store.rpmNextFreeMs(s.provider.id))));
       if (!isProbe) rt.warn(`proxy model=${model}: all sources over rpm cap — queued, next slot in ~${Math.round(wait / 1000)}s`);
@@ -734,6 +872,7 @@ export function proxyApi(
       const capped = pinIndex != null ? [] : cur.filter((s) => !cooling(s) && overRpm(s));
       if (pinIndex == null && !live.length && capped.length) {
         if (await waitForSlot(capped)) continue;
+        store.pushLog({ ts: Date.now(), model, provider: "", format: key, status: 499, ms: Date.now() - start, stream, error: "client aborted while waiting for a source slot" });
         return new Response(null, { status: 499 });
       }
       const order = live.length ? live : cur;
@@ -744,6 +883,7 @@ export function proxyApi(
         // the slot each iteration, so failover never carries the previous slot's
         // upstream name.
         body.model = slot.model ?? model;
+        lastWasStall = false;
         // The actual upstream model forwarded this attempt (after the per-slot
         // rewrite). Recorded on the log row so history shows which real model a
         // routed call landed on when a source remaps the public name. `undefined`
@@ -754,12 +894,14 @@ export function proxyApi(
         // attempt. A configured default OVERRIDES whatever the request carried;
         // a slot without one restores the request's own switches (see
         // applySlotThinking), so slot A's level never leaks into slot B.
-        const think = applySlotThinking(body, key, slot.thinking, thinkOrig);
+        // Skipped on the System One route — its body carries state/questions
+        // only; no thinking or sampling switches exist there to steer.
+        const think = key === "systemone" ? undefined : applySlotThinking(body, key, slot.thinking, thinkOrig);
         lastThink = think;
         // Per-slot sampling defaults: same recompute-per-attempt discipline as
         // the model rewrite and the thinking level (see applySlotSampling). A
         // configured field overrides the request's own; the rest pass through.
-        const sampling = applySlotSampling(body, slot.sampling, samplingOrig);
+        const sampling = key === "systemone" ? undefined : applySlotSampling(body, slot.sampling, samplingOrig);
         lastSampling = sampling;
         // Count this attempt toward the source's RPM window — but not for a pinned
         // probe, which (like circuit state) takes no routing side-effects.
@@ -797,25 +939,70 @@ export function proxyApi(
           store.pushCapture(model, row);
         };
         let upstream: Response;
+        const clientSignal = c.req.raw.signal;
+        // The client may have hung up between rounds (while queued) — the
+        // abort listener below can't fire on an ALREADY-aborted signal, so
+        // check up front. Same 499 row as the mid-fetch hang-up.
+        if (clientSignal?.aborted) {
+          store.pushLog({ ts: Date.now(), model, provider: provider.name, providerId: provider.id, format: key, status: 499, ms: Date.now() - start, stream, thinking: think, sampling, error: "client aborted" });
+          return new Response(null, { status: 499 });
+        }
+        // One AbortController drives the whole upstream exchange. It fires when:
+        // (a) the client hangs up — stop burning the source's quota on a
+        //     response nobody will read;
+        // (b) the TTFB timer expires — the source took TTFB_TIMEOUT_MS without
+        //     answering, treat it as dead and fail over.
+        // The timer is cancelled as soon as the headers land: the same signal
+        // drives the body stream, and a long, healthy completion must never be
+        // killed by a time-to-first-byte guard. (AbortSignal.timeout() alone
+        // would do exactly that — hence the manual, clearable timer.)
+        const ac = new AbortController();
+        const onClientAbort = () => ac.abort();
+        clientSignal?.addEventListener("abort", onClientAbort);
+        const ttfbMsg = `upstream timeout: no response headers within ${Math.round(TTFB_TIMEOUT_MS / 1000)}s`;
+        const ttfbTimer = setTimeout(() => ac.abort(new Error(ttfbMsg)), TTFB_TIMEOUT_MS);
+        ttfbTimer.unref?.();
         try {
           upstream = await fetch(upstreamTarget(provider, key).url, {
             method: "POST",
             headers: upstreamHeaders(provider, wire, clientVersion),
             body: reqText,
+            signal: ac.signal,
           });
-        } catch {
-          // Network error / DNS / timeout → try next provider.
-          capture(0, undefined, false, "network error");
-          lastStatus = 502;
-          lastErr = "network error";
+        } catch (e) {
+          // Three distinct causes land here, with different bookkeeping.
+          if (clientSignal?.aborted) {
+            // (a) The client hung up before headers arrived. Not the provider's
+            // fault — no failover, no circuit impact, no failure-net capture —
+            // but the call IS logged (499 row): until now an abort here left no
+            // trace at all, which is exactly the "agent stopped and the logs
+            // show nothing" blind spot.
+            store.pushLog({ ts: Date.now(), model, provider: provider.name, providerId: provider.id, format: key, status: 499, ms: Date.now() - start, stream, thinking: think, sampling, error: "client aborted" });
+            return new Response(null, { status: 499 });
+          }
+          const timedOut = ac.signal.aborted; // (b) our own TTFB timer — client still there
+          // Keep the REAL cause: undici wraps everything as "fetch failed" and
+          // buries the actual reason (ECONNRESET / ENOTFOUND / cert error) in
+          // `cause`. Logging the bare wrapper is how an upstream cutting the
+          // connection became an indistinguishable "network error".
+          const msg = e instanceof Error ? e.message : String(e);
+          const cause = e instanceof Error && e.cause ? (e.cause instanceof Error ? e.cause.message : String(e.cause)) : undefined;
+          lastStatus = timedOut ? 504 : 502;
+          lastErr = timedOut ? ttfbMsg : `network error: ${cause ? `${msg} (${cause})` : msg}`;
+          capture(0, undefined, false, lastErr);
           if (pinIndex != null) break; // per-source probe: fail fast, no circuit impact.
-          sayFailover(provider, "network error");
+          sayFailover(provider, lastErr);
           const r = store.recordCircuitFailure(provider.id, lastStatus, lastErr);
           if (r.entered) {
             store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: key, status: lastStatus, ms: Date.now() - start, stream, thinking: think, sampling, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: lastErr });
             sayCooldown(provider, r);
           }
           continue;
+        } finally {
+          // Headers arrived (or we've fully handled their absence) — the TTFB
+          // guard is done either way, and it must never reach the body stream.
+          clearTimeout(ttfbTimer);
+          clientSignal?.removeEventListener("abort", onClientAbort);
         }
 
         if (upstream.ok) {
@@ -831,6 +1018,60 @@ export function proxyApi(
           // the body's end (so the row reflects the real outcome, not just the
           // headers). See observedBody() for the detection rules.
           const ttfb = Date.now() - start;
+          // FIRST-BYTE GATE: a 200 whose body then never produces a single byte
+          // would — without this gate — commit the 200 headers to the client and
+          // stall until the in-body idle guard fires, past the point where any
+          // retry is safe. Instead, hold the response until the first upstream
+          // byte lands (same idle window), then hand the held chunk to
+          // observedBody and proceed exactly as before. If the window expires
+          // first, NOTHING has been sent to the client yet: treat it like a TTFB
+          // timeout (circuit failure + failover), up to STREAM_STALL_RETRIES
+          // stall-retries per request, then a clean 504.
+          const bodyReader = STREAM_IDLE_MS ? upstream.body?.getReader() : undefined;
+          let firstChunk: Uint8Array | undefined;
+          if (bodyReader) {
+            const gate = await new Promise<{ stalled: true } | { stalled: false; chunk?: Uint8Array; error?: unknown }>((resolve) => {
+              const timer = setTimeout(() => resolve({ stalled: true }), STREAM_IDLE_MS);
+              timer.unref?.();
+              void bodyReader.read().then(
+                (v) => { clearTimeout(timer); resolve({ stalled: false, chunk: v.value }); },
+                (e) => { clearTimeout(timer); resolve({ stalled: false, error: e }); },
+              );
+            });
+            if (gate.stalled) {
+              ac.abort(); // unblock the hung upstream read
+              const reason = `upstream stream stalled: no bytes for ${Math.round(STREAM_IDLE_MS / 1000)}s before the first body byte`;
+              lastStatus = 504;
+              lastErr = reason;
+              capture(504, undefined, false, reason);
+              if (pinIndex != null) break; // per-source probe: fail fast, no circuit impact.
+              sayFailover(provider, reason);
+              const r = store.recordCircuitFailure(provider.id, 504, reason);
+              if (r.entered) {
+                store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: key, status: 504, ms: ttfb, stream, thinking: think, sampling, kind: "cooldown", cooldownMs: r.cooldownMs, fails: r.fails, error: reason });
+                sayCooldown(provider, r);
+              }
+              lastWasStall = true;
+              stallRetries++;
+              if (stallRetries > STREAM_STALL_RETRIES) {
+                if (!isProbe) rt.error(`proxy stream stalled before first byte, retries exhausted model=${model}`);
+                store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: key, status: 504, ms: ttfb, stream, thinking: think, sampling, error: `${reason} (${STREAM_STALL_RETRIES} retries exhausted)` });
+                return c.json({ error: { message: `upstream for '${model}' stalled before responding (${STREAM_STALL_RETRIES} retries exhausted)`, type: "upstream_error" } }, 504);
+              }
+              continue;
+            }
+            if (gate.error && clientSignal?.aborted) {
+              // The gate read rejected because the CLIENT hung up while we held
+              // the response. Same 499 row as the pre-headers abort — handing
+              // the errored reader to observedBody would instead settle a 502
+              // and wrongly punish the source.
+              store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: key, status: 499, ms: ttfb, stream, thinking: think, sampling, error: "client aborted" });
+              return new Response(null, { status: 499 });
+            }
+            // A real gate chunk (or an upstream read error, which observedBody
+            // re-raises on its own read) — proceed exactly as before.
+            firstChunk = gate.chunk;
+          }
           // Debug capture tee: accumulate the decoded chunks into a bounded
           // string (the proxy keeps forwarding bytes verbatim regardless).
           const capAcc = { text: "", truncated: false };
@@ -838,6 +1079,10 @@ export function proxyApi(
             stream,
             key,
             requestMessages: body.messages,
+            upstreamAbort: ac,
+            idleMs: STREAM_IDLE_MS,
+            reader: bodyReader,
+            firstChunk,
             onText: (txt: string) => {
               const room = CAPTURE_BODY_MAX - capAcc.text.length;
               if (room <= 0) {
@@ -852,6 +1097,13 @@ export function proxyApi(
                 store.recordCircuitSuccess(provider.id);
                 store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: key, status: 200, ms: ttfb, stream, thinking: think, sampling, usage: info.usage });
                 capture(200, capAcc.text, capAcc.truncated);
+              } else if (info.status === 499) {
+                // The client hung up mid-stream. Not the provider's fault: no
+                // circuit failure, no rt.warn, no failure-net capture — but the
+                // row IS logged, so the call shows in history (status 499,
+                // "how long the client stayed" = Date.now() - start) instead of
+                // vanishing without a trace.
+                store.pushLog({ ts: Date.now(), model, upstreamModel, provider: provider.name, providerId: provider.id, format: key, status: 499, ms: Date.now() - start, stream, thinking: think, sampling, error: info.error });
               } else {
                 // A pinned per-source probe takes no circuit side-effects (a manual
                 // test must not trip the breaker) — mirrors the retryable branch.
@@ -899,10 +1151,17 @@ export function proxyApi(
 
       const last = order[order.length - 1];
       const lastUpstreamModel = last.model && last.model !== model ? last.model : undefined;
+      // First-byte-gate stalls keep retrying through the rounds loop too: a
+      // single-slot chain reaches here after ONE attempt (no next slot to
+      // `continue` to), so the stall budget continues the rounds here instead
+      // of collapsing into the all-failed 502. Bounded — the gate's give-up
+      // 504 fires once stallRetries exceeds STREAM_STALL_RETRIES.
+      if (pinIndex == null && lastWasStall && stallRetries <= STREAM_STALL_RETRIES) continue;
       // Every slot in this round failed retryably. rpm-capped candidates
       // remain - queue for their next slot instead of erroring the client.
       if (pinIndex == null && capped.length) {
         if (await waitForSlot(capped)) continue;
+        store.pushLog({ ts: Date.now(), model, provider: "", format: key, status: 499, ms: Date.now() - start, stream, error: "client aborted while waiting for a source slot" });
         return new Response(null, { status: 499 });
       }
       if (!isProbe) rt.error(`proxy all providers failed model=${model} (last status ${lastStatus})`);
@@ -934,5 +1193,10 @@ export function proxyApi(
   // Anthropic surface: messages.
   anthropic.post("/messages", (c) => dispatch(c, "anthropic"));
 
-  return { chat, responses, anthropic };
+  // System One surface: the TypeSafe one-shot structured-evaluation protocol.
+  // Mounted under its own prefix (/v1/systemone in app.ts) — the POST goes to
+  // the bare resource, verbatim-body passthrough with failover.
+  systemone.post("/", (c) => dispatch(c, "systemone"));
+
+  return { chat, responses, anthropic, systemone };
 }

@@ -48,8 +48,9 @@ const PACE_MAX_WAIT_MS = 60_000;
 /** Debug capture (in-memory ring buffers, never persisted). Two tiers:
  *  - FAIL_NET (global): the last CAPTURE_FAIL_MAX FAILED upstream attempts
  *    across ALL models, recorded ALWAYS (that's the safety net — errors are
- *    debugged after the fact, when nobody pre-armed a switch). 50 × 2 × 256KB
- *    ≈ 25MB worst case, typical far less (failed responses are tiny).
+ *    debugged after the fact, when nobody pre-armed a switch). Worst case is
+ *    bounded by CAPTURE_BODY_MAX × ring size (see below), typical far less
+ *    (failed responses are tiny).
  *  - per-model switch buffer: last CAPTURE_MAX attempts of a model whose
  *    ModelEntry.debugCapture is on — success AND failure.
  *  Bodies (conversations) are sensitive: everything lives only in memory,
@@ -57,7 +58,11 @@ const PACE_MAX_WAIT_MS = 60_000;
  *  endpoints drop it on demand. */
 export const CAPTURE_MAX = 50;
 export const CAPTURE_FAIL_MAX = 50;
-export const CAPTURE_BODY_MAX = 256 * 1024;
+/** Per-body capture ceiling, in UTF-16 code units. 8MB — far above any real
+ *  conversation (multi-hundred-KB context + response), so captures are
+ *  effectively complete; it only guards a pathological body from ballooning
+ *  the in-memory rings (50 × 2 × 8MB ≈ 800MB absolute worst case). */
+export const CAPTURE_BODY_MAX = 8 * 1024 * 1024;
 
 /** Per-provider circuit state (in-memory, never persisted). */
 interface CircuitEntry {
@@ -273,7 +278,8 @@ export class Store {
     const m2 = migrateProviders(raw);
     const m3 = migrateFormatEntries(raw);
     const m4 = migrateProviderFormats(raw);
-    if (m1 || m2 || m3 || m4 || !raw.version || raw.version < CONFIG_VERSION) {
+    const m5 = migrateSystemone(raw);
+    if (m1 || m2 || m3 || m4 || m5 || !raw.version || raw.version < CONFIG_VERSION) {
       raw.version = CONFIG_VERSION;
       this.persist(raw);
     } else if (raw.version > CONFIG_VERSION) {
@@ -916,6 +922,32 @@ function migrateProviderFormats(raw: GateConfig): boolean {
     p.baseUrlResponses = p.supportsResponses ? p.baseUrlOpenai : "";
     if (p.supportsResponses && !p.formats.includes("responses")) p.formats.push("responses");
     delete p.supportsResponses;
+    changed = true;
+  }
+  return changed;
+}
+
+/**
+ * System One routing slot (v6 → v7).
+ *  - v6 model entries had three routing slots; v7 adds the fourth peer slot
+ *    `systemone` (TypeSafe System One protocol, /v1/systemone), seeded
+ *    disabled + empty — no existing routing changes.
+ *  - Providers gain `baseUrlSystemone` ("" = not served), mirroring how
+ *    baseUrlResponses was introduced.
+ * Idempotent: entries already carrying the slot / the field are skipped.
+ */
+function migrateSystemone(raw: GateConfig): boolean {
+  let changed = false;
+  for (const p of raw.providers) {
+    if (typeof p.baseUrlSystemone === "string") continue; // already v7
+    p.baseUrlSystemone = "";
+    changed = true;
+  }
+  const models = raw.models as Record<string, unknown>;
+  for (const entry of Object.values(models)) {
+    if (!entry || typeof entry !== "object") continue;
+    if ("systemone" in entry) continue; // already v7
+    (entry as Record<string, unknown>).systemone = { enabled: false, providers: [] };
     changed = true;
   }
   return changed;

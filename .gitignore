@@ -15,3 +15,5 @@ coverage/
 test-results/
 playwright-report/
 .blob/
+# Local tool configs (may contain live keys)
+opencode.json

@@ -42,7 +42,7 @@ function setView(v: ViewMode) {
   }
 }
 
-const FORMATS: Fmt[] = ["openai", "anthropic", "responses"];
+const FORMATS: Fmt[] = ["openai", "anthropic", "responses", "systemone"];
 
 const models = ref<ModelView[]>([]);
 const providers = ref<ProviderPublic[]>([]);

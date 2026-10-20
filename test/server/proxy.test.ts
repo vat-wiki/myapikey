@@ -19,7 +19,8 @@ const A = makeProvider({
   baseUrlOpenai: "https://up.test/a/v1",
   baseUrlAnthropic: "https://up.test/a",
   baseUrlResponses: "https://up.test/a/v1",
-  formats: ["openai", "anthropic", "responses"],
+  baseUrlSystemone: "https://up.test/a/v1",
+  formats: ["openai", "anthropic", "responses", "systemone"],
 });
 const B = makeProvider({
   id: "prv_B",
@@ -27,7 +28,8 @@ const B = makeProvider({
   baseUrlOpenai: "https://up.test/b/v1",
   baseUrlAnthropic: "https://up.test/b",
   baseUrlResponses: "https://up.test/b/v1",
-  formats: ["openai", "anthropic", "responses"],
+  baseUrlSystemone: "https://up.test/b/v1",
+  formats: ["openai", "anthropic", "responses", "systemone"],
 });
 
 describe("proxy", () => {
@@ -48,6 +50,7 @@ describe("proxy", () => {
           openai: fe(["prv_A", "prv_B"]),
           anthropic: fe(["prv_A"]),
           responses: fe(["prv_A"]),
+          systemone: fe(["prv_A", "prv_B"]),
         }),
         onlyA: makeModel({ openai: fe(["prv_A"]) }),
       },
@@ -366,7 +369,7 @@ describe("proxy", () => {
       }
     });
 
-    it("drops a queued request when the client disconnects - no upstream call, no log row", async () => {
+    it("drops a queued request when the client disconnects - no upstream call, one 499 row", async () => {
       vi.useFakeTimers();
       try {
         await seedStore(store, {
@@ -392,7 +395,11 @@ describe("proxy", () => {
         const res = await resPromise;
         expect(res.status).toBe(499);
         expect(mock.calls.filter((c) => c.url.includes("/a/")).length).toBe(0);
-        expect(store.getLogs().filter((e) => e.model === "m").length).toBe(0);
+        // The abort leaves a TRACE now: a 499 row names what happened (the call
+        // used to vanish from history entirely).
+        const row = store.getLogs().find((e) => e.model === "m");
+        expect(row?.status).toBe(499);
+        expect(row?.error).toContain("client aborted");
       } finally {
         vi.useRealTimers();
       }
@@ -928,6 +935,27 @@ describe("proxy", () => {
       expect(store.isCooling("prv_A")).toBe(true); // → next call fails over
     });
 
+    it("detects a truncated non-streaming body (incomplete JSON): logs 502, trips the circuit, forwards the broken body verbatim", async () => {
+      // A non-streaming body cut off mid-write ends as a normal read-done —
+      // the only tell is that the JSON never completes. Used to settle 200
+      // (the malformed bytes were "left untouched" and logged as success).
+      const enc = new TextEncoder();
+      const partial = new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(enc.encode('{"id":"x","choices":[{"message":{"content":"he'));
+          c.close(); // …then a clean EOF
+        },
+      });
+      mock = mockFetch([{ match: "/a/v1/chat/completions", response: { status: 200, bodyStream: partial } }]);
+      const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] });
+      expect(res.status).toBe(200); // HTTP status was already committed at the headers
+      expect(await res.text()).toContain('"content":"he'); // broken bytes still forwarded verbatim
+      const call = store.getLogs().find((e) => e.model === "m" && !e.kind);
+      expect(call?.status).toBe(502); // the row no longer lies about success
+      expect(call?.error).toContain("incomplete JSON");
+      expect(store.isCooling("prv_A")).toBe(true); // → next call fails over
+    });
+
     it("detects an upstream stream that errors mid-flight (reader rejects)", async () => {
       const sse = sseBody(["event: message_start", 'data: {"type":"message_start"}', ""], "error", new TypeError("terminated"));
       mock = mockFetch([{ match: "/a/v1/messages", response: { status: 200, bodyStream: sse, headers: sseHeaders } }]);
@@ -1043,6 +1071,177 @@ describe("proxy", () => {
       await (await post("/anthropic/v1/messages", { model: "m", messages: [], stream: true })).text();
       const call = store.getLogs().find((e) => e.model === "m" && !e.kind);
       expect(call?.status).toBe(200); // marker seen despite the split → healthy
+    });
+  });
+
+  describe("upstream hangs and client aborts", () => {
+    // An upstream that emits ONE chunk then never sends another byte and never
+    // closes — the stall mode neither EOF nor a reader error ever surfaces.
+    const stallingStream = (): ReadableStream<Uint8Array> => {
+      const enc = new TextEncoder();
+      let sent = false;
+      return new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (sent) return new Promise(() => {}); // hang forever
+          sent = true;
+          controller.enqueue(enc.encode('event: message_start\ndata: {"type":"message_start"}\n\n'));
+        },
+      });
+    };
+    // An upstream whose body NEVER emits a byte — the first-byte gate's mode.
+    const silentStream = (): ReadableStream<Uint8Array> =>
+      new ReadableStream<Uint8Array>({ pull: () => new Promise(() => {}) });
+    const sseHeaders = { "content-type": "text/event-stream" };
+
+    it("logs a 499 row (and does not fail over or trip the circuit) when the client hangs up before headers arrive", async () => {
+      mock = mockFetch([
+        { match: "/a/v1/chat/completions", response: { hang: true } },
+        { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "B" } }] } } },
+      ]);
+      const ctrl = new AbortController();
+      const req = new Request("http://gw.test/openai-chat/v1/chat/completions", {
+        method: "POST",
+        headers: { authorization: "Bearer " + store.get().apiKey, "content-type": "application/json" },
+        body: JSON.stringify({ model: "m", messages: [] }),
+        signal: ctrl.signal,
+      });
+      const resPromise = createApp(store).fetch(req);
+      await new Promise((r) => setImmediate(r)); // let dispatch reach the fetch
+      ctrl.abort();
+      const res = await resPromise;
+      expect(res.status).toBe(499);
+      // Attempted once on A; no failover to B (the client is gone).
+      expect(mock.calls.filter((c) => c.url.includes("/a/")).length).toBe(1);
+      expect(mock.calls.filter((c) => c.url.includes("/b/")).length).toBe(0);
+      // No circuit impact — the provider did nothing wrong — but the call left
+      // a TRACE instead of vanishing from history.
+      expect(store.isCooling("prv_A")).toBe(false);
+      const row = store.getLogs().find((e) => e.model === "m");
+      expect(row?.status).toBe(499);
+      expect(row?.error).toContain("client aborted");
+      expect(row?.providerId).toBe("prv_A");
+    });
+
+    it("aborts an upstream that never sends headers (TTFB timeout), fails over, and cools the hung source", async () => {
+      vi.useFakeTimers();
+      try {
+        await seedStore(store, {
+          providers: [A, B],
+          models: { m: makeModel({ openai: fe(["prv_A", "prv_B"]) }) },
+        });
+        mock = mockFetch([
+          { match: "/a/v1/chat/completions", response: { hang: true } },
+          { match: "/b/v1/chat/completions", response: { status: 200, body: { choices: [{ message: { content: "from-B" } }] } } },
+        ]);
+        const resPromise = post("/openai-chat/v1/chat/completions", { model: "m", messages: [] });
+        await vi.advanceTimersByTimeAsync(120_001); // past the 120s TTFB guard
+        const res = await resPromise;
+        // The hung source was abandoned and the client still got an answer.
+        expect(res.status).toBe(200);
+        expect((await json<ChatBody>(res)).choices[0].message.content).toBe("from-B");
+        expect(mock.calls.filter((c) => c.url.includes("/a/")).length).toBe(1);
+        expect(mock.calls.filter((c) => c.url.includes("/b/")).length).toBe(1);
+        // The hang is a provider failure: cooled, with a 504 cooldown row.
+        expect(store.isCooling("prv_A")).toBe(true);
+        const cd = store.getLogs().find((e) => e.providerId === "prv_A" && e.kind === "cooldown");
+        expect(cd?.status).toBe(504);
+        expect(cd?.error).toContain("no response headers");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("errors a stream that stalls mid-body (idle timeout): injects an error frame, settles 504, trips the circuit", async () => {
+      vi.useFakeTimers();
+      try {
+        mock = mockFetch([
+          { match: "/a/v1/messages", response: { status: 200, bodyStream: stallingStream(), headers: sseHeaders } },
+        ]);
+        const textPromise = post("/anthropic/v1/messages", { model: "m", messages: [], stream: true }).then((r) => r.text());
+        await vi.advanceTimersByTimeAsync(300_001); // past the 300s idle guard
+        const text = await textPromise;
+        expect(text).toContain("event: error"); // the client learns the stream died
+        expect(text).toContain("stalled");
+        const call = store.getLogs().find((e) => e.model === "m" && !e.kind);
+        expect(call?.status).toBe(504);
+        expect(call?.error).toContain("no bytes for 300s");
+        expect(store.isCooling("prv_A")).toBe(true); // next call fails over
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("fails over (first-byte gate) when a 200 never emits a single body byte", async () => {
+      vi.useFakeTimers();
+      try {
+        mock = mockFetch([
+          { match: "/a/v1/chat/completions", response: { status: 200, bodyStream: silentStream(), headers: sseHeaders } },
+          {
+            match: "/b/v1/chat/completions",
+            response: {
+              status: 200,
+              bodyStream: sseBody([
+                'data: {"choices":[{"delta":{"content":"hi"}}]}',
+                "",
+                "data: [DONE]",
+                "",
+              ]),
+              headers: sseHeaders,
+            },
+          },
+        ]);
+        const textPromise = post("/openai-chat/v1/chat/completions", { model: "m", messages: [], stream: true }).then((r) => r.text());
+        await vi.advanceTimersByTimeAsync(300_001); // gate fires on A: no body byte within the idle window
+        const text = await textPromise;
+        // Nothing was committed to the client before the retry, so B answered cleanly.
+        expect(text).toContain("[DONE]");
+        expect(mock.calls.filter((c) => c.url.includes("/a/")).length).toBe(1);
+        expect(mock.calls.filter((c) => c.url.includes("/b/")).length).toBe(1);
+        expect(store.isCooling("prv_A")).toBe(true); // the silent source trips the breaker
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("answers a clean 504 after exhausting the first-byte stall retries", async () => {
+      vi.useFakeTimers();
+      try {
+        mock = mockFetch([
+          // A fresh silent stream per attempt — a ReadableStream can be locked
+          // only once, and this route IS re-attempted by the retry loop.
+          { match: "/a/v1/chat/completions", response: () => ({ status: 200, bodyStream: silentStream(), headers: sseHeaders }) },
+        ]);
+        // `onlyA` chains just one source, so every retry re-attempts A itself.
+        const resPromise = post("/openai-chat/v1/chat/completions", { model: "onlyA", messages: [], stream: true });
+        await vi.advanceTimersByTimeAsync(300_001); // attempt 1 → stall retry 1
+        await vi.advanceTimersByTimeAsync(300_001); // attempt 2 → stall retry 2
+        await vi.advanceTimersByTimeAsync(300_001); // attempt 3 → retries exhausted
+        const res = await resPromise;
+        expect(res.status).toBe(504);
+        const j = (await res.json()) as { error: { message: string } };
+        expect(j.error.message).toContain("stalled");
+        expect(j.error.message).toContain("retries exhausted");
+        expect(mock.calls.filter((c) => c.url.includes("/a/")).length).toBe(3); // 1 + 2 retries, no more
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("logs a 499 row without circuit impact when the client cancels mid-stream", async () => {
+      mock = mockFetch([
+        { match: "/a/v1/messages", response: { status: 200, bodyStream: stallingStream(), headers: sseHeaders } },
+      ]);
+      const res = await post("/anthropic/v1/messages", { model: "m", messages: [], stream: true });
+      expect(res.status).toBe(200);
+      // What the server runtime does when the client hangs up mid-response.
+      await res.body!.cancel();
+      const call = store.getLogs().find((e) => e.model === "m" && !e.kind);
+      expect(call?.status).toBe(499);
+      expect(call?.error).toContain("client aborted");
+      // Not the provider's fault: no cooling, no failure-net capture.
+      expect(store.isCooling("prv_A")).toBe(false);
+      expect(store.circuitState().find((x) => x.id === "prv_A")?.fails).toBe(0);
+      expect(store.getFailCaptures("m")).toEqual([]);
     });
   });
 
@@ -1439,11 +1638,29 @@ describe("proxy", () => {
       ]);
       const res = await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] });
       // No other slot in the chain → the client sees the usual 502, while the
-      // capture still records what this attempt actually did (status 0).
+      // capture still records what this attempt actually did (status 0). The
+      // underlying error message is kept — "network error" alone is how an
+      // upstream cut became indistinguishable from any other failure.
       expect(res.status).toBe(502);
       const c = store.getCaptures("m")[0];
-      expect(c).toMatchObject({ provider: "A", status: 0, error: "network error" });
+      expect(c.provider).toBe("A");
+      expect(c.status).toBe(0);
+      expect(c.error).toContain("network error");
+      expect(c.error).toContain("dns broke");
       expect(c.response).toBeUndefined();
+    });
+
+    it("keeps undici's real cause (e.cause) in the network-error message", async () => {
+      await seedStore(store, { models: { m: makeModel({ openai: fe(["prv_A"]), debugCapture: true }) } });
+      mock = mockFetch([
+        { match: "/a/v1/chat/completions", response: () => { throw new Error("fetch failed", { cause: new Error("ECONNRESET") }); } },
+      ]);
+      await post("/openai-chat/v1/chat/completions", { model: "m", messages: [] });
+      const c = store.getCaptures("m")[0];
+      // undici wraps every socket-level failure as "fetch failed" and buries
+      // the reason in cause — surface it, or an upstream reset is unjudgable.
+      expect(c.error).toContain("fetch failed");
+      expect(c.error).toContain("ECONNRESET");
     });
 
     it("flags truncation when a response exceeds the capture cap", async () => {
@@ -1646,6 +1863,103 @@ describe("proxy", () => {
       });
       expect(res.status).toBe(404);
       expect(mock.calls.length).toBe(0);
+    });
+  });
+
+  // --- System One surface (/v1/systemone) -------------------------------------
+  // The TypeSafe System One protocol: a verbatim-body POST of {model, state,
+  // questions}, answered by a one-shot structured JSON body. No streaming, no
+  // thinking/sampling switches — but full failover/circuit/logging via dispatch.
+  describe("systemone surface", () => {
+    const SYSONE_UPSTREAM = {
+      model: "jev-1.13.0",
+      answers: { is_urgent: { type: "noul", noul: 1 } },
+      usage: { input_tokens: 392, output_tokens: 65 },
+    };
+    const sysBody = {
+      model: "m",
+      state: "ping",
+      questions: { ok: { type: "noul", instructions: "The state is a health-check ping" } },
+    };
+
+    it("forwards the body verbatim to the source's /systemone endpoint and returns the answer as-is", async () => {
+      mock = mockFetch([
+        { match: "/a/v1/systemone", response: { body: SYSONE_UPSTREAM } },
+      ]);
+      const res = await post("/v1/systemone", sysBody);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual(SYSONE_UPSTREAM);
+      const call = mock.calls[0];
+      expect(call.url).toBe("https://up.test/a/v1/systemone");
+      expect(call.headers.authorization).toBe("Bearer sk-up-test");
+      expect(call.headers["content-type"]).toBe("application/json");
+      // The System One body passes through untouched (no chat fields added).
+      expect(JSON.parse(call.body)).toEqual(sysBody);
+      // Usage is captured on the log row (exact upstream-reported counts).
+      const log = store.getLogs().at(-1);
+      expect(log?.status).toBe(200);
+      expect(log?.format).toBe("systemone");
+      expect(log?.usage).toEqual({ input: 392, output: 65 });
+    });
+
+    it("observes a stream:true request as one non-streaming JSON body", async () => {
+      mock = mockFetch([
+        { match: "/a/v1/systemone", response: { body: SYSONE_UPSTREAM } },
+      ]);
+      const res = await post("/v1/systemone", { ...sysBody, stream: true });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual(SYSONE_UPSTREAM);
+      const log = store.getLogs().at(-1);
+      expect(log?.stream).toBe(false);
+    });
+
+    it("does not inject thinking/sampling switches into a systemone body", async () => {
+      await seedStore(store, {
+        providers: [A, B],
+        models: { m: makeModel({ systemone: fe([{ id: "prv_A", thinking: "high", sampling: { temperature: 0.2 } }]) }) },
+      });
+      mock = mockFetch([
+        { match: "/a/v1/systemone", response: { body: SYSONE_UPSTREAM } },
+      ]);
+      const res = await post("/v1/systemone", sysBody);
+      expect(res.status).toBe(200);
+      // The forwarded body carries none of the chat-family switches the slot's
+      // defaults would inject on the other wires.
+      expect(JSON.parse(mock.calls[0].body)).toEqual(sysBody);
+    });
+
+    it("fails over to the next slot on a retryable upstream status", async () => {
+      mock = mockFetch([
+        { match: "/a/v1/systemone", response: { status: 500, body: { error: { message: "boom" } } } },
+        { match: "/b/v1/systemone", response: { body: SYSONE_UPSTREAM } },
+      ]);
+      const res = await post("/v1/systemone", sysBody);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual(SYSONE_UPSTREAM);
+      expect(mock.calls.map((c) => c.url)).toEqual([
+        "https://up.test/a/v1/systemone",
+        "https://up.test/b/v1/systemone",
+      ]);
+    });
+
+    it("404s for a model not enabled on the systemone route (no upstream hit)", async () => {
+      mock = mockFetch([]);
+      const res = await post("/v1/systemone", { ...sysBody, model: "onlyA" });
+      expect(res.status).toBe(404);
+      expect(mock.calls.length).toBe(0);
+    });
+
+    it("lists only systemone-enabled models, behind the gateway key", async () => {
+      const app = createApp(store);
+      const unauthed = await app.request("/v1/systemone/models");
+      expect(unauthed.status).toBe(401);
+      const res = await app.request("/v1/systemone/models", {
+        headers: { authorization: "Bearer " + store.get().apiKey },
+      });
+      expect(res.status).toBe(200);
+      const j = (await res.json()) as { object: string; data: { id: string }[] };
+      expect(j.object).toBe("list");
+      expect(j.data.map((m) => m.id).sort()).toEqual(["m"]);
     });
   });
 });

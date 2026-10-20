@@ -77,6 +77,11 @@ export function outboundUsage(usage: Usage, key: RouteKey): Record<string, unkno
       input_tokens_details: { cached_tokens: usage.cacheRead ?? 0 },
     };
   }
+  if (key === "systemone") {
+    // The System One wire reports plain {input_tokens, output_tokens} — nothing
+    // else to re-encode.
+    return { input_tokens: usage.input, output_tokens: usage.output };
+  }
   const promptTokens = usage.input + (usage.cacheRead ?? 0);
   return {
     prompt_tokens: promptTokens,
@@ -100,7 +105,7 @@ export function applyWireUsage(obj: Record<string, unknown>, key: RouteKey, usag
     return;
   }
   const old = obj.usage as Record<string, unknown> | null | undefined;
-  if (key === "anthropic") {
+  if (key === "anthropic" || key === "systemone") {
     obj.usage = { ...(typeof old === "object" && old ? old : {}), ...native };
     return;
   }
@@ -171,6 +176,15 @@ function extractUsage(obj: any, key: RouteKey): UsageFields | null {
       if (typeof input === "number" || typeof output === "number") {
         return { input: input === undefined ? undefined : input - cached, output, cacheRead: cached > 0 ? cached : undefined };
       }
+    }
+    return null;
+  }
+  if (key === "systemone") {
+    // System One: a one-shot structured-evaluation body whose top-level
+    // `usage` carries plain {input_tokens, output_tokens}.
+    const u = obj.usage;
+    if (u && (typeof u.input_tokens === "number" || typeof u.output_tokens === "number")) {
+      return { input: num(u.input_tokens), output: num(u.output_tokens) };
     }
     return null;
   }

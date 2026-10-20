@@ -36,6 +36,13 @@ describe("tokens/UsageCollector", () => {
     expect(c.finalize({ stream: false, key: "openai" })).toEqual({ input: 3, output: 1 });
   });
 
+  it("systemone usage reads the plain {input_tokens, output_tokens} body", () => {
+    const c = new UsageCollector();
+    c.feed('{"model":"jev-1.13.0","answers":{"ok":{"type":"noul","noul":1}},"usage":{"input_tok', { stream: false, key: "systemone" });
+    c.feed('ens":392,"output_tokens":65}}', { stream: false, key: "systemone" });
+    expect(c.finalize({ stream: false, key: "systemone" })).toEqual({ input: 392, output: 65 });
+  });
+
   it("responses usage accepts the bare input/output spelling too", () => {
     const c = new UsageCollector();
     c.feed(

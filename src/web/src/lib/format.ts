@@ -1,11 +1,12 @@
-/** The three routing families the gateway exposes as forwarding endpoints. */
-export type Fmt = "openai" | "anthropic" | "responses";
+/** The four routing families the gateway exposes as forwarding endpoints. */
+export type Fmt = "openai" | "anthropic" | "responses" | "systemone";
 
 /** App-wide color language for the routing families — one hue per family so the
  *  same model / provider / format reads as the same color everywhere it appears
  *  (Models grouping panels, Connect base-URL + snippet cards, Logs format tag):
  *
  *    openai → emerald   ·   anthropic → amber   ·   responses → violet
+ *    systemone → blue
  *
  *  This is the "data" palette; the structural palette is the brand `primary`
  *  (card-title icons). Each value is a set of Tailwind class fragments, paired
@@ -45,16 +46,26 @@ export const FMT_ACCENT: Record<
     chip: "bg-violet-500/15 text-violet-700 dark:text-violet-300",
     badge: "border-transparent bg-violet-500/15 text-violet-600 dark:text-violet-400",
   },
+  systemone: {
+    solid: "bg-blue-500",
+    text: "text-blue-600 dark:text-blue-400",
+    soft: "bg-blue-500/5",
+    border: "border-blue-500/30",
+    chip: "bg-blue-500/15 text-blue-700 dark:text-blue-300",
+    badge: "border-transparent bg-blue-500/15 text-blue-600 dark:text-blue-400",
+  },
 };
 
 /** Human-readable name per routing family. "openai" and "responses" are BOTH
  *  OpenAI's protocols — the bare key can't tell them apart, so every surface
  *  spells out which one it means: openai = the /chat/completions wire,
- *  responses = the OpenAI Responses API. anthropic needs no qualifier. */
+ *  responses = the OpenAI Responses API. anthropic needs no qualifier;
+ *  systemone is the TypeSafe System One evaluation protocol. */
 export const FMT_LABEL: Record<Fmt, string> = {
   openai: "OpenAI Chat",
   anthropic: "Anthropic",
   responses: "OpenAI Responses",
+  systemone: "System One",
 };
 
 /** Display label for a format key; falls back to the raw key for unknown values
@@ -92,4 +103,5 @@ export const FMT_META: Record<Fmt, { label: string; endpoint: string }> = {
   openai: { label: "models.fmtOpenai", endpoint: "/chat/completions" },
   anthropic: { label: "models.fmtAnthropic", endpoint: "/messages" },
   responses: { label: "models.fmtResponses", endpoint: "/responses" },
+  systemone: { label: "models.fmtSystemone", endpoint: "/systemone" },
 };
