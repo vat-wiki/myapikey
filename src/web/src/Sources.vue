@@ -276,7 +276,7 @@ onMounted(load);
         <Card
           v-for="p in providers"
           :key="p.id"
-          class="group cursor-pointer gap-0 py-0 transition-colors hover:bg-muted/30"
+          class="group min-w-0 cursor-pointer gap-0 py-0 transition-colors hover:bg-muted/30"
           @click="openEdit(p)"
         >
           <div class="flex h-full flex-col gap-3 p-4">

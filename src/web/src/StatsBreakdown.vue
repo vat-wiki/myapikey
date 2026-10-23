@@ -45,7 +45,9 @@ function fmtDot(format: string): string | undefined {
 </script>
 
 <template>
-  <Card>
+  <!-- min-w-0: the embedded table's nowrap headers otherwise pin this grid
+       item's auto minimum and blow the card past narrow viewports -->
+  <Card class="min-w-0">
     <CardHeader class="pb-2">
       <CardTitle class="text-sm">{{ title }}</CardTitle>
     </CardHeader>

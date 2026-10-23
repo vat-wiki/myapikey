@@ -249,7 +249,7 @@ function fmtTokens(n: number): string {
 
         <!-- breakdowns: model full width, provider + format split -->
         <div class="grid gap-4 lg:grid-cols-2">
-          <div class="lg:col-span-2">
+          <div class="min-w-0 lg:col-span-2">
             <StatsBreakdown :title="t('stats.byModel')" :buckets="stats.byModel" :max="maxCalls(stats.byModel)" kind="model" />
           </div>
           <StatsBreakdown :title="t('stats.byProvider')" :buckets="stats.byProvider" :max="maxCalls(stats.byProvider)" kind="provider" />

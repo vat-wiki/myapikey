@@ -314,9 +314,9 @@ async function copy(s: string | undefined) {
 
       <!-- list: the captured attempts -->
       <template v-else>
-        <div class="flex items-center gap-2">
+        <div class="flex flex-wrap items-center gap-2">
           <Switch :model-value="enabled" :disabled="saving || loading" :aria-label="t('models.debugSwitch')" @update:model-value="toggle" />
-          <span class="min-w-0 flex-1 text-sm">{{ t("models.debugSwitch") }}</span>
+          <span class="min-w-[10rem] flex-1 text-sm">{{ t("models.debugSwitch") }}</span>
           <div class="flex items-center rounded-md border p-0.5">
             <button
               type="button"

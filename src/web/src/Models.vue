@@ -459,17 +459,17 @@ async function copyName(name: string) {
       <Card
         v-for="m in filtered"
         :key="m.name"
-        class="group gap-0 py-0 transition-colors hover:bg-muted/30"
+        class="group min-w-0 gap-0 py-0 transition-colors hover:bg-muted/30"
       >
         <div class="flex h-full flex-col gap-3 p-4">
           <!-- name + status -->
-          <div class="flex min-w-0 items-center gap-1.5">
+          <div class="flex min-w-0 flex-wrap items-center gap-1.5">
             <span class="truncate font-mono text-sm font-semibold">{{ m.name }}</span>
             <button
               type="button"
               :title="t('connect.copy')"
               :aria-label="t('connect.copy')"
-              class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/50 opacity-0 transition-all hover:bg-accent hover:text-accent-foreground focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100"
+              class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/50 opacity-0 transition-all hover:bg-accent hover:text-accent-foreground focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100 max-sm:hidden"
               @click.stop="copyName(m.name)"
             >
               <Copy class="h-3 w-3" />
@@ -486,11 +486,12 @@ async function copyName(name: string) {
             <Badge v-else-if="isStaleAny(m)" variant="secondary" class="shrink-0 gap-1" :title="t('models.delistedHint')">
               <TriangleAlert class="h-3 w-3" />{{ t("models.delisted") }}
             </Badge>
-            <!-- actions: hover-revealed in the name row so cards carry no footer -->
+            <!-- actions: hover-revealed in the name row so cards carry no footer;
+                 on touch there is no hover, so they stay visible and the row wraps -->
             <div class="ml-auto flex shrink-0 items-center gap-0.5" @click.stop>
               <Button
                 variant="ghost" size="icon"
-                class="h-7 w-7 text-muted-foreground opacity-0 transition-all focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100"
+                class="h-7 w-7 text-muted-foreground opacity-0 transition-all focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100 max-sm:opacity-100"
                 :title="t('models.debug')" :aria-label="t('models.debug')"
                 @click="openDebug(m)"
               >
@@ -498,7 +499,7 @@ async function copyName(name: string) {
               </Button>
               <Button
                 variant="ghost" size="icon"
-                class="h-7 w-7 text-muted-foreground opacity-0 transition-all focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100"
+                class="h-7 w-7 text-muted-foreground opacity-0 transition-all focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100 max-sm:opacity-100"
                 :disabled="!enabledFormats(m).length || (!!rowProbe(m) && rowProbe(m)!.state === 'testing')"
                 :title="t('models.testModel')" :aria-label="t('models.testModel')"
                 @click="testModel(m)"
@@ -508,13 +509,13 @@ async function copyName(name: string) {
               </Button>
               <Button
                 variant="ghost" size="icon"
-                class="h-7 w-7 text-muted-foreground opacity-0 transition-all focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100"
+                class="h-7 w-7 text-muted-foreground opacity-0 transition-all focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100 max-sm:opacity-100"
                 :title="t('models.edit')" :aria-label="t('models.edit')"
                 @click="openEditor(m)"
               >
                 <Pencil class="h-4 w-4" />
               </Button>
-              <div class="opacity-0 transition-all focus-within:opacity-100 group-hover:opacity-100">
+              <div class="opacity-0 transition-all focus-within:opacity-100 group-hover:opacity-100 max-sm:opacity-100">
                 <DropdownMenu>
                   <DropdownMenuTrigger>
                     <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground" :aria-label="t('models.moreActions')">

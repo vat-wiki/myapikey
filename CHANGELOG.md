@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.1.1 — 2026-10-23
+
+- **Mobile-friendly web UI:** on narrow screens the Connect and Settings tabs move into the header (icon/labeled buttons), the tab strip scrolls horizontally, card action buttons stay visible without hover, and dialogs get a wider safe margin. Fixes narrow-viewport overflow in model cards, provider cards and stat breakdown tables.
+
 ## v1.1.0 — 2026-10-20
 
 - **systemone route surface:** TypeSafe System One (EdgeOne Makers structured evaluation) becomes a fourth independent protocol — new `systemone` format and route key, per-provider `baseUrlSystemone`, `/v1/systemone` forwarding endpoint, and a config migration (v6 → v7) filling in the new field. Served at `/v1/systemone`; requests are forwarded as a verbatim JSON POST (no chat, no streaming).

@@ -186,15 +186,39 @@ onMounted(async () => {
       <div class="mx-auto flex h-14 max-w-5xl items-center justify-between px-4">
         <div class="flex items-center gap-2 font-semibold tracking-tight">
           <Logo :size="26" />
-          MyAPIKey
+          <span class="max-sm:hidden">MyAPIKey</span>
         </div>
         <div class="flex items-center gap-1">
-          <Button variant="ghost" size="sm" :title="localeLabel" @click="toggleLocale">
-            <Languages class="h-4 w-4" />{{ localeLabel }}
+          <!-- mobile-only header nav: Connect + Settings are reference pages
+               that don't fit the narrow tab strip but must stay one tap away;
+               labeled with text (icon-only reads as mystery meat) -->
+          <Button
+            variant="ghost"
+            size="sm"
+            class="gap-1 px-2 text-xs sm:hidden"
+            :class="tab === 'connect' ? 'text-foreground' : 'text-muted-foreground'"
+            :title="t('nav.connect')" :aria-label="t('nav.connect')"
+            @click="tab = 'connect'"
+          >
+            <Plug class="h-4 w-4" />{{ t("nav.connect") }}
           </Button>
           <Button
             variant="ghost"
             size="icon"
+            class="h-8 w-8 sm:hidden"
+            :class="tab === 'settings' ? 'text-foreground' : 'text-muted-foreground'"
+            :title="t('nav.settings')" :aria-label="t('nav.settings')"
+            @click="tab = 'settings'"
+          >
+            <SettingsIcon class="h-4 w-4" />
+          </Button>
+          <Button variant="ghost" size="sm" :title="localeLabel" @click="toggleLocale">
+            <Languages class="h-4 w-4" /><span class="hidden sm:inline">{{ localeLabel }}</span>
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            class="max-sm:h-8 max-sm:w-8"
             :title="dark ? t('app.toLight') : t('app.toDark')"
             @click="toggleTheme"
           >
@@ -202,7 +226,7 @@ onMounted(async () => {
             <Moon v-else class="h-4 w-4" />
           </Button>
           <Button variant="ghost" size="sm" @click="logout">
-            <LogOut class="h-4 w-4" />{{ t("app.signOut") }}
+            <LogOut class="h-4 w-4" /><span class="hidden sm:inline">{{ t("app.signOut") }}</span>
           </Button>
         </div>
       </div>
@@ -210,13 +234,16 @@ onMounted(async () => {
 
     <main class="mx-auto max-w-5xl px-4 py-6">
       <Tabs v-model="tab">
-        <TabsList class="mb-2">
-          <TabsTrigger value="models"><Cpu class="h-4 w-4" />{{ t("nav.models") }}</TabsTrigger>
-          <TabsTrigger value="sources"><ServerCog class="h-4 w-4" />{{ t("nav.sources") }}</TabsTrigger>
-          <TabsTrigger value="connect"><Plug class="h-4 w-4" />{{ t("nav.connect") }}</TabsTrigger>
-          <TabsTrigger value="logs"><Activity class="h-4 w-4" />{{ t("nav.logs") }}</TabsTrigger>
-          <TabsTrigger value="stats"><BarChart3 class="h-4 w-4" />{{ t("nav.stats") }}</TabsTrigger>
-          <TabsTrigger value="settings"><SettingsIcon class="h-4 w-4" />{{ t("nav.settings") }}</TabsTrigger>
+        <!-- mobile: full-width horizontal scroll strip (justify-start so the
+             overflow stays reachable); sm+: natural width. Connect/Settings
+             move to the header on mobile to keep the strip to the 4 daily tabs. -->
+        <TabsList class="mb-2 flex w-full justify-start overflow-x-auto sm:inline-flex sm:w-auto">
+          <TabsTrigger value="models" class="shrink-0"><Cpu class="h-4 w-4" />{{ t("nav.models") }}</TabsTrigger>
+          <TabsTrigger value="sources" class="shrink-0"><ServerCog class="h-4 w-4" />{{ t("nav.sources") }}</TabsTrigger>
+          <TabsTrigger value="logs" class="shrink-0"><Activity class="h-4 w-4" />{{ t("nav.logs") }}</TabsTrigger>
+          <TabsTrigger value="stats" class="shrink-0"><BarChart3 class="h-4 w-4" />{{ t("nav.stats") }}</TabsTrigger>
+          <TabsTrigger value="connect" class="shrink-0 max-sm:hidden"><Plug class="h-4 w-4" />{{ t("nav.connect") }}</TabsTrigger>
+          <TabsTrigger value="settings" class="shrink-0 max-sm:hidden"><SettingsIcon class="h-4 w-4" />{{ t("nav.settings") }}</TabsTrigger>
         </TabsList>
         <TabsContent value="models"><Models @goto="tab = $event" /></TabsContent>
         <TabsContent value="sources"><Sources @goto="tab = $event" /></TabsContent>
