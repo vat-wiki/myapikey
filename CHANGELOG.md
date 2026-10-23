@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.1.3 — 2026-10-23
+
+- **Connect as a CTA:** the header 使用方式/Connect button is now prominent on every breakpoint — primary-tinted outline at rest, filled while active — instead of a low-contrast ghost button. The language toggle is icon-only on desktop too, matching mobile.
+
 ## v1.1.2 — 2026-10-23
 
 - **Header nav on desktop too:** Connect and Settings now live in the header on every breakpoint, not just mobile — the tab strip is down to the four daily tabs (Models, Sources, Logs, Stats) on desktop as well, with the active reference page highlighted in the header.

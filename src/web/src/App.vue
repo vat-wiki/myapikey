@@ -191,13 +191,14 @@ onMounted(async () => {
         <div class="flex items-center gap-1">
           <!-- header nav: Connect + Settings are reference pages rather than
                daily tabs, so they live beside the utility buttons on every
-               breakpoint; Connect is labeled with text (icon-only reads as
-               mystery meat) -->
+               breakpoint. Connect is the page every new user needs first, so
+               it reads as a CTA: primary-tinted outline, filled while active.
+               It keeps its text label (icon-only reads as mystery meat). -->
           <Button
-            variant="ghost"
+            :variant="tab === 'connect' ? 'default' : 'outline'"
             size="sm"
-            class="gap-1 px-2 text-xs sm:text-sm"
-            :class="tab === 'connect' ? 'text-foreground' : 'text-muted-foreground'"
+            class="gap-1.5 border-primary/60 px-2.5 text-xs font-medium sm:text-sm"
+            :class="tab === 'connect' ? '' : 'text-primary hover:bg-primary/10'"
             :title="t('nav.connect')" :aria-label="t('nav.connect')"
             @click="tab = 'connect'"
           >
@@ -213,8 +214,8 @@ onMounted(async () => {
           >
             <SettingsIcon class="h-4 w-4" />
           </Button>
-          <Button variant="ghost" size="sm" :title="localeLabel" @click="toggleLocale">
-            <Languages class="h-4 w-4" /><span class="hidden sm:inline">{{ localeLabel }}</span>
+          <Button variant="ghost" size="icon" class="h-8 w-8 max-sm:h-8 max-sm:w-8" :title="localeLabel" :aria-label="localeLabel" @click="toggleLocale">
+            <Languages class="h-4 w-4" />
           </Button>
           <Button
             variant="ghost"
