@@ -189,13 +189,14 @@ onMounted(async () => {
           <span class="max-sm:hidden">MyAPIKey</span>
         </div>
         <div class="flex items-center gap-1">
-          <!-- mobile-only header nav: Connect + Settings are reference pages
-               that don't fit the narrow tab strip but must stay one tap away;
-               labeled with text (icon-only reads as mystery meat) -->
+          <!-- header nav: Connect + Settings are reference pages rather than
+               daily tabs, so they live beside the utility buttons on every
+               breakpoint; Connect is labeled with text (icon-only reads as
+               mystery meat) -->
           <Button
             variant="ghost"
             size="sm"
-            class="gap-1 px-2 text-xs sm:hidden"
+            class="gap-1 px-2 text-xs sm:text-sm"
             :class="tab === 'connect' ? 'text-foreground' : 'text-muted-foreground'"
             :title="t('nav.connect')" :aria-label="t('nav.connect')"
             @click="tab = 'connect'"
@@ -205,7 +206,7 @@ onMounted(async () => {
           <Button
             variant="ghost"
             size="icon"
-            class="h-8 w-8 sm:hidden"
+            class="h-8 w-8"
             :class="tab === 'settings' ? 'text-foreground' : 'text-muted-foreground'"
             :title="t('nav.settings')" :aria-label="t('nav.settings')"
             @click="tab = 'settings'"
@@ -234,16 +235,14 @@ onMounted(async () => {
 
     <main class="mx-auto max-w-5xl px-4 py-6">
       <Tabs v-model="tab">
-        <!-- mobile: full-width horizontal scroll strip (justify-start so the
-             overflow stays reachable); sm+: natural width. Connect/Settings
-             move to the header on mobile to keep the strip to the 4 daily tabs. -->
+        <!-- Connect/Settings live in the header (see above), so the strip
+             stays to the 4 daily tabs; mobile keeps it scrollable
+             (justify-start so the overflow stays reachable). -->
         <TabsList class="mb-2 flex w-full justify-start overflow-x-auto sm:inline-flex sm:w-auto">
           <TabsTrigger value="models" class="shrink-0"><Cpu class="h-4 w-4" />{{ t("nav.models") }}</TabsTrigger>
           <TabsTrigger value="sources" class="shrink-0"><ServerCog class="h-4 w-4" />{{ t("nav.sources") }}</TabsTrigger>
           <TabsTrigger value="logs" class="shrink-0"><Activity class="h-4 w-4" />{{ t("nav.logs") }}</TabsTrigger>
           <TabsTrigger value="stats" class="shrink-0"><BarChart3 class="h-4 w-4" />{{ t("nav.stats") }}</TabsTrigger>
-          <TabsTrigger value="connect" class="shrink-0 max-sm:hidden"><Plug class="h-4 w-4" />{{ t("nav.connect") }}</TabsTrigger>
-          <TabsTrigger value="settings" class="shrink-0 max-sm:hidden"><SettingsIcon class="h-4 w-4" />{{ t("nav.settings") }}</TabsTrigger>
         </TabsList>
         <TabsContent value="models"><Models @goto="tab = $event" /></TabsContent>
         <TabsContent value="sources"><Sources @goto="tab = $event" /></TabsContent>

@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.1.2 — 2026-10-23
+
+- **Header nav on desktop too:** Connect and Settings now live in the header on every breakpoint, not just mobile — the tab strip is down to the four daily tabs (Models, Sources, Logs, Stats) on desktop as well, with the active reference page highlighted in the header.
+
 ## v1.1.1 — 2026-10-23
 
 - **Mobile-friendly web UI:** on narrow screens the Connect and Settings tabs move into the header (icon/labeled buttons), the tab strip scrolls horizontally, card action buttons stay visible without hover, and dialogs get a wider safe margin. Fixes narrow-viewport overflow in model cards, provider cards and stat breakdown tables.
